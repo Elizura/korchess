@@ -1,0 +1,24 @@
+# Development override: mount source and run with live reload.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+services:
+  backend:
+    volumes:
+      - ./backend:/app
+      - openingscope-data:/data
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    # command comes from Dockerfile.dev (npm run dev)
+
+volumes:
+  frontend-node-modules:

@@ -74,8 +74,6 @@ def fetch_lichess_pgn(username: str, max_games: int = 200) -> str:
             status_code=response.status_code
         )
 
-    print(">>>>>>>>>>>>>>>", response.text)
-
     return response.text
 
 

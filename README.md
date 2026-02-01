@@ -19,6 +19,19 @@ docker compose up --build
 
 Then open http://localhost:3000 in your browser.
 
+## Development (live reload)
+
+To run with **live reload** so code changes are picked up without rebuilding:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+- **First time** (or when dependencies change): use `--build` to build images.
+- **After that**: code changes under `backend/` or `frontend/` are picked up automatically; no rebuild needed.
+- Backend: uvicorn runs with `--reload`; editing Python files restarts the server.
+- Frontend: Next.js dev server runs with HMR; editing React/TS files hot-reloads in the browser.
+
 ### Run Backend Only
 
 ```bash
