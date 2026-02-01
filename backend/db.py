@@ -1,0 +1,161 @@
+"""Database initialization and helper functions for Openingscope."""
+
+import os
+import sqlite3
+from typing import Optional
+
+DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/openingscope.db")
+
+
+def get_connection() -> sqlite3.Connection:
+    """Get a database connection."""
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db(db_path: Optional[str] = None) -> None:
+    """Initialize the database schema and indexes."""
+    path = db_path or DATABASE_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    cursor = conn.cursor()
+
+    # Create games table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            played_at TEXT,
+            time_class TEXT,
+            color TEXT,
+            result TEXT,
+            eco TEXT,
+            opening_name TEXT,
+            opponent TEXT,
+            white_elo INTEGER,
+            black_elo INTEGER,
+            pgn TEXT,
+            UNIQUE(site, site_game_id)
+        )
+    """)
+
+    # Create indexes for fast aggregations
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_games_username 
+        ON games(username)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_games_username_eco 
+        ON games(username, eco)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_games_username_color_time_class 
+        ON games(username, color, time_class)
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def upsert_game(conn: sqlite3.Connection, game_row: dict) -> bool:
+    """
+    Insert a game, ignoring if it already exists (by site + site_game_id).
+    Returns True if inserted, False if skipped (duplicate).
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT OR IGNORE INTO games (
+                site, site_game_id, username, played_at, time_class,
+                color, result, eco, opening_name, opponent,
+                white_elo, black_elo, pgn
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            game_row["site"],
+            game_row["site_game_id"],
+            game_row["username"],
+            game_row.get("played_at"),
+            game_row.get("time_class"),
+            game_row.get("color"),
+            game_row.get("result"),
+            game_row.get("eco"),
+            game_row.get("opening_name"),
+            game_row.get("opponent"),
+            game_row.get("white_elo"),
+            game_row.get("black_elo"),
+            game_row.get("pgn"),
+        ))
+        return cursor.rowcount > 0
+    except sqlite3.Error:
+        return False
+
+
+def get_openings_stats(
+    conn: sqlite3.Connection,
+    username: str,
+    color: str = "all",
+    time_class: str = "all"
+) -> list[dict]:
+    """
+    Aggregate opening statistics for a user with optional filters.
+    Returns list of dicts with eco, opening_name, games, wins, draws, losses, score_pct.
+    """
+    cursor = conn.cursor()
+
+    # Build query with filters
+    query = """
+        SELECT 
+            eco,
+            opening_name,
+            COUNT(*) as games,
+            SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN result = 'draw' THEN 1 ELSE 0 END) as draws,
+            SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) as losses
+        FROM games
+        WHERE LOWER(username) = LOWER(?)
+    """
+    params: list = [username]
+
+    # Color filter
+    if color != "all":
+        query += " AND color = ?"
+        params.append(color)
+
+    # Time class filter
+    if time_class != "all":
+        query += " AND time_class = ?"
+        params.append(time_class)
+
+    query += " GROUP BY eco, opening_name ORDER BY games DESC"
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+
+    results = []
+    for row in rows:
+        games = row["games"]
+        wins = row["wins"]
+        draws = row["draws"]
+        losses = row["losses"]
+
+        # Calculate score percentage
+        if games > 0:
+            score_pct = round((wins + 0.5 * draws) / games * 100, 1)
+        else:
+            score_pct = 0.0
+
+        results.append({
+            "eco": row["eco"],
+            "opening_name": row["opening_name"],
+            "games": games,
+            "wins": wins,
+            "draws": draws,
+            "losses": losses,
+            "score_pct": score_pct
+        })
+
+    return results
