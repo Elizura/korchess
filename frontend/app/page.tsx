@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -33,6 +34,9 @@ type ColorFilter = "all" | "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 
 export default function Home() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +52,7 @@ export default function Home() {
     key: keyof OpeningStats;
     direction: "asc" | "desc";
   }>({ key: "games", direction: "desc" });
+  const [initialized, setInitialized] = useState(false);
 
   const fetchReport = async (
     user: string,
@@ -82,6 +87,46 @@ export default function Home() {
     return response.json();
   };
 
+  // Restore state from URL on mount
+  useEffect(() => {
+    const userFromUrl = searchParams.get("user");
+    if (userFromUrl && !initialized) {
+      setInitialized(true);
+      setUsername(userFromUrl);
+      setCurrentUsername(userFromUrl);
+      
+      // Fetch data for the user from URL
+      const loadData = async () => {
+        setLoading(true);
+        try {
+          const [reportData, statusData] = await Promise.all([
+            fetchReport(userFromUrl, colorFilter, timeClassFilter),
+            fetchImportStatus(userFromUrl)
+          ]);
+          setReport(reportData);
+          if (statusData) {
+            setImportStatus(statusData);
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Failed to load data");
+        } finally {
+          setLoading(false);
+        }
+      };
+      
+      loadData();
+    } else if (!userFromUrl) {
+      setInitialized(true);
+    }
+  }, [searchParams, initialized, colorFilter, timeClassFilter]);
+
+  // Update URL when currentUsername changes
+  const updateUrl = (user: string | null) => {
+    if (user) {
+      router.replace(`/?user=${encodeURIComponent(user)}`, { scroll: false });
+    }
+  };
+
   const handleImport = async () => {
     if (!username.trim()) {
       setError("Please enter a username");
@@ -111,6 +156,7 @@ export default function Home() {
       const importData: ImportResponse = await importResponse.json();
       setImportResult(importData);
       setCurrentUsername(username.trim());
+      updateUrl(username.trim());
 
       // Auto-fetch report after successful import
       const reportData = await fetchReport(
@@ -442,7 +488,15 @@ export default function Home() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {processedReport && processedReport.map((opening, idx) => (
-                  <tr key={`${opening.eco}-${idx}`} className="hover:bg-gray-50">
+                  <tr 
+                    key={`${opening.eco}-${idx}`} 
+                    onClick={() => {
+                      if (currentUsername) {
+                        router.push(`/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.eco)}`);
+                      }
+                    }}
+                    className="hover:bg-gray-50 cursor-pointer transition-colors"
+                  >
                     <td className="px-6 py-4">
                       <div className="font-medium text-gray-900">
                         {opening.eco}

@@ -225,3 +225,54 @@ def get_import_status(
         "total_games": total_row["total"] if total_row else 0
     }
 
+
+def get_games_by_opening(
+    conn: sqlite3.Connection,
+    username: str,
+    eco: str,
+    limit: int = 10
+) -> list[dict]:
+    """
+    Get most recent games for a user and opening.
+    Returns games sorted by played_at DESC (nulls last), then id DESC.
+    """
+    cursor = conn.cursor()
+    canonical_username = username.strip().lower()
+    
+    query = """
+        SELECT 
+            site_game_id,
+            played_at,
+            color,
+            result,
+            opponent,
+            opening_name
+        FROM games
+        WHERE LOWER(username) = ? 
+          AND eco = ?
+          AND site_game_id IS NOT NULL
+          AND site_game_id != ''
+        ORDER BY 
+            CASE WHEN played_at IS NULL THEN 1 ELSE 0 END,
+            played_at DESC,
+            id DESC
+        LIMIT ?
+    """
+    
+    cursor.execute(query, (canonical_username, eco, limit))
+    rows = cursor.fetchall()
+    
+    results = []
+    for row in rows:
+        results.append({
+            "site_game_id": row["site_game_id"],
+            "played_at": row["played_at"],
+            "color": row["color"],
+            "result": row["result"],
+            "opponent": row["opponent"],
+            "opening_name": row["opening_name"],
+            "lichess_url": f"https://lichess.org/{row['site_game_id']}"
+        })
+    
+    return results
+

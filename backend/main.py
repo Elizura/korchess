@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from db import get_connection, init_db, upsert_game, get_openings_stats, upsert_import_status, get_import_status
+from db import get_connection, init_db, upsert_game, get_openings_stats, upsert_import_status, get_import_status, get_games_by_opening
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 
 app = FastAPI(
@@ -58,6 +58,17 @@ class ImportStatusResponse(BaseModel):
     last_imported: int | None
     last_skipped: int | None
     total_games: int
+
+
+class GameDetail(BaseModel):
+    """Details for a single game."""
+    site_game_id: str
+    played_at: str | None
+    color: str
+    result: str
+    opponent: str | None
+    opening_name: str
+    lichess_url: str
 
 
 @app.on_event("startup")
@@ -182,4 +193,34 @@ async def get_import_status_endpoint(username: str):
         conn.close()
     
     return ImportStatusResponse(**status)
+
+
+@app.get("/api/games/lichess/{username}", response_model=list[GameDetail])
+async def get_games_for_opening(
+    username: str,
+    eco: str = Query(..., description="ECO code for the opening"),
+    limit: int = Query(default=10, ge=1, le=50)
+):
+    """Get recent games for a user and opening."""
+    username = username.strip()
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    
+    if not eco:
+        raise HTTPException(status_code=400, detail="ECO code is required.")
+    
+    conn = get_connection()
+    try:
+        games = get_games_by_opening(conn, username, eco, limit)
+    finally:
+        conn.close()
+    
+    if not games:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No games found for {username} with opening {eco}."
+        )
+    
+    return [GameDetail(**g) for g in games]
 
