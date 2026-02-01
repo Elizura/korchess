@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -21,6 +21,14 @@ interface ImportResponse {
   skipped: number;
 }
 
+interface ImportStatus {
+  username: string;
+  imported_at: string | null;
+  last_imported: number | null;
+  last_skipped: number | null;
+  total_games: number;
+}
+
 type ColorFilter = "all" | "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 
@@ -34,6 +42,12 @@ export default function Home() {
   const [timeClassFilter, setTimeClassFilter] =
     useState<TimeClassFilter>("all");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
+  const [hideUnknown, setHideUnknown] = useState(false);
+  const [sortConfig, setSortConfig] = useState<{
+    key: keyof OpeningStats;
+    direction: "asc" | "desc";
+  }>({ key: "games", direction: "desc" });
 
   const fetchReport = async (
     user: string,
@@ -53,6 +67,18 @@ export default function Home() {
       throw new Error(data.detail || `Failed to fetch report: ${response.status}`);
     }
 
+    return response.json();
+  };
+
+  const fetchImportStatus = async (user: string) => {
+    const response = await fetch(
+      `${API_BASE_URL}/api/import-status/lichess/${encodeURIComponent(user)}`
+    );
+    
+    if (!response.ok) {
+      return null; // Silently handle - not critical
+    }
+    
     return response.json();
   };
 
@@ -93,6 +119,12 @@ export default function Home() {
         timeClassFilter
       );
       setReport(reportData);
+
+      // Fetch import status
+      const status = await fetchImportStatus(username.trim());
+      if (status) {
+        setImportStatus(status);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -113,6 +145,12 @@ export default function Home() {
         timeClassFilter
       );
       setReport(reportData);
+      
+      // Also fetch status
+      const status = await fetchImportStatus(currentUsername);
+      if (status) {
+        setImportStatus(status);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -137,6 +175,12 @@ export default function Home() {
           newTimeClass
         );
         setReport(reportData);
+        
+        // Also fetch status
+        const status = await fetchImportStatus(currentUsername);
+        if (status) {
+          setImportStatus(status);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "An error occurred");
       } finally {
@@ -144,6 +188,44 @@ export default function Home() {
       }
     }
   };
+
+  const handleSort = (key: keyof OpeningStats) => {
+    let direction: "asc" | "desc" = "desc";
+    if (sortConfig.key === key && sortConfig.direction === "desc") {
+      direction = "asc";
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // Process report: filter -> sort
+  const processedReport = useMemo(() => {
+    if (!report) return null;
+    
+    // Step 1: Filter (hide unknown)
+    let filtered = hideUnknown
+      ? report.filter(
+          (row) => row.eco !== "UNKNOWN" && row.opening_name !== "Unknown"
+        )
+      : report;
+    
+    // Step 2: Sort
+    const sorted = [...filtered].sort((a, b) => {
+      const aVal = a[sortConfig.key];
+      const bVal = b[sortConfig.key];
+      
+      if (typeof aVal === "string" && typeof bVal === "string") {
+        return sortConfig.direction === "asc"
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
+      }
+      
+      return sortConfig.direction === "asc"
+        ? (aVal as number) - (bVal as number)
+        : (bVal as number) - (aVal as number);
+    });
+    
+    return sorted;
+  }, [report, hideUnknown, sortConfig]);
 
   return (
     <main className="max-w-6xl mx-auto p-6">
@@ -212,25 +294,33 @@ export default function Home() {
       {currentUsername && (
         <div className="bg-white rounded-lg shadow p-6 mb-6">
           <div className="flex flex-wrap gap-4 items-center">
+            {/* Color Tabs */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
                 Color
               </label>
-              <select
-                value={colorFilter}
-                onChange={(e) =>
-                  handleFilterChange(
-                    e.target.value as ColorFilter,
-                    timeClassFilter
-                  )
-                }
-                className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                disabled={loading}
-              >
-                <option value="all">All</option>
-                <option value="white">White</option>
-                <option value="black">Black</option>
-              </select>
+              <div className="flex gap-1 bg-gray-100 rounded-md p-1">
+                {[
+                  { value: "all", label: "All" },
+                  { value: "white", label: "As White" },
+                  { value: "black", label: "As Black" },
+                ].map((tab) => (
+                  <button
+                    key={tab.value}
+                    onClick={() =>
+                      handleFilterChange(tab.value as ColorFilter, timeClassFilter)
+                    }
+                    disabled={loading}
+                    className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+                      colorFilter === tab.value
+                        ? "bg-white text-blue-600 shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -253,6 +343,20 @@ export default function Home() {
                 <option value="classical">Classical</option>
               </select>
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Options
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hideUnknown}
+                  onChange={(e) => setHideUnknown(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">Hide UNKNOWN</span>
+              </label>
+            </div>
             <div className="flex items-end">
               <button
                 onClick={handleRefresh}
@@ -273,6 +377,37 @@ export default function Home() {
         </div>
       )}
 
+      {/* Data Freshness Line */}
+      {importStatus && currentUsername && !loading && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+          {importStatus.imported_at ? (
+            <p className="text-sm text-blue-900">
+              Report generated from{" "}
+              <strong>{importStatus.total_games}</strong> games
+              {importStatus.total_games > 0 && (
+                <>
+                  {" "}(last import:{" "}
+                  {new Date(importStatus.imported_at).toLocaleString("en-US", {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                  {importStatus.last_imported === 0 && 
+                    `, imported: 0, skipped: ${importStatus.last_skipped}`
+                  })
+                </>
+              )}
+            </p>
+          ) : (
+            <p className="text-sm text-blue-900">
+              No imports yet for <strong>{currentUsername}</strong>
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Results Table */}
       {report && !loading && (
         <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -280,28 +415,33 @@ export default function Home() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Opening (ECO)
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Games
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Wins
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Draws
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Losses
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Score %
-                  </th>
+                  {[
+                    { key: "eco" as const, label: "Opening (ECO)", align: "left" },
+                    { key: "games" as const, label: "Games", align: "right" },
+                    { key: "wins" as const, label: "Wins", align: "right" },
+                    { key: "draws" as const, label: "Draws", align: "right" },
+                    { key: "losses" as const, label: "Losses", align: "right" },
+                    { key: "score_pct" as const, label: "Score %", align: "right" },
+                  ].map((col) => (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      className={`px-6 py-3 text-${col.align} text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors`}
+                    >
+                      <div className={`flex items-center gap-1 ${col.align === "right" ? "justify-end" : ""}`}>
+                        <span>{col.label}</span>
+                        {sortConfig.key === col.key && (
+                          <span className="text-blue-600">
+                            {sortConfig.direction === "asc" ? "▲" : "▼"}
+                          </span>
+                        )}
+                      </div>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {report.map((opening, idx) => (
+                {processedReport && processedReport.map((opening, idx) => (
                   <tr key={`${opening.eco}-${idx}`} className="hover:bg-gray-50">
                     <td className="px-6 py-4">
                       <div className="font-medium text-gray-900">
@@ -341,7 +481,7 @@ export default function Home() {
               </tbody>
             </table>
           </div>
-          {report.length === 0 && (
+          {processedReport && processedReport.length === 0 && (
             <div className="p-8 text-center text-gray-500">
               No games found with the selected filters.
             </div>

@@ -57,6 +57,18 @@ def init_db(db_path: Optional[str] = None) -> None:
         ON games(username, color, time_class)
     """)
 
+    # Create imports table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS imports (
+            username TEXT PRIMARY KEY,
+            site TEXT NOT NULL,
+            imported INTEGER NOT NULL,
+            skipped INTEGER NOT NULL,
+            max_games INTEGER NOT NULL,
+            imported_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -77,7 +89,7 @@ def upsert_game(conn: sqlite3.Connection, game_row: dict) -> bool:
         """, (
             game_row["site"],
             game_row["site_game_id"],
-            game_row["username"],
+            game_row["username"].strip().lower(),
             game_row.get("played_at"),
             game_row.get("time_class"),
             game_row.get("color"),
@@ -159,3 +171,57 @@ def get_openings_stats(
         })
 
     return results
+
+
+def upsert_import_status(
+    conn: sqlite3.Connection,
+    username: str,
+    site: str,
+    imported: int,
+    skipped: int,
+    max_games: int,
+    imported_at: str
+) -> None:
+    """Record import status for a user."""
+    cursor = conn.cursor()
+    canonical_username = username.strip().lower()
+    cursor.execute("""
+        INSERT OR REPLACE INTO imports 
+        (username, site, imported, skipped, max_games, imported_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (canonical_username, site, imported, skipped, max_games, imported_at))
+
+
+def get_import_status(
+    conn: sqlite3.Connection,
+    username: str,
+    site: str = "lichess"
+) -> dict:
+    """Get last import status + total games count for a user."""
+    cursor = conn.cursor()
+    canonical_username = username.strip().lower()
+    
+    # Get import record
+    cursor.execute("""
+        SELECT imported, skipped, max_games, imported_at
+        FROM imports
+        WHERE LOWER(username) = ? AND site = ?
+    """, (canonical_username, site))
+    import_row = cursor.fetchone()
+    
+    # Get total games count
+    cursor.execute("""
+        SELECT COUNT(*) as total
+        FROM games
+        WHERE LOWER(username) = ? AND site = ?
+    """, (canonical_username, site))
+    total_row = cursor.fetchone()
+    
+    return {
+        "username": username,
+        "imported_at": import_row["imported_at"] if import_row else None,
+        "last_imported": import_row["imported"] if import_row else None,
+        "last_skipped": import_row["skipped"] if import_row else None,
+        "total_games": total_row["total"] if total_row else 0
+    }
+

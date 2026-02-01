@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from db import get_connection, init_db, upsert_game, get_openings_stats
+from db import get_connection, init_db, upsert_game, get_openings_stats, upsert_import_status, get_import_status
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 
 app = FastAPI(
@@ -49,6 +49,15 @@ class OpeningStats(BaseModel):
     draws: int
     losses: int
     score_pct: float
+
+
+class ImportStatusResponse(BaseModel):
+    """Response for import status endpoint."""
+    username: str
+    imported_at: str | None
+    last_imported: int | None
+    last_skipped: int | None
+    total_games: int
 
 
 @app.on_event("startup")
@@ -109,6 +118,15 @@ async def import_lichess_games(request: ImportRequest):
             else:
                 skipped += 1
         conn.commit()
+        
+        # Record import status
+        from datetime import datetime, timezone
+        imported_at = datetime.now(timezone.utc).isoformat()
+        upsert_import_status(
+            conn, username, "lichess", 
+            imported, skipped, max_games, imported_at
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -147,3 +165,21 @@ async def get_openings_report(
         )
 
     return [OpeningStats(**s) for s in stats]
+
+
+@app.get("/api/import-status/lichess/{username}", response_model=ImportStatusResponse)
+async def get_import_status_endpoint(username: str):
+    """Get last import status and total games count for a user."""
+    username = username.strip()
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    
+    conn = get_connection()
+    try:
+        status = get_import_status(conn, username, "lichess")
+    finally:
+        conn.close()
+    
+    return ImportStatusResponse(**status)
+
