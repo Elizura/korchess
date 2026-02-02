@@ -33,6 +33,18 @@ interface ImportStatus {
 type ColorFilter = "all" | "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 
+// Helper to parse opening name
+const parseOpeningName = (fullName: string) => {
+  const separators = [': ', ' – ', ', '];
+  for (const sep of separators) {
+    if (fullName.includes(sep)) {
+      const parts = fullName.split(sep);
+      return { main: parts[0].trim(), variation: parts.slice(1).join(sep).trim() };
+    }
+  }
+  return { main: fullName, variation: null };
+};
+
 export default function Home() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -502,12 +514,24 @@ export default function Home() {
                         className="cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
                       >
                         <td className="px-6 py-4">
-                          <div className="font-mono text-sm font-semibold">
-                            {opening.eco}
-                          </div>
-                          <div className="text-sm text-[color:var(--zen-muted)]">
-                            {opening.opening_name}
-                          </div>
+                          {(() => {
+                            const parsed = parseOpeningName(opening.opening_name);
+                            return (
+                              <>
+                                <div className="font-medium text-sm flex items-center gap-2">
+                                  {parsed.main}
+                                  <span className="zen-pill px-1.5 py-0.5 text-[10px] font-mono text-[color:var(--zen-muted)]">
+                                    {opening.eco}
+                                  </span>
+                                </div>
+                                {parsed.variation && (
+                                  <div className="text-sm text-[color:var(--zen-muted)] mt-0.5">
+                                    {parsed.variation}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
                         </td>
                         <td className="px-6 py-4 text-right tabular-nums">
                           {opening.games}

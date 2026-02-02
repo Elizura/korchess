@@ -230,16 +230,70 @@ def get_games_by_opening(
     conn: sqlite3.Connection,
     username: str,
     eco: str,
+    color: str = "all",
+    time_class: str = "all",
+    result: str = "all",
+    offset: int = 0,
     limit: int = 10
-) -> list[dict]:
+) -> dict:
     """
-    Get most recent games for a user and opening.
-    Returns games sorted by played_at DESC (nulls last), then id DESC.
+    Get games and summary stats for a user and opening.
+    Returns both summary and paginated games.
     """
     cursor = conn.cursor()
     canonical_username = username.strip().lower()
     
-    query = """
+    # Build base WHERE clause (for summary - no result filter)
+    base_where_conditions = [
+        "LOWER(username) = ?",
+        "eco = ?",
+        "site_game_id IS NOT NULL",
+        "site_game_id != ''"
+    ]
+    base_params = [canonical_username, eco]
+    
+    if color != "all":
+        base_where_conditions.append("color = ?")
+        base_params.append(color)
+    
+    if time_class != "all":
+        base_where_conditions.append("time_class = ?")
+        base_params.append(time_class)
+    
+    base_where_clause = " AND ".join(base_where_conditions)
+    
+    # Get summary stats (UNFILTERED by result)
+    summary_query = f"""
+        SELECT 
+            COUNT(*) as total_games,
+            SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN result = 'draw' THEN 1 ELSE 0 END) as draws,
+            SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) as losses
+        FROM games
+        WHERE {base_where_clause}
+    """
+    
+    cursor.execute(summary_query, base_params)
+    summary_row = cursor.fetchone()
+    
+    total_games = summary_row["total_games"] or 0
+    wins = summary_row["wins"] or 0
+    draws = summary_row["draws"] or 0
+    losses = summary_row["losses"] or 0
+    score_pct = ((wins + 0.5 * draws) / total_games * 100) if total_games > 0 else 0.0
+    
+    # Build games WHERE clause (includes result filter)
+    games_where_conditions = base_where_conditions.copy()
+    games_params = base_params.copy()
+    
+    if result != "all":
+        games_where_conditions.append("result = ?")
+        games_params.append(result)
+    
+    games_where_clause = " AND ".join(games_where_conditions)
+    
+    # Get paginated games (FILTERED by result)
+    games_query = f"""
         SELECT 
             site_game_id,
             played_at,
@@ -248,23 +302,20 @@ def get_games_by_opening(
             opponent,
             opening_name
         FROM games
-        WHERE LOWER(username) = ? 
-          AND eco = ?
-          AND site_game_id IS NOT NULL
-          AND site_game_id != ''
+        WHERE {games_where_clause}
         ORDER BY 
             CASE WHEN played_at IS NULL THEN 1 ELSE 0 END,
             played_at DESC,
             id DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
     """
     
-    cursor.execute(query, (canonical_username, eco, limit))
+    cursor.execute(games_query, games_params + [limit, offset])
     rows = cursor.fetchall()
     
-    results = []
+    games = []
     for row in rows:
-        results.append({
+        games.append({
             "site_game_id": row["site_game_id"],
             "played_at": row["played_at"],
             "color": row["color"],
@@ -274,5 +325,14 @@ def get_games_by_opening(
             "lichess_url": f"https://lichess.org/{row['site_game_id']}"
         })
     
-    return results
+    return {
+        "summary": {
+            "total_games": total_games,
+            "wins": wins,
+            "draws": draws,
+            "losses": losses,
+            "score_pct": round(score_pct, 1)
+        },
+        "games": games
+    }
 

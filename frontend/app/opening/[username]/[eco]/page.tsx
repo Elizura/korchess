@@ -17,6 +17,42 @@ interface GameDetail {
   lichess_url: string;
 }
 
+interface OpeningSummary {
+  total_games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score_pct: number;
+}
+
+interface OpeningGamesResponse {
+  summary: OpeningSummary;
+  games: GameDetail[];
+}
+
+type ColorFilter = "all" | "white" | "black";
+type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
+type ResultFilter = "all" | "win" | "draw" | "loss";
+
+// Helper to parse opening name
+const parseOpeningName = (fullName: string) => {
+  // Common pattern: "Main Opening: Variation" or "Main Opening, Variation"
+  const separators = [': ', ' – ', ', '];
+  
+  for (const sep of separators) {
+    if (fullName.includes(sep)) {
+      const parts = fullName.split(sep);
+      return {
+        main: parts[0].trim(),
+        variation: parts.slice(1).join(sep).trim()
+      };
+    }
+  }
+  
+  // No separator found, entire name is the main opening
+  return { main: fullName, variation: null };
+};
+
 export default function OpeningDetailPage() {
   const params = useParams();
   const username = params.username as string;
@@ -26,40 +62,68 @@ export default function OpeningDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openingName, setOpeningName] = useState<string>("");
+  const [summary, setSummary] = useState<OpeningSummary | null>(null);
+  const [colorFilter, setColorFilter] = useState<ColorFilter>("all");
+  const [timeClassFilter, setTimeClassFilter] = useState<TimeClassFilter>("all");
+  const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const fetchGames = async (resetOffset: boolean = false) => {
+    const currentOffset = resetOffset ? 0 : offset;
+    setLoading(resetOffset);
+    setLoadingMore(!resetOffset);
+    setError(null);
+
+    try {
+      const params = new URLSearchParams({
+        eco: eco,
+        color: colorFilter,
+        time_class: timeClassFilter,
+        result: resultFilter,
+        offset: currentOffset.toString(),
+        limit: "10"
+      });
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/games/lichess/${encodeURIComponent(username)}?${params}`
+      );
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || `Failed to fetch games: ${response.status}`);
+      }
+
+      const data: OpeningGamesResponse = await response.json();
+      
+      if (resetOffset) {
+        setGames(data.games);
+        setOffset(data.games.length);
+      } else {
+        setGames((prev) => [...(prev || []), ...data.games]);
+        setOffset((prev) => prev + data.games.length);
+      }
+      
+      setSummary(data.summary);
+      setHasMore(data.games.length === 10);
+      
+      if (data.games.length > 0) {
+        setOpeningName(data.games[0].opening_name);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchGames = async () => {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const response = await fetch(
-          `${API_BASE_URL}/api/games/lichess/${encodeURIComponent(username)}?eco=${encodeURIComponent(eco)}&limit=10`
-        );
-
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.detail || `Failed to fetch games: ${response.status}`);
-        }
-
-        const data: GameDetail[] = await response.json();
-        setGames(data);
-        
-        // Set opening name from first game
-        if (data.length > 0) {
-          setOpeningName(data[0].opening_name);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "An error occurred");
-      } finally {
-        setLoading(false);
-      }
-    };
-
     if (username && eco) {
-      fetchGames();
+      fetchGames(true);
     }
-  }, [username, eco]);
+  }, [username, eco, colorFilter, timeClassFilter, resultFilter]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";
@@ -86,6 +150,8 @@ export default function OpeningDetailPage() {
     return result.charAt(0).toUpperCase() + result.slice(1);
   };
 
+  const parsedOpening = openingName ? parseOpeningName(openingName) : null;
+
   return (
     <main className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
@@ -97,18 +163,127 @@ export default function OpeningDetailPage() {
         </Link>
 
         <h1 className="mt-5 text-2xl sm:text-3xl font-semibold tracking-tight">
-          <span className="font-mono">{eco}</span>{" "}
-          {openingName && (
-            <span className="text-[color:var(--zen-text)]">– {openingName}</span>
+          {parsedOpening ? (
+            <>
+              {parsedOpening.main}
+              {parsedOpening.variation && (
+                <span className="block mt-1 text-lg sm:text-xl font-normal text-[color:var(--zen-muted)]">
+                  {parsedOpening.variation}
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="font-mono">{eco}</span>
           )}
         </h1>
-        <p className="mt-2 text-sm text-[color:var(--zen-muted)]">
-          Recent games for{" "}
-          <span className="text-[color:var(--zen-text)] font-medium">
-            {username}
-          </span>
+        <p className="text-sm text-[color:var(--zen-muted)] mt-2 flex items-center gap-2">
+          <span className="zen-pill px-2 py-0.5 text-xs font-mono">{eco}</span>
+          <span>Recent games for {username}</span>
         </p>
       </div>
+
+      {/* Summary Stats - Now Clickable Filter Tiles */}
+      {summary && !loading && (
+        <div className="zen-surface-flat p-4 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-center">
+            {/* Games tile */}
+            <button
+              onClick={() => setResultFilter("all")}
+              className={`p-3 rounded-lg transition cursor-pointer ${
+                resultFilter === "all"
+                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-accent)]"
+                  : "hover:bg-[color:var(--zen-surface)]"
+              }`}
+            >
+              <div className="text-2xl font-semibold">{summary.total_games}</div>
+              <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Games</div>
+            </button>
+
+            {/* Wins tile */}
+            <button
+              onClick={() => setResultFilter("win")}
+              className={`p-3 rounded-lg transition cursor-pointer ${
+                resultFilter === "win"
+                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-success)]"
+                  : "hover:bg-[color:var(--zen-surface)]"
+              }`}
+            >
+              <div className="text-2xl font-semibold text-[color:var(--zen-success)]">{summary.wins}</div>
+              <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Wins</div>
+            </button>
+
+            {/* Draws tile */}
+            <button
+              onClick={() => setResultFilter("draw")}
+              className={`p-3 rounded-lg transition cursor-pointer ${
+                resultFilter === "draw"
+                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-border)]"
+                  : "hover:bg-[color:var(--zen-surface)]"
+              }`}
+            >
+              <div className="text-2xl font-semibold text-[color:var(--zen-muted)]">{summary.draws}</div>
+              <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Draws</div>
+            </button>
+
+            {/* Losses tile */}
+            <button
+              onClick={() => setResultFilter("loss")}
+              className={`p-3 rounded-lg transition cursor-pointer ${
+                resultFilter === "loss"
+                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-danger)]"
+                  : "hover:bg-[color:var(--zen-surface)]"
+              }`}
+            >
+              <div className="text-2xl font-semibold text-[color:var(--zen-danger)]">{summary.losses}</div>
+              <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Losses</div>
+            </button>
+
+            {/* Score tile - NOT clickable */}
+            <div className="p-3 rounded-lg">
+              <div className="text-2xl font-semibold">{summary.score_pct.toFixed(1)}%</div>
+              <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Score</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      {!loading && (
+        <div className="mb-6 flex flex-wrap gap-3 items-center">
+          {/* Color tabs */}
+          <div className="zen-pill p-1 flex gap-1">
+            {[
+              { value: "all" as const, label: "All" },
+              { value: "white" as const, label: "As White" },
+              { value: "black" as const, label: "As Black" },
+            ].map((tab) => (
+              <button
+                key={tab.value}
+                onClick={() => setColorFilter(tab.value)}
+                className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${
+                  colorFilter === tab.value
+                    ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
+                    : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Time control */}
+          <select
+            value={timeClassFilter}
+            onChange={(e) => setTimeClassFilter(e.target.value as TimeClassFilter)}
+            className="zen-input px-3 py-1.5 text-sm outline-none"
+          >
+            <option value="all">All time controls</option>
+            <option value="blitz">Blitz</option>
+            <option value="rapid">Rapid</option>
+            <option value="classical">Classical</option>
+          </select>
+        </div>
+      )}
 
       {/* Loading */}
       {loading && (
@@ -181,6 +356,19 @@ export default function OpeningDetailPage() {
             </div>
           ))}
           </div>
+        </div>
+      )}
+
+      {/* Load More */}
+      {hasMore && games && games.length > 0 && !loading && (
+        <div className="mt-6 text-center">
+          <button
+            onClick={() => fetchGames(false)}
+            disabled={loadingMore}
+            className="zen-pill px-6 py-2.5 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition disabled:opacity-50"
+          >
+            {loadingMore ? "Loading..." : "Load more games"}
+          </button>
         </div>
       )}
 

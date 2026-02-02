@@ -71,6 +71,21 @@ class GameDetail(BaseModel):
     lichess_url: str
 
 
+class OpeningSummary(BaseModel):
+    """Summary stats for an opening."""
+    total_games: int
+    wins: int
+    draws: int
+    losses: int
+    score_pct: float
+
+
+class OpeningGamesResponse(BaseModel):
+    """Response with summary and games."""
+    summary: OpeningSummary
+    games: list[GameDetail]
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize database on startup."""
@@ -195,13 +210,17 @@ async def get_import_status_endpoint(username: str):
     return ImportStatusResponse(**status)
 
 
-@app.get("/api/games/lichess/{username}", response_model=list[GameDetail])
+@app.get("/api/games/lichess/{username}", response_model=OpeningGamesResponse)
 async def get_games_for_opening(
     username: str,
     eco: str = Query(..., description="ECO code for the opening"),
+    color: str = Query(default="all", regex="^(all|white|black)$"),
+    time_class: str = Query(default="all", regex="^(all|blitz|rapid|classical)$"),
+    result: str = Query(default="all", regex="^(all|win|draw|loss)$"),
+    offset: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=50)
 ):
-    """Get recent games for a user and opening."""
+    """Get recent games and summary for a user and opening with filters."""
     username = username.strip()
     
     if not username:
@@ -212,15 +231,17 @@ async def get_games_for_opening(
     
     conn = get_connection()
     try:
-        games = get_games_by_opening(conn, username, eco, limit)
+        result_data = get_games_by_opening(
+            conn, username, eco, color, time_class, result, offset, limit
+        )
     finally:
         conn.close()
     
-    if not games:
+    if result_data["summary"]["total_games"] == 0:
         raise HTTPException(
             status_code=404,
             detail=f"No games found for {username} with opening {eco}."
         )
     
-    return [GameDetail(**g) for g in games]
+    return OpeningGamesResponse(**result_data)
 
