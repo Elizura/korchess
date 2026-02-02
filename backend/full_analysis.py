@@ -11,7 +11,7 @@ from dataclasses import dataclass, asdict
 
 STOCKFISH_PATH = "/usr/games/stockfish"
 DEFAULT_DEPTH = 18
-DEFAULT_TIME_MS = 200  # ~0.2s per position
+DEFAULT_TIME_MS = 2000  # ~0.2s per position
 
 
 @dataclass
@@ -69,8 +69,14 @@ def classify_move(cp_loss: Optional[int]) -> Optional[str]:
 
 
 def score_to_dict(score: chess.engine.PovScore, perspective: chess.Color) -> dict:
-    """Convert engine score to dict from given perspective."""
-    # Get score from the perspective color's point of view
+    """
+    Convert engine score to dict from given perspective.
+    
+    IMPORTANT: Always pass chess.WHITE to get stable evaluations.
+    - Positive = good for White
+    - Negative = good for Black
+    This prevents evaluation sign from flipping based on side-to-move.
+    """
     pov_score = score.pov(perspective)
     
     if pov_score.is_mate():
@@ -82,7 +88,14 @@ def score_to_dict(score: chess.engine.PovScore, perspective: chess.Color) -> dic
 
 
 def score_to_cp(score: chess.engine.PovScore, perspective: chess.Color) -> int:
-    """Convert engine score to centipawns from given perspective. Mate = ±10000."""
+    """
+    Convert engine score to centipawns from given perspective. Mate = ±10000.
+    
+    IMPORTANT: Always pass chess.WHITE to get stable evaluations.
+    - Positive = good for White
+    - Negative = good for Black
+    This prevents evaluation sign from flipping based on side-to-move.
+    """
     pov_score = score.pov(perspective)
     
     if pov_score.is_mate():
@@ -168,7 +181,8 @@ def run_full_analysis(
                     pv_score = info.get("score")
                     pv_moves = info.get("pv", [])
                     if pv_score:
-                        score_dict = score_to_dict(pv_score, side_to_move)
+                        # Always use White POV for stable evaluations
+                        score_dict = score_to_dict(pv_score, chess.WHITE)
                         score_dict["depth"] = info.get("depth", depth)
                         multi_pv_data.append({
                             **score_dict,
@@ -184,9 +198,10 @@ def run_full_analysis(
             score_before = main_info.get("score") if main_info else None
             
             if score_before:
-                eval_before_dict = score_to_dict(score_before, side_to_move)
+                # Always use White POV for stable evaluations
+                eval_before_dict = score_to_dict(score_before, chess.WHITE)
                 eval_before_dict["depth"] = main_info.get("depth", depth)
-                eval_before_cp = score_to_cp(score_before, side_to_move)
+                eval_before_cp = score_to_cp(score_before, chess.WHITE)
             else:
                 eval_before_dict = None
                 eval_before_cp = 0
@@ -217,26 +232,28 @@ def run_full_analysis(
             score_after = info_after.get("score") if info_after else None
             
             if score_after:
-                # Eval after is from opponent's perspective, so we flip
-                eval_after_dict = score_to_dict(score_after, not side_to_move)
+                # Always use White POV for stable evaluations
+                eval_after_dict = score_to_dict(score_after, chess.WHITE)
                 eval_after_dict["depth"] = info_after.get("depth", depth)
-                # For cp_loss calculation, get from original side's perspective
-                eval_after_cp = -score_to_cp(score_after, side_to_move)
+                eval_after_cp = score_to_cp(score_after, chess.WHITE)
             else:
                 eval_after_dict = None
                 eval_after_cp = 0
             
             # Calculate CP loss (how much worse than best move)
             # If played move is best move, cp_loss = 0
-            # Otherwise, cp_loss = eval_before - eval_after (from mover's perspective)
+            # Otherwise, calculate loss from the mover's perspective:
+            # - For White: loss = eval_before - eval_after (White eval should drop if bad move)
+            # - For Black: loss = eval_after - eval_before (White eval should rise if Black makes bad move)
             if best_move and move == best_move:
                 cp_loss = 0
             elif eval_before_dict and eval_after_dict:
-                # The loss is: how much the evaluation dropped
-                # eval_before is "position is +X for me"
-                # eval_after (from my perspective) = -eval_after (from opponent's perspective after my move)
-                # Actually, eval_after_cp is already from original side perspective (negated above)
-                cp_loss = eval_before_cp - eval_after_cp
+                if side_to_move == chess.WHITE:
+                    # White's perspective: loss when eval drops
+                    cp_loss = eval_before_cp - eval_after_cp
+                else:
+                    # Black's perspective: loss when White's eval rises
+                    cp_loss = eval_after_cp - eval_before_cp
                 cp_loss = max(0, cp_loss)  # Loss should be non-negative
             else:
                 cp_loss = None
@@ -340,7 +357,6 @@ def evaluate_position(
         Dict with eval, pv, and multipv data
     """
     board = chess.Board(fen)
-    side_to_move = board.turn
     
     engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
     
@@ -361,7 +377,8 @@ def evaluate_position(
                 score = line_info.get("score")
                 pv = line_info.get("pv", [])
                 if score:
-                    score_dict = score_to_dict(score, side_to_move)
+                    # Always use White POV for stable evaluations
+                    score_dict = score_to_dict(score, chess.WHITE)
                     score_dict["depth"] = line_info.get("depth", depth)
                     
                     # Convert PV to SAN
@@ -391,7 +408,8 @@ def evaluate_position(
             pv = info.get("pv", [])
             
             if score:
-                score_dict = score_to_dict(score, side_to_move)
+                # Always use White POV for stable evaluations
+                score_dict = score_to_dict(score, chess.WHITE)
                 score_dict["depth"] = info.get("depth", depth)
                 
                 # Convert PV to SAN

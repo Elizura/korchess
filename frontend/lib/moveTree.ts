@@ -390,6 +390,7 @@ export function buildTreeFromAnalysis(
     pv?: string[];
     classification?: string | null;
     cp_loss?: number | null;
+    multi_pv?: Array<{ cp?: number; mate?: number; depth?: number; pv: string[] }>;
   }>,
   startFen?: string
 ): MoveTree {
@@ -397,12 +398,34 @@ export function buildTreeFromAnalysis(
   const initialFen = startFen || (moves.length > 0 ? moves[0].fen_before : undefined);
   let tree = createMoveTree(initialFen);
   
+  // Set eval on root node from first move's eval_before and multi_pv
+  if (moves.length > 0 && moves[0].eval_before) {
+    const rootNode = tree.nodes.get(tree.rootId);
+    if (rootNode) {
+      const updatedRoot: MoveNode = {
+        ...rootNode,
+        eval: {
+          cp: moves[0].eval_before.cp ?? undefined,
+          mate: moves[0].eval_before.mate ?? undefined,
+          depth: moves[0].eval_before.depth || 0,
+          multiPv: moves[0].multi_pv, // Include multi-PV lines for starting position
+        },
+        bestMove: moves[0].best_move_uci && moves[0].best_move_san ? {
+          uci: moves[0].best_move_uci,
+          san: moves[0].best_move_san,
+        } : undefined,
+      };
+      tree.nodes.set(tree.rootId, updatedRoot);
+    }
+  }
+  
   for (const move of moves) {
     const evalData: EvalData | undefined = move.eval_after ? {
       cp: move.eval_after.cp ?? undefined,
       mate: move.eval_after.mate ?? undefined,
       depth: move.eval_after.depth || 0,
       pv: move.pv,
+      multiPv: move.multi_pv,
     } : undefined;
     
     const bestMove = move.best_move_uci && move.best_move_san ? {
