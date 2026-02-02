@@ -71,6 +71,14 @@ body {
     backdrop-filter: blur(10px);
   }
 
+  /* NOTE: Effects like backdrop-filter can break drag positioning for some
+     libraries (e.g. chess piece drag “ghost” offset). Use this modifier on
+     containers that host drag UIs. */
+  .zen-surface-no-backdrop {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
   .zen-surface-flat {
     background: var(--zen-surface);
     border: 1px solid var(--zen-border);

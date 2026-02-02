@@ -384,6 +384,13 @@ export default function GameAnalyzerPage() {
     }
   };
 
+  // Auto-start analysis if missing
+  useEffect(() => {
+    if (analysisStatus === "missing" && !analyzing && game) {
+      runAnalysis();
+    }
+  }, [analysisStatus, analyzing, game]);
+
   // Format date
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";
@@ -444,7 +451,7 @@ export default function GameAnalyzerPage() {
               {game?.opening_name || "Game Analysis"}
             </h1>
             <p className="text-sm text-[color:var(--zen-muted)]">
-              {username} vs {game?.opponent || "Unknown"} • {formatDate(game?.played_at)}
+              {username} vs {game?.opponent || "Unknown"} • {formatDate(game?.played_at ?? null)}
               <span
                 className={`ml-2 font-medium ${
                   game?.result === "win"
@@ -473,7 +480,7 @@ export default function GameAnalyzerPage() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Left: Board + Eval Bar */}
           <div className="lg:col-span-7">
-            <div className="zen-surface p-4">
+            <div className="zen-surface zen-surface-no-backdrop p-4">
               <div className="flex gap-3">
                 {/* Eval bar */}
                 <EvalBar eval={currentEval} orientation={orientation} height={480} />

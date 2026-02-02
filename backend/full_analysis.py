@@ -11,7 +11,7 @@ from dataclasses import dataclass, asdict
 
 STOCKFISH_PATH = "/usr/games/stockfish"
 DEFAULT_DEPTH = 18
-DEFAULT_TIME_MS = 2000  # ~0.2s per position
+DEFAULT_TIME_MS = 1000  # ~0.2s per position
 
 
 @dataclass
