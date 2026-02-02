@@ -274,284 +274,290 @@ export default function Home() {
   }, [report, hideUnknown, sortConfig]);
 
   return (
-    <main className="max-w-6xl mx-auto p-6">
-      <h1 className="text-3xl font-bold text-gray-900 mb-2">Openingscope</h1>
-      <p className="text-gray-600 mb-8">
-        Analyze your chess opening performance from Lichess games
-      </p>
+    <main className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
+      <div className="mb-6">
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">
+          Openingscope
+        </h1>
+        <p className="mt-2 text-sm sm:text-base text-[color:var(--zen-muted)]">
+          Analyze your chess opening performance from Lichess games
+        </p>
+      </div>
 
-      {/* Input Section */}
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <div className="flex flex-col sm:flex-row gap-4">
+      <div className="zen-surface p-5 sm:p-6">
+        {/* Input row */}
+        <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
           <div className="flex-1">
             <label
               htmlFor="username"
-              className="block text-sm font-medium text-gray-700 mb-1"
+              className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2"
             >
-              Lichess Username
+              Lichess username
             </label>
-            <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleImport()}
-              placeholder="Enter username..."
-              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              disabled={loading}
-            />
-          </div>
-          <div className="flex items-end">
-            <button
-              onClick={handleImport}
-              disabled={loading || !username.trim()}
-              className="w-full sm:w-auto px-6 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? "Loading..." : "Import Games"}
-            </button>
+            <div className="flex items-center gap-3">
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleImport()}
+                placeholder="e.g. elizura"
+                className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
+                disabled={loading}
+              />
+              <button
+                onClick={handleImport}
+                disabled={loading || !username.trim()}
+                className="shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] bg-[color:var(--zen-accent)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
+              >
+                {loading ? "Loading..." : "Import Games"}
+              </button>
+            </div>
           </div>
         </div>
 
         {/* Import Result */}
         {importResult && (
-          <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md">
-            <p className="text-green-800">
-              Imported <strong>{importResult.imported}</strong> games for{" "}
-              <strong>{importResult.username}</strong>
-              {importResult.skipped > 0 && (
-                <span className="text-green-600">
-                  {" "}
-                  ({importResult.skipped} skipped)
-                </span>
-              )}
+          <div className="mt-4 zen-surface-flat px-4 py-3">
+            <p className="text-sm">
+              <span className="text-[color:var(--zen-success)] font-semibold">
+                Imported {importResult.imported}
+              </span>{" "}
+              <span className="text-[color:var(--zen-muted)]">
+                for <span className="text-[color:var(--zen-text)] font-medium">{importResult.username}</span>
+                {importResult.skipped > 0 ? ` (${importResult.skipped} skipped)` : ""}
+              </span>
             </p>
           </div>
         )}
-      </div>
 
-      {/* Error Display */}
-      {error && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-md">
-          <p className="text-red-800">{error}</p>
-        </div>
-      )}
+        {/* Error Display */}
+        {error && (
+          <div className="mt-4 zen-surface-flat px-4 py-3 border-[color:var(--zen-danger)]/30">
+            <p className="text-sm text-[color:var(--zen-danger)]">{error}</p>
+          </div>
+        )}
 
-      {/* Filters */}
-      {currentUsername && (
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <div className="flex flex-wrap gap-4 items-center">
-            {/* Color Tabs */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Color
-              </label>
-              <div className="flex gap-1 bg-gray-100 rounded-md p-1">
+        {/* Toolbar */}
+        {currentUsername && (
+          <div className="mt-6 flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="zen-pill p-1 flex gap-1">
                 {[
                   { value: "all", label: "All" },
                   { value: "white", label: "As White" },
                   { value: "black", label: "As Black" },
-                ].map((tab) => (
-                  <button
-                    key={tab.value}
-                    onClick={() =>
-                      handleFilterChange(tab.value as ColorFilter, timeClassFilter)
-                    }
-                    disabled={loading}
-                    className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
-                      colorFilter === tab.value
-                        ? "bg-white text-blue-600 shadow-sm"
-                        : "text-gray-600 hover:text-gray-900"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
+                ].map((tab) => {
+                  const active = colorFilter === tab.value;
+                  return (
+                    <button
+                      key={tab.value}
+                      onClick={() =>
+                        handleFilterChange(tab.value as ColorFilter, timeClassFilter)
+                      }
+                      disabled={loading}
+                      className={[
+                        "px-4 py-2 rounded-full text-sm font-medium transition",
+                        active
+                          ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
+                          : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
+                      ].join(" ")}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
               </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Time Control
-              </label>
+
               <select
                 value={timeClassFilter}
                 onChange={(e) =>
-                  handleFilterChange(
-                    colorFilter,
-                    e.target.value as TimeClassFilter
-                  )
+                  handleFilterChange(colorFilter, e.target.value as TimeClassFilter)
                 }
-                className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                className="zen-input px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)]"
                 disabled={loading}
               >
-                <option value="all">All</option>
+                <option value="all">All time controls</option>
                 <option value="blitz">Blitz</option>
                 <option value="rapid">Rapid</option>
                 <option value="classical">Classical</option>
               </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Options
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
+
+              <label className="zen-pill px-3 py-2.5 flex items-center gap-2 text-sm text-[color:var(--zen-muted)] cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={hideUnknown}
                   onChange={(e) => setHideUnknown(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                  className="accent-[color:var(--zen-accent)]"
                 />
-                <span className="text-sm text-gray-700">Hide UNKNOWN</span>
+                Hide UNKNOWN
               </label>
             </div>
-            <div className="flex items-end">
-              <button
-                onClick={handleRefresh}
-                disabled={loading}
-                className="px-4 py-2 bg-gray-100 text-gray-700 font-medium rounded-md hover:bg-gray-200 disabled:bg-gray-50 disabled:cursor-not-allowed transition-colors"
-              >
-                Refresh
-              </button>
-            </div>
+
+            <button
+              onClick={handleRefresh}
+              disabled={loading}
+              className="zen-pill px-4 py-2.5 text-sm font-medium text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Refresh
+            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Loading State */}
-      {loading && (
-        <div className="flex justify-center py-12">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
-        </div>
-      )}
+        {/* Loading State */}
+        {loading && (
+          <div className="py-10 flex justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
+          </div>
+        )}
 
-      {/* Data Freshness Line */}
-      {importStatus && currentUsername && !loading && (
-        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-          {importStatus.imported_at ? (
-            <p className="text-sm text-blue-900">
-              Report generated from{" "}
-              <strong>{importStatus.total_games}</strong> games
-              {importStatus.total_games > 0 && (
-                <>
-                  {" "}(last import:{" "}
-                  {new Date(importStatus.imported_at).toLocaleString("en-US", {
-                    year: "numeric",
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                  {importStatus.last_imported === 0 && 
-                    `, imported: 0, skipped: ${importStatus.last_skipped}`
-                  })
-                </>
-              )}
-            </p>
-          ) : (
-            <p className="text-sm text-blue-900">
-              No imports yet for <strong>{currentUsername}</strong>
-            </p>
-          )}
-        </div>
-      )}
+        {/* Data Freshness Line */}
+        {importStatus && currentUsername && !loading && (
+          <div className="mt-5 zen-surface-flat px-4 py-3">
+            {importStatus.imported_at ? (
+              <p className="text-sm text-[color:var(--zen-muted)]">
+                Report generated from{" "}
+                <span className="text-[color:var(--zen-text)] font-medium">
+                  {importStatus.total_games}
+                </span>{" "}
+                games
+                {importStatus.total_games > 0 && (
+                  <>
+                    {" "}
+                    (last import:{" "}
+                    {new Date(importStatus.imported_at).toLocaleString("en-US", {
+                      year: "numeric",
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                    {/* {importStatus.last_imported === 0 &&
+                      `, imported: 0, skipped: ${importStatus.last_skipped}`} */}
+                    )
+                  </>
+                )}
+              </p>
+            ) : (
+              <p className="text-sm text-[color:var(--zen-muted)]">
+                No imports yet for{" "}
+                <span className="text-[color:var(--zen-text)] font-medium">
+                  {currentUsername}
+                </span>
+              </p>
+            )}
+          </div>
+        )}
 
-      {/* Results Table */}
-      {report && !loading && (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  {[
-                    { key: "eco" as const, label: "Opening (ECO)", align: "left" },
-                    { key: "games" as const, label: "Games", align: "right" },
-                    { key: "wins" as const, label: "Wins", align: "right" },
-                    { key: "draws" as const, label: "Draws", align: "right" },
-                    { key: "losses" as const, label: "Losses", align: "right" },
-                    { key: "score_pct" as const, label: "Score %", align: "right" },
-                  ].map((col) => (
-                    <th
-                      key={col.key}
-                      onClick={() => handleSort(col.key)}
-                      className={`px-6 py-3 text-${col.align} text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors`}
-                    >
-                      <div className={`flex items-center gap-1 ${col.align === "right" ? "justify-end" : ""}`}>
-                        <span>{col.label}</span>
-                        {sortConfig.key === col.key && (
-                          <span className="text-blue-600">
-                            {sortConfig.direction === "asc" ? "▲" : "▼"}
-                          </span>
-                        )}
-                      </div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {processedReport && processedReport.map((opening, idx) => (
-                  <tr 
-                    key={`${opening.eco}-${idx}`} 
-                    onClick={() => {
-                      if (currentUsername) {
-                        router.push(`/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.eco)}`);
-                      }
-                    }}
-                    className="hover:bg-gray-50 cursor-pointer transition-colors"
-                  >
-                    <td className="px-6 py-4">
-                      <div className="font-medium text-gray-900">
-                        {opening.eco}
-                      </div>
-                      <div className="text-sm text-gray-500">
-                        {opening.opening_name}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-right text-gray-900">
-                      {opening.games}
-                    </td>
-                    <td className="px-6 py-4 text-right text-green-600 font-medium">
-                      {opening.wins}
-                    </td>
-                    <td className="px-6 py-4 text-right text-gray-500">
-                      {opening.draws}
-                    </td>
-                    <td className="px-6 py-4 text-right text-red-600 font-medium">
-                      {opening.losses}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <span
-                        className={`font-semibold ${
-                          opening.score_pct >= 55
-                            ? "text-green-600"
-                            : opening.score_pct <= 45
-                              ? "text-red-600"
-                              : "text-gray-900"
-                        }`}
+        {/* Results */}
+        {report && !loading && (
+          <div className="mt-6 overflow-hidden rounded-2xl border border-[color:var(--zen-border)]">
+            <div className="overflow-x-auto">
+              <table className="min-w-full">
+                <thead className="bg-[color:var(--zen-surface-2)]">
+                  <tr>
+                    {[
+                      { key: "eco" as const, label: "Opening (ECO)", align: "left" },
+                      { key: "games" as const, label: "Games", align: "right" },
+                      { key: "wins" as const, label: "Wins", align: "right" },
+                      { key: "draws" as const, label: "Draws", align: "right" },
+                      { key: "losses" as const, label: "Losses", align: "right" },
+                      { key: "score_pct" as const, label: "Score %", align: "right" },
+                    ].map((col) => (
+                      <th
+                        key={col.key}
+                        onClick={() => handleSort(col.key)}
+                        className={`px-6 py-3 text-${col.align} text-[11px] font-medium uppercase tracking-wider text-[color:var(--zen-muted)] cursor-pointer hover:bg-[color:var(--zen-surface)] transition`}
                       >
-                        {opening.score_pct.toFixed(1)}%
-                      </span>
-                    </td>
+                        <div
+                          className={`flex items-center gap-1 ${
+                            col.align === "right" ? "justify-end" : ""
+                          }`}
+                        >
+                          <span>{col.label}</span>
+                          {sortConfig.key === col.key && (
+                            <span className="text-[color:var(--zen-accent)]">
+                              {sortConfig.direction === "asc" ? "▲" : "▼"}
+                            </span>
+                          )}
+                        </div>
+                      </th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {processedReport && processedReport.length === 0 && (
-            <div className="p-8 text-center text-gray-500">
-              No games found with the selected filters.
+                </thead>
+                <tbody className="divide-y divide-[color:var(--zen-border)]">
+                  {processedReport &&
+                    processedReport.map((opening, idx) => (
+                      <tr
+                        key={`${opening.eco}-${idx}`}
+                        onClick={() => {
+                          if (currentUsername) {
+                            router.push(
+                              `/opening/${encodeURIComponent(
+                                currentUsername
+                              )}/${encodeURIComponent(opening.eco)}`
+                            );
+                          }
+                        }}
+                        className="cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
+                      >
+                        <td className="px-6 py-4">
+                          <div className="font-mono text-sm font-semibold">
+                            {opening.eco}
+                          </div>
+                          <div className="text-sm text-[color:var(--zen-muted)]">
+                            {opening.opening_name}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-right tabular-nums">
+                          {opening.games}
+                        </td>
+                        <td className="px-6 py-4 text-right tabular-nums text-[color:var(--zen-success)] font-medium">
+                          {opening.wins}
+                        </td>
+                        <td className="px-6 py-4 text-right tabular-nums text-[color:var(--zen-muted)]">
+                          {opening.draws}
+                        </td>
+                        <td className="px-6 py-4 text-right tabular-nums text-[color:var(--zen-danger)] font-medium">
+                          {opening.losses}
+                        </td>
+                        <td className="px-6 py-4 text-right tabular-nums">
+                          <span
+                            className="font-semibold"
+                            style={{
+                              color:
+                                opening.score_pct >= 55
+                                  ? "var(--zen-success)"
+                                  : opening.score_pct <= 45
+                                    ? "var(--zen-danger)"
+                                    : "var(--zen-text)",
+                            }}
+                          >
+                            {opening.score_pct.toFixed(1)}%
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
             </div>
-          )}
-        </div>
-      )}
+            {processedReport && processedReport.length === 0 && (
+              <div className="p-8 text-center text-[color:var(--zen-muted)]">
+                No games found with the selected filters.
+              </div>
+            )}
+          </div>
+        )}
 
-      {/* Empty State */}
-      {!report && !loading && !error && (
-        <div className="bg-white rounded-lg shadow p-12 text-center">
-          <p className="text-gray-500">
-            Enter a Lichess username and click Import Games to see opening
-            statistics.
-          </p>
-        </div>
-      )}
+        {!report && !loading && !error && (
+          <div className="mt-6 zen-surface-flat p-10 text-center">
+            <p className="text-[color:var(--zen-muted)]">
+              Enter a Lichess username and click Import Games to see opening
+              statistics.
+            </p>
+          </div>
+        )}
+      </div>
     </main>
   );
 }

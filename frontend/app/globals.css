@@ -2,6 +2,95 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Zen Architect theme tokens */
+:root {
+  /* surfaces */
+  --zen-bg: #f6f7f9;
+  --zen-surface: rgba(255, 255, 255, 0.78);
+  --zen-surface-2: rgba(255, 255, 255, 0.92);
+
+  /* text */
+  --zen-text: #0f172a;
+  --zen-muted: rgba(15, 23, 42, 0.68);
+
+  /* borders + accents */
+  --zen-border: rgba(15, 23, 42, 0.12);
+  --zen-accent: #4f7cff;
+  --zen-accent-2: rgba(79, 124, 255, 0.18);
+  --zen-success: #18a957;
+  --zen-danger: #ff5c5c;
+
+  /* shadows */
+  --zen-shadow: 0 18px 40px rgba(2, 6, 23, 0.08);
+  --zen-shadow-sm: 0 10px 22px rgba(2, 6, 23, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --zen-bg: #0c0f14;
+    --zen-surface: rgba(255, 255, 255, 0.06);
+    --zen-surface-2: rgba(255, 255, 255, 0.08);
+
+    --zen-text: rgba(255, 255, 255, 0.92);
+    --zen-muted: rgba(255, 255, 255, 0.58);
+
+    --zen-border: rgba(255, 255, 255, 0.10);
+    --zen-accent: #5f86ff;
+    --zen-accent-2: rgba(95, 134, 255, 0.20);
+    --zen-success: #39d98a;
+    --zen-danger: #ff6b6b;
+
+    --zen-shadow: 0 28px 70px rgba(0, 0, 0, 0.40);
+    --zen-shadow-sm: 0 18px 40px rgba(0, 0, 0, 0.32);
+  }
+}
+
 body {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: radial-gradient(
+      1200px 600px at 20% 0%,
+      rgba(95, 134, 255, 0.10),
+      transparent 55%
+    ),
+    radial-gradient(
+      900px 500px at 90% 18%,
+      rgba(57, 217, 138, 0.07),
+      transparent 55%
+    ),
+    var(--zen-bg);
+  color: var(--zen-text);
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+@layer components {
+  .zen-surface {
+    background: var(--zen-surface);
+    border: 1px solid var(--zen-border);
+    border-radius: 16px;
+    box-shadow: var(--zen-shadow);
+    backdrop-filter: blur(10px);
+  }
+
+  .zen-surface-flat {
+    background: var(--zen-surface);
+    border: 1px solid var(--zen-border);
+    border-radius: 16px;
+  }
+
+  .zen-input {
+    background: var(--zen-surface-2);
+    border: 1px solid var(--zen-border);
+    color: var(--zen-text);
+    border-radius: 12px;
+  }
+
+  .zen-input::placeholder {
+    color: var(--zen-muted);
+  }
+
+  .zen-pill {
+    background: var(--zen-surface-2);
+    border: 1px solid var(--zen-border);
+    border-radius: 9999px;
+  }
 }
