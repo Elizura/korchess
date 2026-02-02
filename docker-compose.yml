@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - openingscope-data:/data
+      - ./data:/data
     environment:
       - DATABASE_PATH=/data/openingscope.db
     healthcheck:
