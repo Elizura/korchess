@@ -69,6 +69,57 @@ def init_db(db_path: Optional[str] = None) -> None:
         )
     """)
 
+    # Create analysis table for cached engine analysis
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analysis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            engine_name TEXT NOT NULL,
+            engine_version TEXT,
+            settings_json TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            UNIQUE(site, site_game_id, username)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_analysis_username 
+        ON analysis(username)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_analysis_lookup 
+        ON analysis(username, site, site_game_id)
+    """)
+
+    # Create full_analysis table for comprehensive move-by-move analysis
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS full_analysis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            depth INTEGER NOT NULL,
+            multipv INTEGER NOT NULL,
+            moves_json TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            meta_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(site, site_game_id, username, depth, multipv)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_full_analysis_username 
+        ON full_analysis(username)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_full_analysis_lookup 
+        ON full_analysis(username, site, site_game_id, depth, multipv)
+    """)
+
     conn.commit()
     conn.close()
 
@@ -335,4 +386,107 @@ def get_games_by_opening(
         },
         "games": games
     }
+
+
+def get_game_by_id(
+    conn: sqlite3.Connection,
+    username: str,
+    site_game_id: str
+) -> dict | None:
+    """Get a single game by username and game ID."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT site_game_id, played_at, color, result, opponent, 
+               opening_name, pgn, eco
+        FROM games
+        WHERE LOWER(username) = ? AND site_game_id = ?
+    """, (username.strip().lower(), site_game_id))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def get_analysis(
+    conn: sqlite3.Connection,
+    username: str,
+    site_game_id: str
+) -> dict | None:
+    """Get cached analysis for a game."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT result_json, created_at, engine_name, engine_version
+        FROM analysis
+        WHERE LOWER(username) = ? AND site_game_id = ?
+    """, (username.strip().lower(), site_game_id))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def save_analysis(
+    conn: sqlite3.Connection,
+    username: str,
+    site_game_id: str,
+    engine_name: str,
+    engine_version: str,
+    settings_json: str,
+    result_json: str
+) -> None:
+    """Save analysis result to cache."""
+    cursor = conn.cursor()
+    from datetime import datetime, timezone
+    created_at = datetime.now(timezone.utc).isoformat()
+    cursor.execute("""
+        INSERT OR REPLACE INTO analysis 
+        (site, site_game_id, username, created_at, engine_name, 
+         engine_version, settings_json, result_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("lichess", site_game_id, username.strip().lower(), 
+          created_at, engine_name, engine_version, settings_json, result_json))
+
+
+def get_full_analysis(
+    conn: sqlite3.Connection,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int
+) -> dict | None:
+    """Get cached full analysis for a game."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT moves_json, summary_json, meta_json, created_at
+        FROM full_analysis
+        WHERE LOWER(username) = ? AND site_game_id = ? 
+        AND depth = ? AND multipv = ?
+    """, (username.strip().lower(), site_game_id, depth, multipv))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def save_full_analysis(
+    conn: sqlite3.Connection,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int,
+    moves_json: str,
+    summary_json: str,
+    meta_json: str
+) -> None:
+    """Save full analysis result to cache."""
+    cursor = conn.cursor()
+    from datetime import datetime, timezone
+    created_at = datetime.now(timezone.utc).isoformat()
+    cursor.execute("""
+        INSERT OR REPLACE INTO full_analysis 
+        (site, site_game_id, username, depth, multipv, 
+         moves_json, summary_json, meta_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("lichess", site_game_id, username.strip().lower(), 
+          depth, multipv, moves_json, summary_json, meta_json, created_at))
 

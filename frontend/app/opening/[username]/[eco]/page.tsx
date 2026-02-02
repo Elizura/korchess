@@ -344,14 +344,22 @@ export default function OpeningDetailPage() {
                   </div>
                 </div>
 
-                <a
-                  href={game.lichess_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
-                >
-                  View on Lichess →
-                </a>
+                <div className="flex gap-2">
+                  <Link
+                    href={`/game/lichess/${encodeURIComponent(username)}/${game.site_game_id}`}
+                    className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
+                  >
+                    Analyze
+                  </Link>
+                  <a
+                    href={game.lichess_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
+                  >
+                    Lichess →
+                  </a>
+                </div>
               </div>
             </div>
           ))}
