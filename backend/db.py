@@ -120,6 +120,23 @@ def init_db(db_path: Optional[str] = None) -> None:
         ON full_analysis(username, site, site_game_id, depth, multipv)
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analysis_jobs (
+            id TEXT PRIMARY KEY,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            depth INTEGER NOT NULL,
+            multipv INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_analysis_jobs_lookup 
+        ON analysis_jobs(username, site_game_id, depth, multipv)
+    """)
+
     conn.commit()
     conn.close()
 
@@ -489,4 +506,56 @@ def save_full_analysis(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, ("lichess", site_game_id, username.strip().lower(), 
           depth, multipv, moves_json, summary_json, meta_json, created_at))
+
+
+
+def create_analysis_job(
+    conn: sqlite3.Connection,
+    job_id: str,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int
+) -> None:
+    """Create a new analysis job record."""
+    from datetime import datetime, timezone
+    cursor = conn.cursor()
+    created_at = datetime.now(timezone.utc).isoformat()
+    cursor.execute("""
+        INSERT INTO analysis_jobs (id, site, site_game_id, username, depth, multipv, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (job_id, "lichess", site_game_id, username.strip().lower(), depth, multipv, created_at))
+
+
+def get_analysis_job(
+    conn: sqlite3.Connection,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int
+) -> dict | None:
+    """Get an analysis job by game/user/params. Returns None if not found."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, site, site_game_id, username, depth, multipv, created_at
+        FROM analysis_jobs
+        WHERE LOWER(username) = ? AND site_game_id = ? AND depth = ? AND multipv = ?
+    """, (username.strip().lower(), site_game_id, depth, multipv))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def delete_analysis_job(conn: sqlite3.Connection, job_id: str) -> None:
+    """Delete an analysis job by ID."""
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM analysis_jobs WHERE id = ?", (job_id,))
+
+
+def count_analysis_jobs(conn: sqlite3.Connection) -> int:
+    """Count total number of in-progress analysis jobs."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM analysis_jobs")
+    return cursor.fetchone()[0]
 

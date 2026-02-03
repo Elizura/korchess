@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Chess } from "chess.js";
 import Link from "next/link";
 
@@ -67,7 +67,7 @@ interface FullAnalysisSummary {
 }
 
 interface FullAnalysisResponse {
-  status: "ready" | "missing";
+  status: "completed" | "missing" | "processing";
   analysis: {
     moves: MoveEvaluation[];
     summary: FullAnalysisSummary;
@@ -113,7 +113,12 @@ export default function GameAnalyzerPage() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<"ready" | "missing" | "loading">("loading");
+  const [analysisStatus, setAnalysisStatus] = useState<"completed" | "missing" | "processing" | "loading">("loading");
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  
+  // Polling for async analysis
+  const pollInterval = useRef<NodeJS.Timeout | null>(null);
+  const analysisStartTime = useRef<number | null>(null);
   
   // Board settings
   const [orientation, setOrientation] = useState<"white" | "black">("white");
@@ -125,6 +130,9 @@ export default function GameAnalyzerPage() {
   // Engine lines for current position
   const [engineLines, setEngineLines] = useState<EvalResponse["multipv"] | null>(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
+
+  // Track if auto-analysis was already triggered to prevent duplicates
+  const autoAnalysisTriggered = useRef(false);
 
   // Get current node from tree
   const currentNode = useMemo(() => {
@@ -326,14 +334,21 @@ export default function GameAnalyzerPage() {
           `${API_BASE_URL}/api/analysis/lichess/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
         );
         if (analysisRes.ok) {
-          const analysisData: FullAnalysisResponse = await analysisRes.json();
-          if (analysisData.status === "ready" && analysisData.analysis) {
-            setAnalysisData(analysisData.analysis);
-            setAnalysisStatus("ready");
+          const data: FullAnalysisResponse = await analysisRes.json();
+          if (data.status === "completed" && data.analysis) {
+            setAnalysisData(data.analysis);
+            setAnalysisStatus("completed");
 
             // Rebuild tree with analysis data
-            const tree = buildTreeFromAnalysis(analysisData.analysis.moves);
+            const tree = buildTreeFromAnalysis(data.analysis.moves);
             setMoveTree(tree);
+          } else if (data.status === "processing") {
+            // Analysis is running - set state, polling will be started by separate effect
+            setAnalysisStatus("processing");
+            setAnalyzing(true);
+            if (!analysisStartTime.current) {
+              analysisStartTime.current = Date.now();
+            }
           } else {
             setAnalysisStatus("missing");
           }
@@ -352,10 +367,80 @@ export default function GameAnalyzerPage() {
     }
   }, [username, gameId, depth, multiPv]);
 
-  // Run full analysis
-  const runAnalysis = async () => {
+  // Stop polling
+  const stopPolling = useCallback(() => {
+    if (pollInterval.current) {
+      clearInterval(pollInterval.current);
+      pollInterval.current = null;
+    }
+  }, []);
+
+  // Handle analysis completion
+  const handleAnalysisReady = useCallback((data: FullAnalysisResponse) => {
+    if (data.analysis) {
+      setAnalysisData(data.analysis);
+      setAnalysisStatus("completed");
+
+      // Rebuild tree with analysis data
+      const tree = buildTreeFromAnalysis(data.analysis.moves);
+      setMoveTree(tree);
+
+      // Log and show success
+      const elapsedSeconds = analysisStartTime.current 
+        ? Math.round((Date.now() - analysisStartTime.current) / 1000)
+        : 0;
+      console.log(`[Analysis] Completed in ${elapsedSeconds}s - ${data.analysis.moves.length} moves analyzed`);
+      
+      setSuccessMessage(`Analysis complete! (${elapsedSeconds}s)`);
+      setTimeout(() => setSuccessMessage(null), 5000);
+    }
+    setAnalyzing(false);
+    analysisStartTime.current = null;
+  }, []);
+
+  // Start polling for analysis status
+  const startPolling = useCallback(() => {
+    // Don't start if already polling
+    if (pollInterval.current) {
+      console.log("[Analysis] Polling already active, skipping...");
+      return;
+    }
+    
+    console.log("[Analysis] Starting polling...");
+    pollInterval.current = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/analysis/lichess/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
+        );
+        const data: FullAnalysisResponse = await res.json();
+        
+        if (data.status === "completed") {
+          stopPolling();
+          handleAnalysisReady(data);
+        } else if (data.status === "missing") {
+          // Job failed/disappeared - stop polling
+          console.log("[Analysis] Job disappeared (likely failed). User can retry.");
+          stopPolling();
+          setAnalyzing(false);
+          setAnalysisStatus("missing");
+          analysisStartTime.current = null;
+        }
+        // If still "processing", continue polling
+      } catch (err) {
+        // Network error - keep polling
+        console.error("[Analysis] Polling error:", err);
+      }
+    }, 2000); // Poll every 2 seconds
+  }, [username, gameId, depth, multiPv, stopPolling, handleAnalysisReady]);
+
+  // Run full analysis (starts background job and begins polling)
+  const runAnalysis = useCallback(async () => {
     setAnalyzing(true);
     setError(null);
+    setSuccessMessage(null);
+    analysisStartTime.current = Date.now();
+
+    console.log(`[Analysis] Starting analysis for game ${gameId} (depth=${depth}, multipv=${multiPv})`);
 
     try {
       const res = await fetch(
@@ -363,33 +448,66 @@ export default function GameAnalyzerPage() {
         { method: "POST" }
       );
 
+      // Handle 429 Too Many Requests
+      if (res.status === 429) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail || "Server is busy (max 2 analyses at once). Please try again shortly.");
+        setAnalyzing(false);
+        analysisStartTime.current = null;
+        return;
+      }
+
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Analysis failed");
       }
 
       const data: FullAnalysisResponse = await res.json();
-      if (data.status === "ready" && data.analysis) {
-        setAnalysisData(data.analysis);
-        setAnalysisStatus("ready");
-
-        // Rebuild tree with analysis data
-        const tree = buildTreeFromAnalysis(data.analysis.moves);
-        setMoveTree(tree);
+      
+      if (data.status === "completed" && data.analysis) {
+        // Already cached, use immediately
+        handleAnalysisReady(data);
+      } else if (data.status === "processing") {
+        // Analysis started - set state, polling will be started by separate effect
+        setAnalysisStatus("processing");
+        // analysisStatus change + analyzing=true will trigger polling effect
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Analysis failed");
-    } finally {
+      const errorMessage = err instanceof Error ? err.message : "Analysis failed";
+      console.error(`[Analysis] Failed:`, err);
+      setError(errorMessage);
       setAnalyzing(false);
+      analysisStartTime.current = null;
     }
-  };
+  }, [username, gameId, depth, multiPv, handleAnalysisReady]);
 
-  // Auto-start analysis if missing
+  // Start/stop polling based on status
   useEffect(() => {
-    if (analysisStatus === "missing" && !analyzing && game) {
+    if (analysisStatus === "processing" && analyzing && !pollInterval.current) {
+      startPolling();
+    }
+    
+    // Cleanup on unmount or when no longer processing
+    return () => {
+      if (analysisStatus !== "processing") {
+        stopPolling();
+      }
+    };
+  }, [analysisStatus, analyzing, startPolling, stopPolling]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => stopPolling();
+  }, [stopPolling]);
+
+  // Auto-start analysis if missing (only once per page load)
+  useEffect(() => {
+    if (analysisStatus === "missing" && !analyzing && game && !autoAnalysisTriggered.current) {
+      autoAnalysisTriggered.current = true;
+      console.log("[Analysis] Auto-starting analysis for missing game");
       runAnalysis();
     }
-  }, [analysisStatus, analyzing, game]);
+  }, [analysisStatus, analyzing, game, runAnalysis]);
 
   // Format date
   const formatDate = (dateStr: string | null) => {
@@ -437,6 +555,16 @@ export default function GameAnalyzerPage() {
 
   return (
     <main className="analysis-page min-h-screen py-6">
+      {/* Success notification toast */}
+      {successMessage && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="zen-surface px-4 py-3 flex items-center gap-3 shadow-lg">
+            <div className="w-2 h-2 rounded-full bg-[color:var(--zen-success)] animate-pulse" />
+            <span className="text-sm font-medium text-[color:var(--zen-success)]">{successMessage}</span>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-6xl mx-auto px-4 relative z-10">
         {/* Header */}
         <div className="mb-4 flex items-center justify-between flex-wrap gap-4">
@@ -451,7 +579,24 @@ export default function GameAnalyzerPage() {
               {game?.opening_name || "Game Analysis"}
             </h1>
             <p className="text-sm text-[color:var(--zen-muted)]">
-              {username} vs {game?.opponent || "Unknown"} • {formatDate(game?.played_at ?? null)}
+              {(game?.color ?? "white") === "white" ? (
+                <>
+                  <span className="text-[color:var(--zen-text)]">{username}</span>
+                  <span className="mx-1.5 text-[color:var(--zen-muted)]">(White)</span>
+                  <span className="mx-1">vs</span>
+                  <span className="text-[color:var(--zen-text)]">{game?.opponent || "Unknown"}</span>
+                  <span className="ml-1.5 text-[color:var(--zen-muted)]">(Black)</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-[color:var(--zen-text)]">{username}</span>
+                  <span className="mx-1.5 text-[color:var(--zen-muted)]">(Black)</span>
+                  <span className="mx-1">vs</span>
+                  <span className="text-[color:var(--zen-text)]">{game?.opponent || "Unknown"}</span>
+                  <span className="ml-1.5 text-[color:var(--zen-muted)]">(White)</span>
+                </>
+              )}{" "}
+              • {formatDate(game?.played_at ?? null)}
               <span
                 className={`ml-2 font-medium ${
                   game?.result === "win"
@@ -554,9 +699,14 @@ export default function GameAnalyzerPage() {
 
               {analyzing && (
                 <div className="text-center py-6">
-                  <div className="inline-flex items-center gap-3 zen-pill px-6 py-3">
-                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
-                    <span className="text-[color:var(--zen-text)]">Analyzing game...</span>
+                  <div className="inline-flex flex-col items-center gap-2">
+                    <div className="inline-flex items-center gap-3 zen-pill px-6 py-3">
+                      <div className="animate-spin rounded-full h-5 w-5 border-2 border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
+                      <span className="text-[color:var(--zen-text)]">Analyzing game...</span>
+                    </div>
+                    <p className="text-xs text-[color:var(--zen-muted)]">
+                      Analysis runs in background. You'll see a notification when complete.
+                    </p>
                   </div>
                 </div>
               )}

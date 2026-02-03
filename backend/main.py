@@ -1,6 +1,8 @@
 """FastAPI application for Openingscope."""
 
 import json
+import uuid
+import asyncio
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -9,11 +11,19 @@ from db import (
     get_connection, init_db, upsert_game, get_openings_stats,
     upsert_import_status, get_import_status, get_games_by_opening,
     get_game_by_id, get_analysis, save_analysis,
-    get_full_analysis, save_full_analysis
+    get_full_analysis, save_full_analysis,
+    create_analysis_job, get_analysis_job, delete_analysis_job, count_analysis_jobs
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis, evaluate_position
+
+# ============================================================================
+# Concurrency control for background analysis
+# ============================================================================
+MAX_CONCURRENT_ANALYSES = 2
+active_analysis_count = 0
+active_analysis_lock = asyncio.Lock()
 
 app = FastAPI(
     title="Openingscope API",
@@ -178,7 +188,7 @@ class FullAnalysisResult(BaseModel):
 
 class FullAnalysisResponse(BaseModel):
     """Response for full analysis endpoint."""
-    status: str  # "ready" | "missing" | "running"
+    status: str  # "completed" | "missing" | "processing"
     analysis: FullAnalysisResult | None = None
     created_at: str | None = None
 
@@ -477,6 +487,62 @@ async def run_analysis_endpoint(username: str, game_id: str):
         conn.close()
 
 
+# ============================================================================
+# Background Analysis Task
+# ============================================================================
+
+async def run_analysis_background(
+    job_id: str,
+    username: str,
+    game_id: str,
+    pgn: str,
+    depth: int,
+    multipv: int
+):
+    """Background task to run Stockfish analysis."""
+    global active_analysis_count
+    
+    try:
+        # Run analysis in thread pool (CPU-bound operation)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: run_full_analysis(pgn, depth, multipv)
+        )
+        
+        # Save results to full_analysis table
+        conn = get_connection()
+        try:
+            save_full_analysis(
+                conn, username, game_id,
+                depth=depth,
+                multipv=multipv,
+                moves_json=json.dumps(result["moves"]),
+                summary_json=json.dumps(result["summary"]),
+                meta_json=json.dumps(result["meta"])
+            )
+            delete_analysis_job(conn, job_id)
+            conn.commit()
+            print(f"[Analysis] Completed for game {game_id}")
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        # On failure, just delete the job so user can retry
+        print(f"[Analysis] Failed for game {game_id}: {e}")
+        conn = get_connection()
+        try:
+            delete_analysis_job(conn, job_id)
+            conn.commit()
+        finally:
+            conn.close()
+            
+    finally:
+        async with active_analysis_lock:
+            active_analysis_count -= 1
+            print(f"[Analysis] Active count now: {active_analysis_count}")
+
+
 @app.get("/api/analysis/lichess/{username}/{game_id}/full", response_model=FullAnalysisResponse)
 async def get_full_analysis_endpoint(
     username: str,
@@ -484,7 +550,7 @@ async def get_full_analysis_endpoint(
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5)
 ):
-    """Get cached full analysis for a game."""
+    """Get full analysis status for a game."""
     username = username.strip()
     
     if not username:
@@ -492,22 +558,28 @@ async def get_full_analysis_endpoint(
     
     conn = get_connection()
     try:
+        # Check if completed analysis exists
         cached = get_full_analysis(conn, username, game_id, depth, multipv)
+        if cached:
+            return FullAnalysisResponse(
+                status="completed",
+                analysis={
+                    "moves": json.loads(cached["moves_json"]),
+                    "summary": json.loads(cached["summary_json"]),
+                    "meta": json.loads(cached["meta_json"])
+                },
+                created_at=cached["created_at"]
+            )
+        
+        # Check if job is currently processing
+        job = get_analysis_job(conn, username, game_id, depth, multipv)
+        if job:
+            return FullAnalysisResponse(status="processing")
+        
+        # Nothing exists
+        return FullAnalysisResponse(status="missing")
     finally:
         conn.close()
-    
-    if not cached:
-        return FullAnalysisResponse(status="missing")
-    
-    return FullAnalysisResponse(
-        status="ready",
-        analysis={
-            "moves": json.loads(cached["moves_json"]),
-            "summary": json.loads(cached["summary_json"]),
-            "meta": json.loads(cached["meta_json"])
-        },
-        created_at=cached["created_at"]
-    )
 
 
 @app.post("/api/analysis/lichess/{username}/{game_id}/full", response_model=FullAnalysisResponse)
@@ -517,7 +589,9 @@ async def run_full_analysis_endpoint(
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5)
 ):
-    """Run full move-by-move analysis on a game (or return cached)."""
+    """Start full move-by-move analysis on a game (async with background task)."""
+    global active_analysis_count
+    
     username = username.strip()
     
     if not username:
@@ -525,11 +599,11 @@ async def run_full_analysis_endpoint(
     
     conn = get_connection()
     try:
-        # Check cache first
+        # 1. Check if completed analysis already exists
         cached = get_full_analysis(conn, username, game_id, depth, multipv)
         if cached:
             return FullAnalysisResponse(
-                status="ready",
+                status="completed",
                 analysis={
                     "moves": json.loads(cached["moves_json"]),
                     "summary": json.loads(cached["summary_json"]),
@@ -538,43 +612,45 @@ async def run_full_analysis_endpoint(
                 created_at=cached["created_at"]
             )
         
-        # Get game
+        # 2. Check if job is already processing
+        existing_job = get_analysis_job(conn, username, game_id, depth, multipv)
+        if existing_job:
+            return FullAnalysisResponse(status="processing")
+        
+        # 3. Check concurrency limit
+        async with active_analysis_lock:
+            if active_analysis_count >= MAX_CONCURRENT_ANALYSES:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Server busy. Max 2 analyses can run at once. Try again shortly."
+                )
+            active_analysis_count += 1
+            print(f"[Analysis] Starting new analysis. Active count: {active_analysis_count}")
+        
+        # 4. Get game PGN
         game = get_game_by_id(conn, username, game_id)
         if not game:
+            async with active_analysis_lock:
+                active_analysis_count -= 1
             raise HTTPException(status_code=404, detail="Game not found")
         
         if not game.get("pgn"):
+            async with active_analysis_lock:
+                active_analysis_count -= 1
             raise HTTPException(status_code=400, detail="Game has no PGN")
         
-        # Run full analysis
-        try:
-            result = run_full_analysis(
-                game["pgn"],
-                depth=depth,
-                multipv=multipv
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-        
-        # Save to cache
-        save_full_analysis(
-            conn, username, game_id,
-            depth=depth,
-            multipv=multipv,
-            moves_json=json.dumps(result["moves"]),
-            summary_json=json.dumps(result["summary"]),
-            meta_json=json.dumps(result["meta"])
-        )
+        # 5. Create job and start background task
+        job_id = str(uuid.uuid4())
+        create_analysis_job(conn, job_id, username, game_id, depth, multipv)
         conn.commit()
         
-        # Get created_at
-        saved = get_full_analysis(conn, username, game_id, depth, multipv)
+        # Start background task (non-blocking)
+        asyncio.create_task(run_analysis_background(
+            job_id, username, game_id, game["pgn"], depth, multipv
+        ))
         
-        return FullAnalysisResponse(
-            status="ready",
-            analysis=result,
-            created_at=saved["created_at"] if saved else None
-        )
+        return FullAnalysisResponse(status="processing")
+        
     finally:
         conn.close()
 
