@@ -30,8 +30,9 @@ interface BoardControlsProps {
   isAnalyzing?: boolean;
   onRunAnalysis?: () => void;
   
-  // External link
+  // External link (URL and site for label: "Lichess" vs "Chess.com")
   lichessUrl?: string;
+  site?: string;
 }
 
 export default function BoardControls({
@@ -52,7 +53,9 @@ export default function BoardControls({
   isAnalyzing,
   onRunAnalysis,
   lichessUrl,
+  site,
 }: BoardControlsProps) {
+  const externalLinkLabel = site === "chesscom" ? "Chess.com" : "Lichess";
   return (
     <div className="flex flex-wrap items-center gap-2 p-3 zen-surface-flat">
       {/* Navigation buttons */}
@@ -198,7 +201,7 @@ export default function BoardControls({
         )}
       </div>
 
-      {/* Lichess link */}
+      {/* External game link (Lichess or Chess.com) */}
       {lichessUrl && (
         <a
           href={lichessUrl}
@@ -206,7 +209,7 @@ export default function BoardControls({
           rel="noopener noreferrer"
           className="ml-auto zen-pill px-3 py-1.5 text-sm font-medium hover:bg-[color:var(--zen-accent-2)] transition-colors flex items-center gap-1 text-[color:var(--zen-text)]"
         >
-          Lichess
+          {externalLinkLabel}
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
           </svg>

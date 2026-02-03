@@ -445,7 +445,7 @@ export default function GameAnalyzerPage() {
 
     try {
       const res = await fetch(
-        `${API_BASE_URL}/api/analysis/lichess/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
+        `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
         { method: "POST" }
       );
 
@@ -670,6 +670,7 @@ export default function GameAnalyzerPage() {
                       ? `https://lichess.org/${gameId}`
                       : `https://www.chess.com/game/live/${gameId}`
                   )}
+                  site={site}
                 />
               </div>
             </div>
