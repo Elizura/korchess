@@ -147,6 +147,34 @@ export default function Home() {
     }
   }, [searchParams, initialized, colorFilter, timeClassFilter, site, router]);
 
+  // Reload report when source site changes (Lichess / Chess.com / All)
+  useEffect(() => {
+    if (!currentUsername) return;
+
+    const user = currentUsername;
+
+    const loadForSiteChange = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const [reportData, statusData] = await Promise.all([
+          fetchReport(user, colorFilter, timeClassFilter, site),
+          fetchImportStatus(user, site),
+        ]);
+        setReport(reportData);
+        if (statusData) {
+          setImportStatus(statusData);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load data");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadForSiteChange();
+  }, [site, currentUsername, colorFilter, timeClassFilter]);
+
   // Update URL when currentUsername changes
   const updateUrl = (user: string | null) => {
     if (user) {
