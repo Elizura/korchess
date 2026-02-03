@@ -103,6 +103,7 @@ interface EvalResponse {
 
 export default function GameAnalyzerPage() {
   const params = useParams();
+  const site = params.site as string;
   const username = decodeURIComponent(params.username as string);
   const gameId = params.gameId as string;
 
@@ -298,7 +299,7 @@ export default function GameAnalyzerPage() {
       try {
         // Fetch game data
         const gameRes = await fetch(
-          `${API_BASE_URL}/api/game/lichess/${encodeURIComponent(username)}/${gameId}`
+          `${API_BASE_URL}/api/game/${site}/${encodeURIComponent(username)}/${gameId}`
         );
         if (!gameRes.ok) {
           const data = await gameRes.json().catch(() => ({}));
@@ -331,7 +332,7 @@ export default function GameAnalyzerPage() {
 
         // Fetch full analysis status
         const analysisRes = await fetch(
-          `${API_BASE_URL}/api/analysis/lichess/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
+          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
         );
         if (analysisRes.ok) {
           const data: FullAnalysisResponse = await analysisRes.json();
@@ -410,7 +411,7 @@ export default function GameAnalyzerPage() {
     pollInterval.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/analysis/lichess/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
+          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
         );
         const data: FullAnalysisResponse = await res.json();
         
@@ -664,7 +665,11 @@ export default function GameAnalyzerPage() {
                   onDepthChange={setDepth}
                   isAnalyzing={analyzing}
                   onRunAnalysis={analysisStatus === "missing" ? runAnalysis : undefined}
-                  lichessUrl={game?.lichess_url}
+                  lichessUrl={game?.lichess_url || (
+                    site === "lichess" 
+                      ? `https://lichess.org/${gameId}`
+                      : `https://www.chess.com/game/live/${gameId}`
+                  )}
                 />
               </div>
             </div>

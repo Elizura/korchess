@@ -56,6 +56,10 @@ def init_db(db_path: Optional[str] = None) -> None:
         CREATE INDEX IF NOT EXISTS idx_games_username_color_time_class 
         ON games(username, color, time_class)
     """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_games_site_username 
+        ON games(site, username)
+    """)
 
     # Create imports table
     cursor.execute("""
@@ -178,11 +182,13 @@ def get_openings_stats(
     conn: sqlite3.Connection,
     username: str,
     color: str = "all",
-    time_class: str = "all"
+    time_class: str = "all",
+    site: str | None = None
 ) -> list[dict]:
     """
     Aggregate opening statistics for a user with optional filters.
     Returns list of dicts with eco, opening_name, games, wins, draws, losses, score_pct.
+    If site is None or "all", includes games from all sites.
     """
     cursor = conn.cursor()
 
@@ -199,6 +205,11 @@ def get_openings_stats(
         WHERE LOWER(username) = LOWER(?)
     """
     params: list = [username]
+
+    # Site filter
+    if site and site != "all":
+        query += " AND site = ?"
+        params.append(site)
 
     # Color filter
     if color != "all":
@@ -302,11 +313,13 @@ def get_games_by_opening(
     time_class: str = "all",
     result: str = "all",
     offset: int = 0,
-    limit: int = 10
+    limit: int = 10,
+    site: str | None = None
 ) -> dict:
     """
     Get games and summary stats for a user and opening.
     Returns both summary and paginated games.
+    If site is None or "all", includes games from all sites.
     """
     cursor = conn.cursor()
     canonical_username = username.strip().lower()
@@ -319,6 +332,10 @@ def get_games_by_opening(
         "site_game_id != ''"
     ]
     base_params = [canonical_username, eco]
+    
+    if site and site != "all":
+        base_where_conditions.append("site = ?")
+        base_params.append(site)
     
     if color != "all":
         base_where_conditions.append("color = ?")
@@ -363,6 +380,7 @@ def get_games_by_opening(
     # Get paginated games (FILTERED by result)
     games_query = f"""
         SELECT 
+            site,
             site_game_id,
             played_at,
             color,
@@ -384,13 +402,13 @@ def get_games_by_opening(
     games = []
     for row in rows:
         games.append({
+            "site": row["site"],
             "site_game_id": row["site_game_id"],
             "played_at": row["played_at"],
             "color": row["color"],
             "result": row["result"],
             "opponent": row["opponent"],
-            "opening_name": row["opening_name"],
-            "lichess_url": f"https://lichess.org/{row['site_game_id']}"
+            "opening_name": row["opening_name"]
         })
     
     return {
@@ -408,16 +426,17 @@ def get_games_by_opening(
 def get_game_by_id(
     conn: sqlite3.Connection,
     username: str,
-    site_game_id: str
+    site_game_id: str,
+    site: str
 ) -> dict | None:
-    """Get a single game by username and game ID."""
+    """Get a single game by username, game ID, and site."""
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT site_game_id, played_at, color, result, opponent, 
+        SELECT site, site_game_id, played_at, color, result, opponent, 
                opening_name, pgn, eco
         FROM games
-        WHERE LOWER(username) = ? AND site_game_id = ?
-    """, (username.strip().lower(), site_game_id))
+        WHERE LOWER(username) = ? AND site_game_id = ? AND site = ?
+    """, (username.strip().lower(), site_game_id, site))
     row = cursor.fetchone()
     if not row:
         return None
@@ -427,15 +446,16 @@ def get_game_by_id(
 def get_analysis(
     conn: sqlite3.Connection,
     username: str,
-    site_game_id: str
+    site_game_id: str,
+    site: str
 ) -> dict | None:
     """Get cached analysis for a game."""
     cursor = conn.cursor()
     cursor.execute("""
         SELECT result_json, created_at, engine_name, engine_version
         FROM analysis
-        WHERE LOWER(username) = ? AND site_game_id = ?
-    """, (username.strip().lower(), site_game_id))
+        WHERE LOWER(username) = ? AND site_game_id = ? AND site = ?
+    """, (username.strip().lower(), site_game_id, site))
     row = cursor.fetchone()
     if not row:
         return None
@@ -446,6 +466,7 @@ def save_analysis(
     conn: sqlite3.Connection,
     username: str,
     site_game_id: str,
+    site: str,
     engine_name: str,
     engine_version: str,
     settings_json: str,
@@ -460,7 +481,7 @@ def save_analysis(
         (site, site_game_id, username, created_at, engine_name, 
          engine_version, settings_json, result_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, ("lichess", site_game_id, username.strip().lower(), 
+    """, (site, site_game_id, username.strip().lower(), 
           created_at, engine_name, engine_version, settings_json, result_json))
 
 
@@ -469,7 +490,8 @@ def get_full_analysis(
     username: str,
     site_game_id: str,
     depth: int,
-    multipv: int
+    multipv: int,
+    site: str
 ) -> dict | None:
     """Get cached full analysis for a game."""
     cursor = conn.cursor()
@@ -477,8 +499,8 @@ def get_full_analysis(
         SELECT moves_json, summary_json, meta_json, created_at
         FROM full_analysis
         WHERE LOWER(username) = ? AND site_game_id = ? 
-        AND depth = ? AND multipv = ?
-    """, (username.strip().lower(), site_game_id, depth, multipv))
+        AND depth = ? AND multipv = ? AND site = ?
+    """, (username.strip().lower(), site_game_id, depth, multipv, site))
     row = cursor.fetchone()
     if not row:
         return None
@@ -493,7 +515,8 @@ def save_full_analysis(
     multipv: int,
     moves_json: str,
     summary_json: str,
-    meta_json: str
+    meta_json: str,
+    site: str
 ) -> None:
     """Save full analysis result to cache."""
     cursor = conn.cursor()
@@ -504,7 +527,7 @@ def save_full_analysis(
         (site, site_game_id, username, depth, multipv, 
          moves_json, summary_json, meta_json, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, ("lichess", site_game_id, username.strip().lower(), 
+    """, (site, site_game_id, username.strip().lower(), 
           depth, multipv, moves_json, summary_json, meta_json, created_at))
 
 
@@ -515,7 +538,8 @@ def create_analysis_job(
     username: str,
     site_game_id: str,
     depth: int,
-    multipv: int
+    multipv: int,
+    site: str
 ) -> None:
     """Create a new analysis job record."""
     from datetime import datetime, timezone
@@ -524,7 +548,7 @@ def create_analysis_job(
     cursor.execute("""
         INSERT INTO analysis_jobs (id, site, site_game_id, username, depth, multipv, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (job_id, "lichess", site_game_id, username.strip().lower(), depth, multipv, created_at))
+    """, (job_id, site, site_game_id, username.strip().lower(), depth, multipv, created_at))
 
 
 def get_analysis_job(
@@ -532,15 +556,16 @@ def get_analysis_job(
     username: str,
     site_game_id: str,
     depth: int,
-    multipv: int
+    multipv: int,
+    site: str
 ) -> dict | None:
     """Get an analysis job by game/user/params. Returns None if not found."""
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, site, site_game_id, username, depth, multipv, created_at
         FROM analysis_jobs
-        WHERE LOWER(username) = ? AND site_game_id = ? AND depth = ? AND multipv = ?
-    """, (username.strip().lower(), site_game_id, depth, multipv))
+        WHERE LOWER(username) = ? AND site_game_id = ? AND depth = ? AND multipv = ? AND site = ?
+    """, (username.strip().lower(), site_game_id, depth, multipv, site))
     row = cursor.fetchone()
     if not row:
         return None

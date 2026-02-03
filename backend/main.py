@@ -15,8 +15,25 @@ from db import (
     create_analysis_job, get_analysis_job, delete_analysis_job, count_analysis_jobs
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
+from chesscom import fetch_chesscom_games, ChesscomAPIError
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis, evaluate_position
+
+# ============================================================================
+# Site validation
+# ============================================================================
+VALID_SITES = {"lichess", "chesscom", "all"}
+
+def validate_site(site: str) -> str:
+    """Validate and normalize site parameter."""
+    site = site.lower()
+    if site not in VALID_SITES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid site. Must be one of: {', '.join(VALID_SITES)}"
+        )
+    return site
+
 
 # ============================================================================
 # Concurrency control for background analysis
@@ -293,16 +310,79 @@ async def import_lichess_games(request: ImportRequest):
     )
 
 
-@app.get("/api/openings/lichess/{username}", response_model=list[OpeningStats])
+@app.post("/api/import/chesscom", response_model=ImportResponse)
+async def import_chesscom_games(request: ImportRequest):
+    """
+    Import games from Chess.com for a user.
+    Fetches games via Chess.com API, parses, and stores in database.
+    """
+    username = request.username.strip()
+    max_games = request.max_games
+
+    # Fetch games from Chess.com
+    try:
+        games = fetch_chesscom_games(username, max_games)
+    except ChesscomAPIError as e:
+        if e.status_code == 404:
+            raise HTTPException(status_code=404, detail=e.message)
+        elif e.status_code == 429:
+            raise HTTPException(status_code=429, detail=e.message)
+        else:
+            raise HTTPException(status_code=502, detail=e.message)
+
+    # Check if we got any games
+    if not games:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No games found for user '{username}' on Chess.com."
+        )
+
+    # Store in database
+    conn = get_connection()
+    imported = 0
+    skipped = 0
+    try:
+        for game in games:
+            print(">>>>>>>>>", game["opening_name"])
+            if upsert_game(conn, game):
+                imported += 1
+            else:
+                skipped += 1
+        conn.commit()
+
+        print(">>>>>>>>> tenefafko", skipped, imported)
+        
+        # Record import status
+        from datetime import datetime, timezone
+        imported_at = datetime.now(timezone.utc).isoformat()
+        upsert_import_status(
+            conn, username, "chesscom", 
+            imported, skipped, max_games, imported_at
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return ImportResponse(
+        username=username,
+        imported=imported,
+        skipped=skipped
+    )
+
+
+@app.get("/api/openings/{site}/{username}", response_model=list[OpeningStats])
 async def get_openings_report(
+    site: str,
     username: str,
     color: str = Query(default="all", pattern="^(all|white|black)$"),
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
 ):
     """
     Get aggregated opening statistics for a user.
-    Supports filtering by color and time control.
+    Supports filtering by color, time control, and site.
+    Site can be 'lichess', 'chesscom', or 'all'.
     """
+    site = validate_site(site)
     username = username.strip()
 
     if not username:
@@ -310,7 +390,7 @@ async def get_openings_report(
 
     conn = get_connection()
     try:
-        stats = get_openings_stats(conn, username, color, time_class)
+        stats = get_openings_stats(conn, username, color, time_class, site)
     finally:
         conn.close()
 
@@ -323,9 +403,10 @@ async def get_openings_report(
     return [OpeningStats(**s) for s in stats]
 
 
-@app.get("/api/import-status/lichess/{username}", response_model=ImportStatusResponse)
-async def get_import_status_endpoint(username: str):
-    """Get last import status and total games count for a user."""
+@app.get("/api/import-status/{site}/{username}", response_model=ImportStatusResponse)
+async def get_import_status_endpoint(site: str, username: str):
+    """Get last import status and total games count for a user on a specific site."""
+    site = validate_site(site)
     username = username.strip()
     
     if not username:
@@ -333,15 +414,16 @@ async def get_import_status_endpoint(username: str):
     
     conn = get_connection()
     try:
-        status = get_import_status(conn, username, "lichess")
+        status = get_import_status(conn, username, site)
     finally:
         conn.close()
     
     return ImportStatusResponse(**status)
 
 
-@app.get("/api/games/lichess/{username}", response_model=OpeningGamesResponse)
+@app.get("/api/games/{site}/{username}", response_model=OpeningGamesResponse)
 async def get_games_for_opening(
+    site: str,
     username: str,
     eco: str = Query(..., description="ECO code for the opening"),
     color: str = Query(default="all", pattern="^(all|white|black)$"),
@@ -351,6 +433,7 @@ async def get_games_for_opening(
     limit: int = Query(default=10, ge=1, le=50)
 ):
     """Get recent games and summary for a user and opening with filters."""
+    site = validate_site(site)
     username = username.strip()
     
     if not username:
@@ -362,7 +445,7 @@ async def get_games_for_opening(
     conn = get_connection()
     try:
         result_data = get_games_by_opening(
-            conn, username, eco, color, time_class, result, offset, limit
+            conn, username, eco, color, time_class, result, offset, limit, site
         )
     finally:
         conn.close()
@@ -376,9 +459,10 @@ async def get_games_for_opening(
     return OpeningGamesResponse(**result_data)
 
 
-@app.get("/api/game/lichess/{username}/{game_id}", response_model=GameResponse)
-async def get_game(username: str, game_id: str):
+@app.get("/api/game/{site}/{username}/{game_id}", response_model=GameResponse)
+async def get_game(site: str, username: str, game_id: str):
     """Get game metadata and PGN."""
+    site = validate_site(site)
     username = username.strip()
     
     if not username:
@@ -386,12 +470,20 @@ async def get_game(username: str, game_id: str):
     
     conn = get_connection()
     try:
-        game = get_game_by_id(conn, username, game_id)
+        game = get_game_by_id(conn, username, game_id, site)
     finally:
         conn.close()
     
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Build site-specific URL
+    if game["site"] == "lichess":
+        game_url = f"https://lichess.org/{game_id}"
+    elif game["site"] == "chesscom":
+        game_url = f"https://www.chess.com/game/live/{game_id}"
+    else:
+        game_url = ""
     
     return GameResponse(
         username=username,
@@ -401,15 +493,16 @@ async def get_game(username: str, game_id: str):
         color=game["color"],
         result=game["result"],
         opponent=game["opponent"],
-        lichess_url=f"https://lichess.org/{game_id}",
+        lichess_url=game_url,  # Note: field name kept for backwards compatibility
         eco=game.get("eco"),
         opening_name=game.get("opening_name")
     )
 
 
-@app.get("/api/analysis/lichess/{username}/{game_id}", response_model=AnalysisResponse)
-async def get_analysis_endpoint(username: str, game_id: str):
+@app.get("/api/analysis/{site}/{username}/{game_id}", response_model=AnalysisResponse)
+async def get_analysis_endpoint(site: str, username: str, game_id: str):
     """Get cached analysis for a game."""
+    site = validate_site(site)
     username = username.strip()
     
     if not username:
@@ -417,7 +510,7 @@ async def get_analysis_endpoint(username: str, game_id: str):
     
     conn = get_connection()
     try:
-        cached = get_analysis(conn, username, game_id)
+        cached = get_analysis(conn, username, game_id, site)
     finally:
         conn.close()
     
@@ -431,9 +524,10 @@ async def get_analysis_endpoint(username: str, game_id: str):
     )
 
 
-@app.post("/api/analysis/lichess/{username}/{game_id}", response_model=AnalysisResponse)
-async def run_analysis_endpoint(username: str, game_id: str):
+@app.post("/api/analysis/{site}/{username}/{game_id}", response_model=AnalysisResponse)
+async def run_analysis_endpoint(site: str, username: str, game_id: str):
     """Run analysis on a game (or return cached)."""
+    site = validate_site(site)
     username = username.strip()
     
     if not username:
@@ -442,7 +536,7 @@ async def run_analysis_endpoint(username: str, game_id: str):
     conn = get_connection()
     try:
         # Check cache first
-        cached = get_analysis(conn, username, game_id)
+        cached = get_analysis(conn, username, game_id, site)
         if cached:
             return AnalysisResponse(
                 status="ready",
@@ -451,7 +545,7 @@ async def run_analysis_endpoint(username: str, game_id: str):
             )
         
         # Get game
-        game = get_game_by_id(conn, username, game_id)
+        game = get_game_by_id(conn, username, game_id, site)
         if not game:
             raise HTTPException(status_code=404, detail="Game not found")
         
@@ -467,7 +561,7 @@ async def run_analysis_endpoint(username: str, game_id: str):
         # Save to cache
         settings = {"time_ms": 150, "checkpoints": [10, 20, 30, 40]}
         save_analysis(
-            conn, username, game_id,
+            conn, username, game_id, site,
             engine_name="stockfish",
             engine_version="15+",
             settings_json=json.dumps(settings),
@@ -476,7 +570,7 @@ async def run_analysis_endpoint(username: str, game_id: str):
         conn.commit()
         
         # Get created_at
-        saved = get_analysis(conn, username, game_id)
+        saved = get_analysis(conn, username, game_id, site)
         
         return AnalysisResponse(
             status="ready",
@@ -497,7 +591,8 @@ async def run_analysis_background(
     game_id: str,
     pgn: str,
     depth: int,
-    multipv: int
+    multipv: int,
+    site: str
 ):
     """Background task to run Stockfish analysis."""
     global active_analysis_count
@@ -519,17 +614,18 @@ async def run_analysis_background(
                 multipv=multipv,
                 moves_json=json.dumps(result["moves"]),
                 summary_json=json.dumps(result["summary"]),
-                meta_json=json.dumps(result["meta"])
+                meta_json=json.dumps(result["meta"]),
+                site=site
             )
             delete_analysis_job(conn, job_id)
             conn.commit()
-            print(f"[Analysis] Completed for game {game_id}")
+            print(f"[Analysis] Completed for game {game_id} on {site}")
         finally:
             conn.close()
             
     except Exception as e:
         # On failure, just delete the job so user can retry
-        print(f"[Analysis] Failed for game {game_id}: {e}")
+        print(f"[Analysis] Failed for game {game_id} on {site}: {e}")
         conn = get_connection()
         try:
             delete_analysis_job(conn, job_id)
@@ -543,14 +639,16 @@ async def run_analysis_background(
             print(f"[Analysis] Active count now: {active_analysis_count}")
 
 
-@app.get("/api/analysis/lichess/{username}/{game_id}/full", response_model=FullAnalysisResponse)
+@app.get("/api/analysis/{site}/{username}/{game_id}/full", response_model=FullAnalysisResponse)
 async def get_full_analysis_endpoint(
+    site: str,
     username: str,
     game_id: str,
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5)
 ):
     """Get full analysis status for a game."""
+    site = validate_site(site)
     username = username.strip()
     
     if not username:
@@ -559,7 +657,7 @@ async def get_full_analysis_endpoint(
     conn = get_connection()
     try:
         # Check if completed analysis exists
-        cached = get_full_analysis(conn, username, game_id, depth, multipv)
+        cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
         if cached:
             return FullAnalysisResponse(
                 status="completed",
@@ -572,7 +670,7 @@ async def get_full_analysis_endpoint(
             )
         
         # Check if job is currently processing
-        job = get_analysis_job(conn, username, game_id, depth, multipv)
+        job = get_analysis_job(conn, username, game_id, depth, multipv, site)
         if job:
             return FullAnalysisResponse(status="processing")
         
@@ -582,8 +680,9 @@ async def get_full_analysis_endpoint(
         conn.close()
 
 
-@app.post("/api/analysis/lichess/{username}/{game_id}/full", response_model=FullAnalysisResponse)
+@app.post("/api/analysis/{site}/{username}/{game_id}/full", response_model=FullAnalysisResponse)
 async def run_full_analysis_endpoint(
+    site: str,
     username: str,
     game_id: str,
     depth: int = Query(default=18, ge=1, le=30),
@@ -592,6 +691,7 @@ async def run_full_analysis_endpoint(
     """Start full move-by-move analysis on a game (async with background task)."""
     global active_analysis_count
     
+    site = validate_site(site)
     username = username.strip()
     
     if not username:
@@ -600,7 +700,7 @@ async def run_full_analysis_endpoint(
     conn = get_connection()
     try:
         # 1. Check if completed analysis already exists
-        cached = get_full_analysis(conn, username, game_id, depth, multipv)
+        cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
         if cached:
             return FullAnalysisResponse(
                 status="completed",
@@ -613,7 +713,7 @@ async def run_full_analysis_endpoint(
             )
         
         # 2. Check if job is already processing
-        existing_job = get_analysis_job(conn, username, game_id, depth, multipv)
+        existing_job = get_analysis_job(conn, username, game_id, depth, multipv, site)
         if existing_job:
             return FullAnalysisResponse(status="processing")
         
@@ -628,7 +728,7 @@ async def run_full_analysis_endpoint(
             print(f"[Analysis] Starting new analysis. Active count: {active_analysis_count}")
         
         # 4. Get game PGN
-        game = get_game_by_id(conn, username, game_id)
+        game = get_game_by_id(conn, username, game_id, site)
         if not game:
             async with active_analysis_lock:
                 active_analysis_count -= 1
@@ -641,12 +741,12 @@ async def run_full_analysis_endpoint(
         
         # 5. Create job and start background task
         job_id = str(uuid.uuid4())
-        create_analysis_job(conn, job_id, username, game_id, depth, multipv)
+        create_analysis_job(conn, job_id, username, game_id, depth, multipv, site)
         conn.commit()
         
         # Start background task (non-blocking)
         asyncio.create_task(run_analysis_background(
-            job_id, username, game_id, game["pgn"], depth, multipv
+            job_id, username, game_id, game["pgn"], depth, multipv, site
         ))
         
         return FullAnalysisResponse(status="processing")

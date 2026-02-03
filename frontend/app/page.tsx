@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { SourceSelector, Site } from "@/components/SourceSelector";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -50,6 +51,7 @@ export default function Home() {
   const router = useRouter();
   
   const [username, setUsername] = useState("");
+  const [site, setSite] = useState<Site>("lichess");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<OpeningStats[] | null>(null);
@@ -69,14 +71,15 @@ export default function Home() {
   const fetchReport = async (
     user: string,
     color: ColorFilter,
-    timeClass: TimeClassFilter
+    timeClass: TimeClassFilter,
+    sourceSite: Site
   ) => {
     const params = new URLSearchParams();
     params.set("color", color);
     params.set("time_class", timeClass);
 
     const response = await fetch(
-      `${API_BASE_URL}/api/openings/lichess/${encodeURIComponent(user)}?${params}`
+      `${API_BASE_URL}/api/openings/${sourceSite}/${encodeURIComponent(user)}?${params}`
     );
 
     if (!response.ok) {
@@ -87,9 +90,9 @@ export default function Home() {
     return response.json();
   };
 
-  const fetchImportStatus = async (user: string) => {
+  const fetchImportStatus = async (user: string, sourceSite: Site) => {
     const response = await fetch(
-      `${API_BASE_URL}/api/import-status/lichess/${encodeURIComponent(user)}`
+      `${API_BASE_URL}/api/import-status/${sourceSite}/${encodeURIComponent(user)}`
     );
     
     if (!response.ok) {
@@ -99,38 +102,50 @@ export default function Home() {
     return response.json();
   };
 
-  // Restore state from URL on mount
+  // Restore state from URL on mount or localStorage
   useEffect(() => {
     const userFromUrl = searchParams.get("user");
-    if (userFromUrl && !initialized) {
+    
+    if (!initialized) {
       setInitialized(true);
-      setUsername(userFromUrl);
-      setCurrentUsername(userFromUrl);
       
-      // Fetch data for the user from URL
-      const loadData = async () => {
-        setLoading(true);
-        try {
-          const [reportData, statusData] = await Promise.all([
-            fetchReport(userFromUrl, colorFilter, timeClassFilter),
-            fetchImportStatus(userFromUrl)
-          ]);
-          setReport(reportData);
-          if (statusData) {
-            setImportStatus(statusData);
+      // Determine which user to load: URL param or localStorage
+      let userToLoad = userFromUrl;
+      if (!userToLoad && typeof window !== "undefined") {
+        userToLoad = localStorage.getItem("lastUsername");
+      }
+      
+      if (userToLoad) {
+        setUsername(userToLoad);
+        setCurrentUsername(userToLoad);
+        
+        // Fetch data for the user
+        const loadData = async () => {
+          setLoading(true);
+          try {
+            const [reportData, statusData] = await Promise.all([
+              fetchReport(userToLoad, colorFilter, timeClassFilter, site),
+              fetchImportStatus(userToLoad, site)
+            ]);
+            setReport(reportData);
+            if (statusData) {
+              setImportStatus(statusData);
+            }
+            // Update URL if we loaded from localStorage
+            if (!userFromUrl && userToLoad) {
+              router.replace(`/?user=${encodeURIComponent(userToLoad)}`, { scroll: false });
+            }
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Failed to load data");
+          } finally {
+            setLoading(false);
           }
-        } catch (err) {
-          setError(err instanceof Error ? err.message : "Failed to load data");
-        } finally {
-          setLoading(false);
-        }
-      };
-      
-      loadData();
-    } else if (!userFromUrl) {
-      setInitialized(true);
+        };
+        
+        loadData();
+      }
     }
-  }, [searchParams, initialized, colorFilter, timeClassFilter]);
+  }, [searchParams, initialized, colorFilter, timeClassFilter, site, router]);
 
   // Update URL when currentUsername changes
   const updateUrl = (user: string | null) => {
@@ -151,35 +166,74 @@ export default function Home() {
     setImportResult(null);
 
     try {
-      // Import games
-      const importResponse = await fetch(`${API_BASE_URL}/api/import/lichess`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), max_games: 200 }),
-      });
+      let totalImported = 0;
+      let totalSkipped = 0;
 
-      if (!importResponse.ok) {
-        const data = await importResponse.json().catch(() => ({}));
-        throw new Error(
-          data.detail || `Import failed: ${importResponse.status}`
-        );
+      // Import from selected sites
+      if (site === "all") {
+        // Import from both sites sequentially
+        for (const sourceSite of ["lichess", "chesscom"] as const) {
+          try {
+            const importResponse = await fetch(`${API_BASE_URL}/api/import/${sourceSite}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ username: username.trim(), max_games: 200 }),
+            });
+
+            if (importResponse.ok) {
+              const importData: ImportResponse = await importResponse.json();
+              totalImported += importData.imported;
+              totalSkipped += importData.skipped;
+            }
+          } catch (err) {
+            console.warn(`Failed to import from ${sourceSite}:`, err);
+          }
+        }
+
+        setImportResult({
+          username: username.trim(),
+          imported: totalImported,
+          skipped: totalSkipped
+        });
+      } else {
+        // Import from single site
+        const importResponse = await fetch(`${API_BASE_URL}/api/import/${site}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: username.trim(), max_games: 200 }),
+        });
+
+        if (!importResponse.ok) {
+          const data = await importResponse.json().catch(() => ({}));
+          throw new Error(
+            data.detail || `Import failed: ${importResponse.status}`
+          );
+        }
+
+        const importData: ImportResponse = await importResponse.json();
+        setImportResult(importData);
       }
 
-      const importData: ImportResponse = await importResponse.json();
-      setImportResult(importData);
-      setCurrentUsername(username.trim());
-      updateUrl(username.trim());
+      const trimmedUsername = username.trim();
+      setCurrentUsername(trimmedUsername);
+      updateUrl(trimmedUsername);
+      
+      // Save to localStorage for future visits
+      if (typeof window !== "undefined") {
+        localStorage.setItem("lastUsername", trimmedUsername);
+      }
 
       // Auto-fetch report after successful import
       const reportData = await fetchReport(
-        username.trim(),
+        trimmedUsername,
         colorFilter,
-        timeClassFilter
+        timeClassFilter,
+        site
       );
       setReport(reportData);
 
       // Fetch import status
-      const status = await fetchImportStatus(username.trim());
+      const status = await fetchImportStatus(trimmedUsername, site);
       if (status) {
         setImportStatus(status);
       }
@@ -200,12 +254,13 @@ export default function Home() {
       const reportData = await fetchReport(
         currentUsername,
         colorFilter,
-        timeClassFilter
+        timeClassFilter,
+        site
       );
       setReport(reportData);
       
       // Also fetch status
-      const status = await fetchImportStatus(currentUsername);
+      const status = await fetchImportStatus(currentUsername, site);
       if (status) {
         setImportStatus(status);
       }
@@ -230,12 +285,13 @@ export default function Home() {
         const reportData = await fetchReport(
           currentUsername,
           newColor,
-          newTimeClass
+          newTimeClass,
+          site
         );
         setReport(reportData);
         
         // Also fetch status
-        const status = await fetchImportStatus(currentUsername);
+        const status = await fetchImportStatus(currentUsername, site);
         if (status) {
           setImportStatus(status);
         }
@@ -300,11 +356,18 @@ export default function Home() {
         {/* Input row */}
         <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
           <div className="flex-1">
+            <div className="mb-4">
+              <label className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                Source
+              </label>
+              <SourceSelector value={site} onChange={setSite} />
+            </div>
+
             <label
               htmlFor="username"
               className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2"
             >
-              Lichess username
+              Username
             </label>
             <div className="flex items-center gap-3">
               <input
@@ -507,7 +570,7 @@ export default function Home() {
                             router.push(
                               `/opening/${encodeURIComponent(
                                 currentUsername
-                              )}/${encodeURIComponent(opening.eco)}`
+                              )}/${encodeURIComponent(opening.eco)}?site=${site}`
                             );
                           }
                         }}
@@ -576,7 +639,7 @@ export default function Home() {
         {!report && !loading && !error && (
           <div className="mt-6 zen-surface-flat p-10 text-center">
             <p className="text-[color:var(--zen-muted)]">
-              Enter a Lichess username and click Import Games to see opening
+              Select a source, enter a username, and click Import Games to see opening
               statistics.
             </p>
           </div>

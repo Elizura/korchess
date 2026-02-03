@@ -1,20 +1,21 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { SourceSelector, Site } from "@/components/SourceSelector";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 interface GameDetail {
+  site: string;
   site_game_id: string;
   played_at: string | null;
   color: string;
   result: string;
   opponent: string | null;
   opening_name: string;
-  lichess_url: string;
 }
 
 interface OpeningSummary {
@@ -55,9 +56,12 @@ const parseOpeningName = (fullName: string) => {
 
 export default function OpeningDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const username = params.username as string;
   const eco = params.eco as string;
-
+  const siteParam = searchParams.get("site") || "lichess";
+  
+  const [site, setSite] = useState<Site>(siteParam as Site);
   const [games, setGames] = useState<GameDetail[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +91,7 @@ export default function OpeningDetailPage() {
       });
 
       const response = await fetch(
-        `${API_BASE_URL}/api/games/lichess/${encodeURIComponent(username)}?${params}`
+        `${API_BASE_URL}/api/games/${site}/${encodeURIComponent(username)}?${params}`
       );
 
       if (!response.ok) {
@@ -123,7 +127,7 @@ export default function OpeningDetailPage() {
     if (username && eco) {
       fetchGames(true);
     }
-  }, [username, eco, colorFilter, timeClassFilter, resultFilter]);
+  }, [username, eco, colorFilter, timeClassFilter, resultFilter, site]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";
@@ -247,6 +251,13 @@ export default function OpeningDetailPage() {
         </div>
       )}
 
+      {/* Source Selector */}
+      {!loading && (
+        <div className="mb-4">
+          <SourceSelector value={site} onChange={setSite} />
+        </div>
+      )}
+
       {/* Filters */}
       {!loading && (
         <div className="mb-6 flex flex-wrap gap-3 items-center">
@@ -346,18 +357,22 @@ export default function OpeningDetailPage() {
 
                 <div className="flex gap-2">
                   <Link
-                    href={`/game/lichess/${encodeURIComponent(username)}/${game.site_game_id}`}
+                    href={`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`}
                     className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
                   >
                     Analyze
                   </Link>
                   <a
-                    href={game.lichess_url}
+                    href={
+                      game.site === "lichess"
+                        ? `https://lichess.org/${game.site_game_id}`
+                        : `https://www.chess.com/game/live/${game.site_game_id}`
+                    }
                     target="_blank"
                     rel="noopener noreferrer"
                     className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
                   >
-                    Lichess →
+                    {game.site === "lichess" ? "Lichess" : "Chess.com"} →
                   </a>
                 </div>
               </div>
