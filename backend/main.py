@@ -343,14 +343,12 @@ async def import_chesscom_games(request: ImportRequest):
     skipped = 0
     try:
         for game in games:
-            print(">>>>>>>>>", game["opening_name"])
             if upsert_game(conn, game):
                 imported += 1
             else:
                 skipped += 1
         conn.commit()
 
-        print(">>>>>>>>> tenefafko", skipped, imported)
         
         # Record import status
         from datetime import datetime, timezone
