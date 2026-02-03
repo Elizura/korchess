@@ -249,6 +249,9 @@ def get_openings_stats(
             "score_pct": score_pct
         })
 
+    # Prefer shortest/cleanest opening_name per ECO: sort by eco, then name length, then games desc
+    results.sort(key=lambda r: (r["eco"], len(r["opening_name"]), -r["games"]))
+
     return results
 
 

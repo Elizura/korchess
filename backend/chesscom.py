@@ -276,6 +276,25 @@ def map_result(game_json: dict, target_username: str, color: str) -> str:
     return "unknown"
 
 
+# Regex: move number + one or three dots + optional space, only when followed by SAN-like (letter).
+# Used to find where move notation starts so we can strip it (avoids cutting "version 2.0").
+_MOVE_NOTATION_START = re.compile(r'\s+\d+\.(?:\.\.)?\s*')
+
+
+def strip_move_notation_suffix(opening_name: str) -> str:
+    """
+    Remove any trailing move-notation suffix from an opening name.
+    Chess.com often appends moves like "3...Cxd5 4.Nf3". We cut at the first
+    move token (digit(s) + dot/dots + SAN-ish) and return the prefix, trimmed.
+    """
+    if not opening_name or opening_name == "Unknown":
+        return opening_name
+    match = _MOVE_NOTATION_START.search(opening_name)
+    if match:
+        return opening_name[: match.start()].strip()
+    return opening_name
+
+
 def extract_opening_from_pgn(pgn_text: str) -> tuple[str, str]:
     """
     Extract ECO code and opening name from PGN headers.
@@ -297,7 +316,6 @@ def extract_opening_from_pgn(pgn_text: str) -> tuple[str, str]:
         
         headers = dict(game.headers)
         
-        # Get ECO code - should be like "A40", "B01", etc.
         eco = headers.get("ECO", "UNKNOWN") or "UNKNOWN"
         
         # Validate ECO code format (letter + 2 digits)
@@ -334,6 +352,9 @@ def extract_opening_from_pgn(pgn_text: str) -> tuple[str, str]:
         # Fallback to Opening header if ECOUrl didn't work
         if opening_name == "Unknown":
             opening_name = headers.get("Opening", "Unknown") or "Unknown"
+        
+        # Normalize: strip trailing move notation (e.g. "3...Cxd5 4.Nf3") so names align with Lichess
+        opening_name = strip_move_notation_suffix(opening_name)
         
         return eco, opening_name
     
