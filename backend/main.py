@@ -97,6 +97,7 @@ class ImportStatusResponse(BaseModel):
 
 class GameDetail(BaseModel):
     """Details for a single game."""
+    site: str
     site_game_id: str
     played_at: str | None
     color: str

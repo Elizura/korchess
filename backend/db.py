@@ -404,14 +404,23 @@ def get_games_by_opening(
     
     games = []
     for row in rows:
+        site_val = row["site"]
+        gid = row["site_game_id"]
+        if site_val == "lichess":
+            game_url = f"https://lichess.org/{gid}"
+        elif site_val == "chesscom":
+            game_url = f"https://www.chess.com/game/live/{gid}"
+        else:
+            game_url = ""
         games.append({
-            "site": row["site"],
-            "site_game_id": row["site_game_id"],
+            "site": site_val,
+            "site_game_id": gid,
             "played_at": row["played_at"],
             "color": row["color"],
             "result": row["result"],
             "opponent": row["opponent"],
-            "opening_name": row["opening_name"]
+            "opening_name": row["opening_name"],
+            "lichess_url": game_url,
         })
     
     return {
