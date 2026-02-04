@@ -3,7 +3,7 @@
 import { useParams, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { SourceSelector, Site } from "@/components/SourceSelector";
+import { Site } from "@/components/SourceSelector";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -59,9 +59,8 @@ export default function OpeningDetailPage() {
   const searchParams = useSearchParams();
   const username = params.username as string;
   const eco = params.eco as string;
-  const siteParam = searchParams.get("site") || "lichess";
-  
-  const [site, setSite] = useState<Site>(siteParam as Site);
+  const siteParam = searchParams.get("site") || "all";
+  const [site] = useState<Site>(siteParam as Site);
   const [games, setGames] = useState<GameDetail[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -157,11 +156,11 @@ export default function OpeningDetailPage() {
   const parsedOpening = openingName ? parseOpeningName(openingName) : null;
 
   return (
-    <main className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
+    <main className="opening-detail-page opening-detail-frame max-w-5xl mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
         <Link
           href={`/?user=${encodeURIComponent(username)}`}
-          className="inline-flex items-center gap-2 text-sm zen-pill px-3 py-2 text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition"
+          className="detail-back inline-flex items-center gap-2 text-sm zen-pill px-3 py-2 text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition"
         >
           ← Back to openings
         </Link>
@@ -190,71 +189,64 @@ export default function OpeningDetailPage() {
       {summary && !loading && (
         <div className="zen-surface-flat p-4 mb-6">
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-center">
-            {/* Games tile */}
+            {/* Games tile - neutral (total) */}
             <button
               onClick={() => setResultFilter("all")}
-              className={`p-3 rounded-lg transition cursor-pointer ${
+              className={`summary-tile summary-tile-games p-3 rounded-lg transition cursor-pointer ${
                 resultFilter === "all"
-                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-accent)]"
+                  ? "summary-tile-active bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-accent)]"
                   : "hover:bg-[color:var(--zen-surface)]"
               }`}
             >
-              <div className="text-2xl font-semibold">{summary.total_games}</div>
+              <div className="text-2xl font-semibold summary-tile-num-games">{summary.total_games}</div>
               <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Games</div>
             </button>
 
-            {/* Wins tile */}
+            {/* Wins tile - green */}
             <button
               onClick={() => setResultFilter("win")}
-              className={`p-3 rounded-lg transition cursor-pointer ${
+              className={`summary-tile summary-tile-wins p-3 rounded-lg transition cursor-pointer ${
                 resultFilter === "win"
-                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-success)]"
+                  ? "summary-tile-active bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-success)]"
                   : "hover:bg-[color:var(--zen-surface)]"
               }`}
             >
-              <div className="text-2xl font-semibold text-[color:var(--zen-success)]">{summary.wins}</div>
+              <div className="text-2xl font-semibold summary-tile-num-wins">{summary.wins}</div>
               <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Wins</div>
             </button>
 
-            {/* Draws tile */}
+            {/* Draws tile - muted/neutral */}
             <button
               onClick={() => setResultFilter("draw")}
-              className={`p-3 rounded-lg transition cursor-pointer ${
+              className={`summary-tile summary-tile-draws p-3 rounded-lg transition cursor-pointer ${
                 resultFilter === "draw"
-                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-border)]"
+                  ? "summary-tile-active bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-muted)]"
                   : "hover:bg-[color:var(--zen-surface)]"
               }`}
             >
-              <div className="text-2xl font-semibold text-[color:var(--zen-muted)]">{summary.draws}</div>
+              <div className="text-2xl font-semibold summary-tile-num-draws">{summary.draws}</div>
               <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Draws</div>
             </button>
 
-            {/* Losses tile */}
+            {/* Losses tile - red */}
             <button
               onClick={() => setResultFilter("loss")}
-              className={`p-3 rounded-lg transition cursor-pointer ${
+              className={`summary-tile summary-tile-losses p-3 rounded-lg transition cursor-pointer ${
                 resultFilter === "loss"
-                  ? "bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-danger)]"
+                  ? "summary-tile-active bg-[color:var(--zen-accent-2)] ring-2 ring-[color:var(--zen-danger)]"
                   : "hover:bg-[color:var(--zen-surface)]"
               }`}
             >
-              <div className="text-2xl font-semibold text-[color:var(--zen-danger)]">{summary.losses}</div>
+              <div className="text-2xl font-semibold summary-tile-num-losses">{summary.losses}</div>
               <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Losses</div>
             </button>
 
-            {/* Score tile - NOT clickable */}
-            <div className="p-3 rounded-lg">
-              <div className="text-2xl font-semibold">{summary.score_pct.toFixed(1)}%</div>
+            {/* Score tile - neutral */}
+            <div className="summary-tile summary-tile-static summary-tile-score p-3 rounded-lg">
+              <div className="text-2xl font-semibold summary-tile-num-score">{summary.score_pct.toFixed(1)}%</div>
               <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Score</div>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Source Selector */}
-      {!loading && (
-        <div className="mb-4">
-          <SourceSelector value={site} onChange={setSite} />
         </div>
       )}
 
@@ -262,7 +254,7 @@ export default function OpeningDetailPage() {
       {!loading && (
         <div className="mb-6 flex flex-wrap gap-3 items-center">
           {/* Color tabs */}
-          <div className="zen-pill p-1 flex gap-1">
+          <div className="opening-detail-tabs zen-pill p-1 flex gap-1">
             {[
               { value: "all" as const, label: "All" },
               { value: "white" as const, label: "As White" },
@@ -271,7 +263,7 @@ export default function OpeningDetailPage() {
               <button
                 key={tab.value}
                 onClick={() => setColorFilter(tab.value)}
-                className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${
+                className={`opening-detail-tab px-3 py-1.5 rounded-full text-sm font-medium transition ${
                   colorFilter === tab.value
                     ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
                     : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]"
@@ -286,7 +278,7 @@ export default function OpeningDetailPage() {
           <select
             value={timeClassFilter}
             onChange={(e) => setTimeClassFilter(e.target.value as TimeClassFilter)}
-            className="zen-input px-3 py-1.5 text-sm outline-none"
+            className="opening-detail-select zen-input px-3 py-1.5 text-sm outline-none"
           >
             <option value="all">All time controls</option>
             <option value="blitz">Blitz</option>
@@ -312,12 +304,12 @@ export default function OpeningDetailPage() {
 
       {/* Games List */}
       {games && !loading && (
-        <div className="zen-surface p-5 sm:p-6">
+        <div className="opening-detail-panel zen-surface p-5 sm:p-6">
           <div className="space-y-3">
           {games.map((game, idx) => (
             <div
               key={`${game.site_game_id}-${idx}`}
-              className="group zen-surface-flat px-4 py-4 sm:px-5 sm:py-4 hover:bg-[color:var(--zen-surface-2)] transition"
+              className="opening-detail-card group zen-surface-flat px-4 py-4 sm:px-5 sm:py-4 hover:bg-[color:var(--zen-surface-2)] transition"
             >
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="min-w-0">
@@ -358,7 +350,7 @@ export default function OpeningDetailPage() {
                 <div className="flex gap-2">
                   <Link
                     href={`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`}
-                    className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
+                    className="detail-action zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
                   >
                     Analyze
                   </Link>
@@ -370,7 +362,7 @@ export default function OpeningDetailPage() {
                     }
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
+                    className="detail-action zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
                   >
                     {game.site === "lichess" ? "Lichess" : "Chess.com"} →
                   </a>
@@ -388,7 +380,7 @@ export default function OpeningDetailPage() {
           <button
             onClick={() => fetchGames(false)}
             disabled={loadingMore}
-            className="zen-pill px-6 py-2.5 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition disabled:opacity-50"
+            className="detail-action detail-load zen-pill px-6 py-2.5 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition disabled:opacity-50"
           >
             {loadingMore ? "Loading..." : "Load more games"}
           </button>
@@ -397,7 +389,7 @@ export default function OpeningDetailPage() {
 
       {/* Empty State */}
       {games && games.length === 0 && !loading && (
-        <div className="zen-surface-flat p-12 text-center">
+        <div className="opening-detail-panel zen-surface-flat p-12 text-center">
           <p className="text-[color:var(--zen-muted)]">No games found for this opening.</p>
         </div>
       )}
