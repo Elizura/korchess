@@ -2,7 +2,6 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { SourceSelector, Site } from "@/components/SourceSelector";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -51,7 +50,8 @@ export default function Home() {
   const router = useRouter();
   
   const [username, setUsername] = useState("");
-  const [site, setSite] = useState<Site>("lichess");
+  const [lichessUsername, setLichessUsername] = useState("");
+  const [chesscomUsername, setChesscomUsername] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<OpeningStats[] | null>(null);
@@ -67,19 +67,18 @@ export default function Home() {
     direction: "asc" | "desc";
   }>({ key: "games", direction: "desc" });
   const [initialized, setInitialized] = useState(false);
-
+  // Fetch combined report across all sites
   const fetchReport = async (
     user: string,
     color: ColorFilter,
     timeClass: TimeClassFilter,
-    sourceSite: Site
   ) => {
     const params = new URLSearchParams();
     params.set("color", color);
     params.set("time_class", timeClass);
 
     const response = await fetch(
-      `${API_BASE_URL}/api/openings/${sourceSite}/${encodeURIComponent(user)}?${params}`
+      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}?${params}`
     );
 
     if (!response.ok) {
@@ -90,9 +89,9 @@ export default function Home() {
     return response.json();
   };
 
-  const fetchImportStatus = async (user: string, sourceSite: Site) => {
+  const fetchImportStatus = async (user: string) => {
     const response = await fetch(
-      `${API_BASE_URL}/api/import-status/${sourceSite}/${encodeURIComponent(user)}`
+      `${API_BASE_URL}/api/import-status/all/${encodeURIComponent(user)}`
     );
     
     if (!response.ok) {
@@ -124,8 +123,8 @@ export default function Home() {
           setLoading(true);
           try {
             const [reportData, statusData] = await Promise.all([
-              fetchReport(userToLoad, colorFilter, timeClassFilter, site),
-              fetchImportStatus(userToLoad, site)
+              fetchReport(userToLoad, colorFilter, timeClassFilter),
+              fetchImportStatus(userToLoad)
             ]);
             setReport(reportData);
             if (statusData) {
@@ -145,35 +144,7 @@ export default function Home() {
         loadData();
       }
     }
-  }, [searchParams, initialized, colorFilter, timeClassFilter, site, router]);
-
-  // Reload report when source site changes (Lichess / Chess.com / All)
-  useEffect(() => {
-    if (!currentUsername) return;
-
-    const user = currentUsername;
-
-    const loadForSiteChange = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [reportData, statusData] = await Promise.all([
-          fetchReport(user, colorFilter, timeClassFilter, site),
-          fetchImportStatus(user, site),
-        ]);
-        setReport(reportData);
-        if (statusData) {
-          setImportStatus(statusData);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load data");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadForSiteChange();
-  }, [site, currentUsername, colorFilter, timeClassFilter]);
+  }, [searchParams, initialized, colorFilter, timeClassFilter, router]);
 
   // Update URL when currentUsername changes
   const updateUrl = (user: string | null) => {
@@ -182,9 +153,9 @@ export default function Home() {
     }
   };
 
-  const handleImport = async () => {
-    if (!username.trim()) {
-      setError("Please enter a username");
+  const handleImportLichess = async () => {
+    if (!lichessUsername.trim()) {
+      setError("Please enter a Lichess username");
       return;
     }
 
@@ -193,75 +164,97 @@ export default function Home() {
     setReport(null);
     setImportResult(null);
 
+    const trimmedUsername = lichessUsername.trim();
+
     try {
-      let totalImported = 0;
-      let totalSkipped = 0;
+      const importResponse = await fetch(`${API_BASE_URL}/api/import/lichess`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
+      });
 
-      // Import from selected sites
-      if (site === "all") {
-        // Import from both sites sequentially
-        for (const sourceSite of ["lichess", "chesscom"] as const) {
-          try {
-            const importResponse = await fetch(`${API_BASE_URL}/api/import/${sourceSite}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ username: username.trim(), max_games: 200 }),
-            });
-
-            if (importResponse.ok) {
-              const importData: ImportResponse = await importResponse.json();
-              totalImported += importData.imported;
-              totalSkipped += importData.skipped;
-            }
-          } catch (err) {
-            console.warn(`Failed to import from ${sourceSite}:`, err);
-          }
-        }
-
-        setImportResult({
-          username: username.trim(),
-          imported: totalImported,
-          skipped: totalSkipped
-        });
-      } else {
-        // Import from single site
-        const importResponse = await fetch(`${API_BASE_URL}/api/import/${site}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: username.trim(), max_games: 200 }),
-        });
-
-        if (!importResponse.ok) {
-          const data = await importResponse.json().catch(() => ({}));
-          throw new Error(
-            data.detail || `Import failed: ${importResponse.status}`
-          );
-        }
-
-        const importData: ImportResponse = await importResponse.json();
-        setImportResult(importData);
+      if (!importResponse.ok) {
+        const data = await importResponse.json().catch(() => ({}));
+        throw new Error(
+          data.detail || `Import failed: ${importResponse.status}`
+        );
       }
 
-      const trimmedUsername = username.trim();
+      const importData: ImportResponse = await importResponse.json();
+      setImportResult(importData);
+
+      setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
       updateUrl(trimmedUsername);
-      
-      // Save to localStorage for future visits
+
       if (typeof window !== "undefined") {
         localStorage.setItem("lastUsername", trimmedUsername);
       }
 
-      // Auto-fetch report after successful import
       const reportData = await fetchReport(
         trimmedUsername,
         colorFilter,
-        timeClassFilter,
-        site
+        timeClassFilter
       );
       setReport(reportData);
 
-      // Fetch import status
-      const status = await fetchImportStatus(trimmedUsername, site);
+      const status = await fetchImportStatus(trimmedUsername);
+      if (status) {
+        setImportStatus(status);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleImportChesscom = async () => {
+    if (!chesscomUsername.trim()) {
+      setError("Please enter a Chess.com username");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setReport(null);
+    setImportResult(null);
+
+    const trimmedUsername = chesscomUsername.trim();
+
+    try {
+      const importResponse = await fetch(`${API_BASE_URL}/api/import/chesscom`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
+      });
+
+      if (!importResponse.ok) {
+        const data = await importResponse.json().catch(() => ({}));
+        throw new Error(
+          data.detail || `Import failed: ${importResponse.status}`
+        );
+      }
+
+      const importData: ImportResponse = await importResponse.json();
+      setImportResult(importData);
+
+      setUsername(trimmedUsername);
+      setCurrentUsername(trimmedUsername);
+      updateUrl(trimmedUsername);
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem("lastUsername", trimmedUsername);
+      }
+
+      const reportData = await fetchReport(
+        trimmedUsername,
+        colorFilter,
+        timeClassFilter
+      );
+      setReport(reportData);
+
+      const status = await fetchImportStatus(trimmedUsername);
       if (status) {
         setImportStatus(status);
       }
@@ -282,13 +275,12 @@ export default function Home() {
       const reportData = await fetchReport(
         currentUsername,
         colorFilter,
-        timeClassFilter,
-        site
+        timeClassFilter
       );
       setReport(reportData);
       
       // Also fetch status
-      const status = await fetchImportStatus(currentUsername, site);
+      const status = await fetchImportStatus(currentUsername);
       if (status) {
         setImportStatus(status);
       }
@@ -313,13 +305,12 @@ export default function Home() {
         const reportData = await fetchReport(
           currentUsername,
           newColor,
-          newTimeClass,
-          site
+          newTimeClass
         );
         setReport(reportData);
         
         // Also fetch status
-        const status = await fetchImportStatus(currentUsername, site);
+        const status = await fetchImportStatus(currentUsername);
         if (status) {
           setImportStatus(status);
         }
@@ -376,44 +367,67 @@ export default function Home() {
           Openingscope
         </h1>
         <p className="mt-2 text-sm sm:text-base text-[color:var(--zen-muted)]">
-          Analyze your chess opening performance from Lichess games
+          Analyze your chess opening performance from your games
         </p>
       </div>
 
       <div className="zen-surface p-5 sm:p-6">
-        {/* Input row */}
+        {/* Import inputs row */}
         <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
+          {/* Lichess import */}
           <div className="flex-1">
-            <div className="mb-4">
-              <label className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-                Source
-              </label>
-              <SourceSelector value={site} onChange={setSite} />
-            </div>
-
             <label
-              htmlFor="username"
+              htmlFor="lichess-username"
               className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2"
             >
-              Username
+              Lichess username
             </label>
             <div className="flex items-center gap-3">
               <input
-                id="username"
+                id="lichess-username"
                 type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleImport()}
+                value={lichessUsername}
+                onChange={(e) => setLichessUsername(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleImportLichess()}
                 placeholder="e.g. elizura"
                 className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
                 disabled={loading}
               />
               <button
-                onClick={handleImport}
-                disabled={loading || !username.trim()}
+                onClick={handleImportLichess}
+                disabled={loading || !lichessUsername.trim()}
                 className="shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] bg-[color:var(--zen-accent)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                {loading ? "Loading..." : "Import Games"}
+                {loading ? "Importing..." : "Import"}
+              </button>
+            </div>
+          </div>
+
+          {/* Chess.com import */}
+          <div className="flex-1">
+            <label
+              htmlFor="chesscom-username"
+              className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2"
+            >
+              Chess.com username
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                id="chesscom-username"
+                type="text"
+                value={chesscomUsername}
+                onChange={(e) => setChesscomUsername(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleImportChesscom()}
+                placeholder="e.g. elizura"
+                className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
+                disabled={loading}
+              />
+              <button
+                onClick={handleImportChesscom}
+                disabled={loading || !chesscomUsername.trim()}
+                className="shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] bg-[color:var(--zen-accent)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
+              >
+                {loading ? "Importing..." : "Import"}
               </button>
             </div>
           </div>
@@ -598,7 +612,7 @@ export default function Home() {
                             router.push(
                               `/opening/${encodeURIComponent(
                                 currentUsername
-                              )}/${encodeURIComponent(opening.eco)}?site=${site}`
+                              )}/${encodeURIComponent(opening.eco)}?site=all`
                             );
                           }
                         }}

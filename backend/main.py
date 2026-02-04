@@ -248,14 +248,9 @@ async def health_check():
 
 @app.post("/api/import/lichess", response_model=ImportResponse)
 async def import_lichess_games(request: ImportRequest):
-    """
-    Import games from Lichess for a user.
-    Fetches PGN, parses games, and stores in database.
-    """
     username = request.username.strip()
     max_games = request.max_games
 
-    # Fetch PGN from Lichess
     try:
         pgn_text = fetch_lichess_pgn(username, max_games)
     except LichessAPIError as e:
@@ -266,7 +261,6 @@ async def import_lichess_games(request: ImportRequest):
         else:
             raise HTTPException(status_code=502, detail=e.message)
 
-    # Check if we got any games
     if not pgn_text.strip():
         raise HTTPException(
             status_code=404,
