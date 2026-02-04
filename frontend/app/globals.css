@@ -485,6 +485,27 @@ body {
   border-radius: 0;
   border: 2px solid #e5e7eb;
   background: #0a0a0a;
+  color: #ffffff;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 36px;
+  background-image: linear-gradient(45deg, transparent 50%, #ffffff 50%),
+    linear-gradient(135deg, #ffffff 50%, transparent 50%),
+    linear-gradient(to right, transparent, transparent);
+  background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%, 100% 0;
+  background-size: 6px 6px, 6px 6px, 2.5em 100%;
+  background-repeat: no-repeat;
+}
+
+.opening-detail-page .opening-detail-select:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(109, 125, 207, 0.6);
+}
+
+.opening-detail-page .opening-detail-select option {
+  background: #0a0a0a;
+  color: #ffffff;
 }
 
 .opening-detail-page .opening-detail-panel {

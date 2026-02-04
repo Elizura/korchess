@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
+import { useCountUp } from "@/hooks/useCountUp";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -72,6 +73,9 @@ export default function OpeningDetailPage() {
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+
+  const statsVisible = !!summary && !loading;
+  const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
 
   const fetchGames = async (resetOffset: boolean = false) => {
     const currentOffset = resetOffset ? 0 : offset;
@@ -243,7 +247,7 @@ export default function OpeningDetailPage() {
 
             {/* Score tile - neutral */}
             <div className="summary-tile summary-tile-static summary-tile-score p-3 rounded-lg">
-              <div className="text-2xl font-semibold summary-tile-num-score">{summary.score_pct.toFixed(1)}%</div>
+              <div className="text-2xl font-semibold summary-tile-num-score">{countScore.toFixed(1)}%</div>
               <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Score</div>
             </div>
           </div>
