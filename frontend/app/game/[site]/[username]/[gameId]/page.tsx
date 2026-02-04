@@ -625,11 +625,11 @@ export default function GameAnalyzerPage() {
         {/* Main layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Left: Board + Eval Bar */}
-          <div className="lg:col-span-7">
+          <div className="lg:col-span-7 lg:ml-4">
             <div className="zen-surface zen-surface-no-backdrop p-4">
               <div className="flex gap-3">
                 {/* Eval bar */}
-                <EvalBar eval={currentEval} orientation={orientation} height={480} />
+                <EvalBar eval={currentEval} orientation={orientation} height={600} />
 
                 {/* Board */}
                 <div className="flex-1">
@@ -641,7 +641,7 @@ export default function GameAnalyzerPage() {
                     lastMove={lastMove}
                     showArrows={showArrows}
                     showCoordinates={showCoordinates}
-                    boardWidth={440}
+                    boardWidth={600}
                   />
                 </div>
               </div>

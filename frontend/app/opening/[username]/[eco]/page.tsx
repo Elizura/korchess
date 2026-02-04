@@ -183,10 +183,10 @@ export default function OpeningDetailPage() {
             <span className="font-mono">{eco}</span>
           )}
         </h1>
-        <p className="text-sm text-[color:var(--zen-muted)] mt-2 flex items-center gap-2">
+        {/* <p className="text-sm text-[color:var(--zen-muted)] mt-2 flex items-center gap-2">
           <span className="zen-pill px-2 py-0.5 text-xs font-mono">{eco}</span>
           <span>Recent games for {username}</span>
-        </p>
+        </p> */}
       </div>
 
       {/* Summary Stats - Now Clickable Filter Tiles */}

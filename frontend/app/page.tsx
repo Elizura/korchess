@@ -500,7 +500,7 @@ export default function Home() {
                 <option value="classical">Classical</option>
               </select>
 
-              <label className="zen-pill px-3 py-2.5 flex items-center gap-2 text-sm text-[color:var(--zen-muted)] cursor-pointer select-none">
+              {/* <label className="zen-pill px-3 py-2.5 flex items-center gap-2 text-sm text-[color:var(--zen-muted)] cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={hideUnknown}
@@ -508,7 +508,7 @@ export default function Home() {
                   className="accent-[color:var(--zen-accent)]"
                 />
                 Hide UNKNOWN
-              </label>
+              </label> */}
             </div>
 
             <button

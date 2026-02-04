@@ -57,7 +57,7 @@ export default function BoardControls({
 }: BoardControlsProps) {
   const externalLinkLabel = site === "chesscom" ? "Chess.com" : "Lichess";
   return (
-    <div className="flex flex-wrap items-center gap-2 p-3 zen-surface-flat">
+    <div className="flex flex-wrap items-center gap-2 p-3 zen-surface-flat analysis-controls-bar">
       {/* Navigation buttons */}
       <div className="flex items-center gap-1 border-r border-[color:var(--zen-border)] pr-3">
         <button
