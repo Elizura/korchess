@@ -361,17 +361,17 @@ export default function Home() {
   }, [report, hideUnknown, sortConfig]);
 
   return (
-    <main className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
+    <main className="opening-page max-w-[1152px] mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
-        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">
+        <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
           Openingscope
         </h1>
-        <p className="mt-2 text-sm sm:text-base text-[color:var(--zen-muted)]">
+        <p className="opening-subtitle mt-2 text-sm sm:text-base text-[color:var(--zen-muted)]">
           Analyze your chess opening performance from your games
         </p>
       </div>
 
-      <div className="zen-surface p-5 sm:p-6">
+      <div className="zen-surface opening-frame p-5 sm:p-6">
         {/* Import inputs row */}
         <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
           {/* Lichess import */}
@@ -396,7 +396,7 @@ export default function Home() {
               <button
                 onClick={handleImportLichess}
                 disabled={loading || !lichessUsername.trim()}
-                className="shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] bg-[color:var(--zen-accent)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
                 {loading ? "Importing..." : "Import"}
               </button>
@@ -425,7 +425,7 @@ export default function Home() {
               <button
                 onClick={handleImportChesscom}
                 disabled={loading || !chesscomUsername.trim()}
-                className="shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] bg-[color:var(--zen-accent)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
                 {loading ? "Importing..." : "Import"}
               </button>
@@ -474,7 +474,7 @@ export default function Home() {
                       }
                       disabled={loading}
                       className={[
-                        "px-4 py-2 rounded-full text-sm font-medium transition",
+                        "opening-tab px-4 py-2 text-sm transition",
                         active
                           ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
                           : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
@@ -570,7 +570,7 @@ export default function Home() {
         {report && !loading && (
           <div className="mt-6 overflow-hidden rounded-2xl border border-[color:var(--zen-border)]">
             <div className="overflow-x-auto">
-              <table className="min-w-full">
+              <table className="opening-table min-w-full">
                 <thead className="bg-[color:var(--zen-surface-2)]">
                   <tr>
                     {[
@@ -584,7 +584,7 @@ export default function Home() {
                       <th
                         key={col.key}
                         onClick={() => handleSort(col.key)}
-                        className={`px-6 py-3 text-${col.align} text-[11px] font-medium uppercase tracking-wider text-[color:var(--zen-muted)] cursor-pointer hover:bg-[color:var(--zen-surface)] transition`}
+                        className={`px-6 py-3 text-${col.align} text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] cursor-pointer hover:bg-[color:var(--zen-surface)] transition`}
                       >
                         <div
                           className={`flex items-center gap-1 ${
@@ -623,11 +623,27 @@ export default function Home() {
                             const parsed = parseOpeningName(opening.opening_name);
                             return (
                               <>
-                                <div className="font-medium text-sm flex items-center gap-2">
-                                  {parsed.main}
-                                  <span className="zen-pill px-1.5 py-0.5 text-[10px] font-mono text-[color:var(--zen-muted)]">
+                                <div className="font-semibold text-xl flex items-center gap-3">
+                                  <span
+                                    className="eco-badge"
+                                    style={{
+                                      borderColor:
+                                        opening.score_pct >= 55
+                                          ? "var(--zen-success)"
+                                          : opening.score_pct <= 45
+                                            ? "var(--zen-danger)"
+                                            : "var(--zen-accent)",
+                                      color:
+                                        opening.score_pct >= 55
+                                          ? "var(--zen-success)"
+                                          : opening.score_pct <= 45
+                                            ? "var(--zen-danger)"
+                                            : "var(--zen-accent)",
+                                    }}
+                                  >
                                     {opening.eco}
                                   </span>
+                                  {parsed.main}
                                 </div>
                                 {parsed.variation && (
                                   <div className="text-sm text-[color:var(--zen-muted)] mt-0.5">
