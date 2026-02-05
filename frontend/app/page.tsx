@@ -623,7 +623,7 @@ export default function Home() {
                             const parsed = parseOpeningName(opening.opening_name);
                             return (
                               <>
-                                <div className="font-semibold text-xl flex items-center gap-3">
+                                <div className="font-semibold text-xl flex items-center gap-3 flex-wrap">
                                   <span
                                     className="eco-badge"
                                     style={{
@@ -644,12 +644,13 @@ export default function Home() {
                                     {opening.eco}
                                   </span>
                                   {parsed.main}
+                                  {parsed.variation && (
+                                    <span className="font-normal text-[color:var(--zen-muted)]">
+                                      {" : "}
+                                      {parsed.variation}
+                                    </span>
+                                  )}
                                 </div>
-                                {parsed.variation && (
-                                  <div className="text-sm text-[color:var(--zen-muted)] mt-0.5">
-                                    {parsed.variation}
-                                  </div>
-                                )}
                               </>
                             );
                           })()}

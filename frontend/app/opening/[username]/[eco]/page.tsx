@@ -174,7 +174,8 @@ export default function OpeningDetailPage() {
             <>
               {parsedOpening.main}
               {parsedOpening.variation && (
-                <span className="block mt-1 text-lg sm:text-xl font-normal text-[color:var(--zen-muted)]">
+                <span className="text-lg sm:text-xl font-normal text-[color:var(--zen-muted)]">
+                  {" : "}
                   {parsedOpening.variation}
                 </span>
               )}
