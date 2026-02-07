@@ -5,10 +5,12 @@ import io
 import re
 import time
 from typing import Optional
+import sqlite3
 
 import chess.pgn
 import httpx
 
+from opening_match import game_to_uci_plies, best_opening_match
 LICHESS_API_BASE = "https://lichess.org/api"
 
 
@@ -168,7 +170,12 @@ def game_to_pgn_string(game: chess.pgn.Game) -> str:
     return game.accept(exporter)
 
 
-def parse_pgn_games(pgn_text: str, target_username: str) -> tuple[list[dict], int]:
+def parse_pgn_games(
+    pgn_text: str,
+    target_username: str,
+    db_con: sqlite3.Connection,
+    max_plies: int = 40
+) -> tuple[list[dict], int]:
     """
     Parse multi-game PGN text and extract game data.
     Returns (list of game dicts, count of skipped games).
@@ -184,6 +191,12 @@ def parse_pgn_games(pgn_text: str, target_username: str) -> tuple[list[dict], in
             break
 
         headers = dict(game.headers)
+
+        # Skip non-standard variants
+        variant = headers.get("Variant", "Standard")
+        if variant and variant != "Standard":
+            skipped += 1
+            continue
 
         # Get player names
         white_player = headers.get("White", "").lower()
@@ -217,6 +230,14 @@ def parse_pgn_games(pgn_text: str, target_username: str) -> tuple[list[dict], in
             skipped += 1
             continue
 
+        # Determine opening via canonical UCI prefix match
+        opening = None
+        try:
+            uci_plies = game_to_uci_plies(game, max_plies=max_plies)
+            opening = best_opening_match(db_con, uci_plies)
+        except Exception:
+            opening = None
+
         # Extract other fields
         game_data = {
             "site": "lichess",
@@ -226,8 +247,10 @@ def parse_pgn_games(pgn_text: str, target_username: str) -> tuple[list[dict], in
             "time_class": classify_time_control(headers),
             "color": "white" if is_white else "black",
             "result": result,
-            "eco": headers.get("ECO", "UNKNOWN") or "UNKNOWN",
-            "opening_name": headers.get("Opening", "Unknown") or "Unknown",
+            "eco": (opening["eco"] if opening else "UNKNOWN"),
+            "opening_name": (opening["name"] if opening else "Unknown"),
+            "opening_id": (opening["opening_id"] if opening else None),
+            "opening_ply_count": (opening["ply_count"] if opening else None),
             "opponent": opponent,
             "white_elo": parse_int_or_none(headers.get("WhiteElo")),
             "black_elo": parse_int_or_none(headers.get("BlackElo")),

@@ -3,6 +3,7 @@
 import json
 import uuid
 import asyncio
+import io
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -12,10 +13,12 @@ from db import (
     upsert_import_status, get_import_status, get_games_by_opening,
     get_game_by_id, get_analysis, save_analysis,
     get_full_analysis, save_full_analysis,
-    create_analysis_job, get_analysis_job, delete_analysis_job, count_analysis_jobs
+    create_analysis_job, get_analysis_job, delete_analysis_job, count_analysis_jobs,
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
+from opening_match import game_to_uci_plies, best_opening_match
+import chess.pgn
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis, evaluate_position
 
@@ -267,19 +270,18 @@ async def import_lichess_games(request: ImportRequest):
             detail=f"No rated games found for user '{username}'."
         )
 
-    # Parse games
-    games, skipped = parse_pgn_games(pgn_text, username)
-
-    if not games and skipped == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No games found for user '{username}'."
-        )
-
     # Store in database
     conn = get_connection()
     imported = 0
     try:
+        games, skipped = parse_pgn_games(pgn_text, username, conn)
+
+        if not games and skipped == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No games found for user '{username}'."
+            )
+
         for game in games:
             if upsert_game(conn, game):
                 imported += 1
@@ -338,6 +340,21 @@ async def import_chesscom_games(request: ImportRequest):
     skipped = 0
     try:
         for game in games:
+            opening = None
+            try:
+                pgn_text = game.get("pgn", "")
+                game_obj = chess.pgn.read_game(io.StringIO(pgn_text)) if pgn_text else None
+                if game_obj:
+                    uci_plies = game_to_uci_plies(game_obj, max_plies=40)
+                    opening = best_opening_match(conn, uci_plies)
+            except Exception:
+                opening = None
+
+            game["eco"] = opening["eco"] if opening else "UNKNOWN"
+            game["opening_name"] = opening["name"] if opening else "Unknown"
+            game["opening_id"] = opening["opening_id"] if opening else None
+            game["opening_ply_count"] = opening["ply_count"] if opening else None
+
             if upsert_game(conn, game):
                 imported += 1
             else:
@@ -760,4 +777,3 @@ async def evaluate_position_endpoint(request: EvalRequest):
         return EvalResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
-

@@ -12,6 +12,7 @@ def get_connection() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -35,6 +36,8 @@ def init_db(db_path: Optional[str] = None) -> None:
             result TEXT,
             eco TEXT,
             opening_name TEXT,
+            opening_id INTEGER,
+            opening_ply_count INTEGER,
             opponent TEXT,
             white_elo INTEGER,
             black_elo INTEGER,
@@ -155,9 +158,9 @@ def upsert_game(conn: sqlite3.Connection, game_row: dict) -> bool:
         cursor.execute("""
             INSERT OR IGNORE INTO games (
                 site, site_game_id, username, played_at, time_class,
-                color, result, eco, opening_name, opponent,
-                white_elo, black_elo, pgn
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                color, result, eco, opening_name, opening_id, opening_ply_count,
+                opponent, white_elo, black_elo, pgn
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             game_row["site"],
             game_row["site_game_id"],
@@ -168,6 +171,8 @@ def upsert_game(conn: sqlite3.Connection, game_row: dict) -> bool:
             game_row.get("result"),
             game_row.get("eco"),
             game_row.get("opening_name"),
+            game_row.get("opening_id"),
+            game_row.get("opening_ply_count"),
             game_row.get("opponent"),
             game_row.get("white_elo"),
             game_row.get("black_elo"),
@@ -595,4 +600,3 @@ def count_analysis_jobs(conn: sqlite3.Connection) -> int:
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM analysis_jobs")
     return cursor.fetchone()[0]
-
