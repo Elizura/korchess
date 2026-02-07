@@ -7,8 +7,8 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 interface OpeningStats {
-  eco: string;
-  opening_name: string;
+  opening_key: string;
+  opening_label: string;
   games: number;
   wins: number;
   draws: number;
@@ -337,7 +337,7 @@ export default function Home() {
     // Step 1: Filter (hide unknown)
     let filtered = hideUnknown
       ? report.filter(
-          (row) => row.eco !== "UNKNOWN" && row.opening_name !== "Unknown"
+          (row) => row.opening_key !== "unknown" && row.opening_label !== "Unknown"
         )
       : report;
     
@@ -574,7 +574,7 @@ export default function Home() {
                 <thead className="bg-[color:var(--zen-surface-2)]">
                   <tr>
                     {[
-                      { key: "eco" as const, label: "Opening (ECO)", align: "left" },
+                      { key: "opening_label" as const, label: "Opening", align: "left" },
                       { key: "games" as const, label: "Games", align: "right" },
                       { key: "wins" as const, label: "Wins", align: "right" },
                       { key: "draws" as const, label: "Draws", align: "right" },
@@ -606,13 +606,13 @@ export default function Home() {
                   {processedReport &&
                     processedReport.map((opening, idx) => (
                       <tr
-                        key={`${opening.eco}-${idx}`}
+                        key={`${opening.opening_key}-${idx}`}
                         onClick={() => {
                           if (currentUsername) {
                             router.push(
                               `/opening/${encodeURIComponent(
                                 currentUsername
-                              )}/${encodeURIComponent(opening.eco)}?site=all`
+                              )}/${encodeURIComponent(opening.opening_key)}?site=all`
                             );
                           }
                         }}
@@ -620,7 +620,11 @@ export default function Home() {
                       >
                         <td className="px-6 py-4">
                           {(() => {
-                            const parsed = parseOpeningName(opening.opening_name);
+                            const parsed = parseOpeningName(opening.opening_label);
+                            const badgeText =
+                              opening.opening_key === "unknown"
+                                ? "UNK"
+                                : opening.opening_key.slice(0, 3).toUpperCase();
                             return (
                               <>
                                 <div className="font-semibold text-xl flex items-center gap-3 flex-wrap">
@@ -641,7 +645,7 @@ export default function Home() {
                                             : "var(--zen-accent)",
                                     }}
                                   >
-                                    {opening.eco}
+                                    {badgeText}
                                   </span>
                                   {parsed.main}
                                   {parsed.variation && (

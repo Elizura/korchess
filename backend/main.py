@@ -14,6 +14,7 @@ from db import (
     get_game_by_id, get_analysis, save_analysis,
     get_full_analysis, save_full_analysis,
     create_analysis_job, get_analysis_job, delete_analysis_job, count_analysis_jobs,
+    ensure_games_schema,
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
@@ -79,9 +80,9 @@ class ImportResponse(BaseModel):
 
 
 class OpeningStats(BaseModel):
-    """Opening statistics for a single ECO."""
-    eco: str
-    opening_name: str
+    """Opening statistics for a single opening key."""
+    opening_key: str
+    opening_label: str
     games: int
     wins: int
     draws: int
@@ -117,6 +118,8 @@ class OpeningSummary(BaseModel):
     draws: int
     losses: int
     score_pct: float
+    opening_key: str
+    opening_label: str
 
 
 class OpeningGamesResponse(BaseModel):
@@ -274,6 +277,7 @@ async def import_lichess_games(request: ImportRequest):
     conn = get_connection()
     imported = 0
     try:
+        ensure_games_schema(conn)
         games, skipped = parse_pgn_games(pgn_text, username, conn)
 
         if not games and skipped == 0:
@@ -339,6 +343,7 @@ async def import_chesscom_games(request: ImportRequest):
     imported = 0
     skipped = 0
     try:
+        ensure_games_schema(conn)
         for game in games:
             opening = None
             try:
@@ -435,12 +440,12 @@ async def get_import_status_endpoint(site: str, username: str):
 async def get_games_for_opening(
     site: str,
     username: str,
-    eco: str = Query(..., description="ECO code for the opening"),
+    opening_key: str = Query(..., description="Opening key for the opening"),
     color: str = Query(default="all", pattern="^(all|white|black)$"),
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
     result: str = Query(default="all", pattern="^(all|win|draw|loss)$"),
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=10, ge=1, le=50)
+    limit: int = Query(default=10, ge=1, le=50),
 ):
     """Get recent games and summary for a user and opening with filters."""
     site = validate_site(site)
@@ -449,13 +454,13 @@ async def get_games_for_opening(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
     
-    if not eco:
-        raise HTTPException(status_code=400, detail="ECO code is required.")
+    if not opening_key:
+        raise HTTPException(status_code=400, detail="Opening key is required.")
     
     conn = get_connection()
     try:
         result_data = get_games_by_opening(
-            conn, username, eco, color, time_class, result, offset, limit, site
+            conn, username, opening_key, color, time_class, result, offset, limit, site
         )
     finally:
         conn.close()
@@ -463,7 +468,7 @@ async def get_games_for_opening(
     if result_data["summary"]["total_games"] == 0:
         raise HTTPException(
             status_code=404,
-            detail=f"No games found for {username} with opening {eco}."
+            detail=f"No games found for {username} with opening {opening_key}."
         )
     
     return OpeningGamesResponse(**result_data)

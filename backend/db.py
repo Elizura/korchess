@@ -144,8 +144,36 @@ def init_db(db_path: Optional[str] = None) -> None:
         ON analysis_jobs(username, site_game_id, depth, multipv)
     """)
 
+    ensure_games_schema(conn)
     conn.commit()
     conn.close()
+
+
+def ensure_games_schema(conn: sqlite3.Connection) -> None:
+    """Ensure games table contains opening_id and opening_ply_count columns."""
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(games)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    if "opening_id" not in existing_cols:
+        try:
+            cursor.execute("ALTER TABLE games ADD COLUMN opening_id INTEGER")
+        except sqlite3.Error:
+            pass
+
+    if "opening_ply_count" not in existing_cols:
+        try:
+            cursor.execute("ALTER TABLE games ADD COLUMN opening_ply_count INTEGER")
+        except sqlite3.Error:
+            pass
+
+
+def ensure_openings_table(conn: sqlite3.Connection) -> None:
+    """Ensure openings table exists and is accessible."""
+    try:
+        conn.execute("SELECT 1 FROM openings LIMIT 1")
+    except sqlite3.Error as exc:
+        raise RuntimeError("Openings table is missing or inaccessible.") from exc
 
 
 def upsert_game(conn: sqlite3.Connection, game_row: dict) -> bool:
@@ -192,41 +220,43 @@ def get_openings_stats(
 ) -> list[dict]:
     """
     Aggregate opening statistics for a user with optional filters.
-    Returns list of dicts with eco, opening_name, games, wins, draws, losses, score_pct.
+    Returns list of dicts with opening_key, opening_label, games, wins, draws, losses, score_pct.
     If site is None or "all", includes games from all sites.
     """
+    ensure_openings_table(conn)
     cursor = conn.cursor()
 
     # Build query with filters
     query = """
         SELECT 
-            eco,
-            opening_name,
+            COALESCE(o.opening_key, 'unknown') as opening_key,
+            COALESCE(o.opening_label, 'Unknown') as opening_label,
             COUNT(*) as games,
-            SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN result = 'draw' THEN 1 ELSE 0 END) as draws,
-            SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) as losses
-        FROM games
-        WHERE LOWER(username) = LOWER(?)
+            SUM(CASE WHEN g.result = 'win' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN g.result = 'draw' THEN 1 ELSE 0 END) as draws,
+            SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
+        FROM games g
+        LEFT JOIN openings o ON g.opening_id = o.id
+        WHERE LOWER(g.username) = LOWER(?)
     """
     params: list = [username]
 
     # Site filter
     if site and site != "all":
-        query += " AND site = ?"
+        query += " AND g.site = ?"
         params.append(site)
 
     # Color filter
     if color != "all":
-        query += " AND color = ?"
+        query += " AND g.color = ?"
         params.append(color)
 
     # Time class filter
     if time_class != "all":
-        query += " AND time_class = ?"
+        query += " AND g.time_class = ?"
         params.append(time_class)
 
-    query += " GROUP BY eco, opening_name ORDER BY games DESC"
+    query += " GROUP BY opening_key, opening_label ORDER BY games DESC"
 
     cursor.execute(query, params)
     rows = cursor.fetchall()
@@ -245,17 +275,14 @@ def get_openings_stats(
             score_pct = 0.0
 
         results.append({
-            "eco": row["eco"],
-            "opening_name": row["opening_name"],
+            "opening_key": row["opening_key"],
+            "opening_label": row["opening_label"],
             "games": games,
             "wins": wins,
             "draws": draws,
             "losses": losses,
             "score_pct": score_pct
         })
-
-    # Prefer shortest/cleanest opening_name per ECO: sort by eco, then name length, then games desc
-    results.sort(key=lambda r: (r["eco"], len(r["opening_name"]), -r["games"]))
 
     return results
 
@@ -316,7 +343,7 @@ def get_import_status(
 def get_games_by_opening(
     conn: sqlite3.Connection,
     username: str,
-    eco: str,
+    opening_key: str,
     color: str = "all",
     time_class: str = "all",
     result: str = "all",
@@ -329,28 +356,34 @@ def get_games_by_opening(
     Returns both summary and paginated games.
     If site is None or "all", includes games from all sites.
     """
+    ensure_openings_table(conn)
     cursor = conn.cursor()
     canonical_username = username.strip().lower()
-    
+
     # Build base WHERE clause (for summary - no result filter)
     base_where_conditions = [
-        "LOWER(username) = ?",
-        "eco = ?",
-        "site_game_id IS NOT NULL",
-        "site_game_id != ''"
+        "LOWER(g.username) = ?",
+        "g.site_game_id IS NOT NULL",
+        "g.site_game_id != ''"
     ]
-    base_params = [canonical_username, eco]
+    base_params = [canonical_username]
+
+    if opening_key == "unknown":
+        base_where_conditions.append("g.opening_id IS NULL")
+    else:
+        base_where_conditions.append("o.opening_key = ?")
+        base_params.append(opening_key)
     
     if site and site != "all":
-        base_where_conditions.append("site = ?")
+        base_where_conditions.append("g.site = ?")
         base_params.append(site)
     
     if color != "all":
-        base_where_conditions.append("color = ?")
+        base_where_conditions.append("g.color = ?")
         base_params.append(color)
     
     if time_class != "all":
-        base_where_conditions.append("time_class = ?")
+        base_where_conditions.append("g.time_class = ?")
         base_params.append(time_class)
     
     base_where_clause = " AND ".join(base_where_conditions)
@@ -359,10 +392,12 @@ def get_games_by_opening(
     summary_query = f"""
         SELECT 
             COUNT(*) as total_games,
-            SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN result = 'draw' THEN 1 ELSE 0 END) as draws,
-            SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) as losses
-        FROM games
+            SUM(CASE WHEN g.result = 'win' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN g.result = 'draw' THEN 1 ELSE 0 END) as draws,
+            SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses,
+            COALESCE(MAX(o.opening_label), 'Unknown') as opening_label
+        FROM games g
+        LEFT JOIN openings o ON g.opening_id = o.id
         WHERE {base_where_clause}
     """
     
@@ -373,6 +408,7 @@ def get_games_by_opening(
     wins = summary_row["wins"] or 0
     draws = summary_row["draws"] or 0
     losses = summary_row["losses"] or 0
+    opening_label = summary_row["opening_label"] if summary_row else "Unknown"
     score_pct = ((wins + 0.5 * draws) / total_games * 100) if total_games > 0 else 0.0
     
     # Build games WHERE clause (includes result filter)
@@ -388,19 +424,20 @@ def get_games_by_opening(
     # Get paginated games (FILTERED by result)
     games_query = f"""
         SELECT 
-            site,
-            site_game_id,
-            played_at,
-            color,
-            result,
-            opponent,
-            opening_name
-        FROM games
+            g.site,
+            g.site_game_id,
+            g.played_at,
+            g.color,
+            g.result,
+            g.opponent,
+            COALESCE(o.opening_label, g.opening_name) as opening_label
+        FROM games g
+        LEFT JOIN openings o ON g.opening_id = o.id
         WHERE {games_where_clause}
         ORDER BY 
-            CASE WHEN played_at IS NULL THEN 1 ELSE 0 END,
-            played_at DESC,
-            id DESC
+            CASE WHEN g.played_at IS NULL THEN 1 ELSE 0 END,
+            g.played_at DESC,
+            g.id DESC
         LIMIT ? OFFSET ?
     """
     
@@ -424,7 +461,7 @@ def get_games_by_opening(
             "color": row["color"],
             "result": row["result"],
             "opponent": row["opponent"],
-            "opening_name": row["opening_name"],
+            "opening_name": row["opening_label"],
             "lichess_url": game_url,
         })
     
@@ -434,7 +471,9 @@ def get_games_by_opening(
             "wins": wins,
             "draws": draws,
             "losses": losses,
-            "score_pct": round(score_pct, 1)
+            "score_pct": round(score_pct, 1),
+            "opening_label": opening_label,
+            "opening_key": opening_key
         },
         "games": games
     }

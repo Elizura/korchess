@@ -25,6 +25,8 @@ interface OpeningSummary {
   draws: number;
   losses: number;
   score_pct: number;
+  opening_key: string;
+  opening_label: string;
 }
 
 interface OpeningGamesResponse {
@@ -59,7 +61,7 @@ export default function OpeningDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const username = params.username as string;
-  const eco = params.eco as string;
+  const openingKey = params.eco as string;
   const siteParam = searchParams.get("site") || "all";
   const [site] = useState<Site>(siteParam as Site);
   const [games, setGames] = useState<GameDetail[] | null>(null);
@@ -85,7 +87,7 @@ export default function OpeningDetailPage() {
 
     try {
       const params = new URLSearchParams({
-        eco: eco,
+        opening_key: openingKey,
         color: colorFilter,
         time_class: timeClassFilter,
         result: resultFilter,
@@ -115,8 +117,12 @@ export default function OpeningDetailPage() {
       setSummary(data.summary);
       setHasMore(data.games.length === 10);
       
-      if (data.games.length > 0) {
+      if (data.summary?.opening_label) {
+        setOpeningName(data.summary.opening_label);
+      } else if (data.games.length > 0) {
         setOpeningName(data.games[0].opening_name);
+      } else {
+        setOpeningName(openingKey);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -127,10 +133,10 @@ export default function OpeningDetailPage() {
   };
 
   useEffect(() => {
-    if (username && eco) {
+    if (username && openingKey) {
       fetchGames(true);
     }
-  }, [username, eco, colorFilter, timeClassFilter, resultFilter, site]);
+  }, [username, openingKey, colorFilter, timeClassFilter, resultFilter, site]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";
@@ -181,11 +187,11 @@ export default function OpeningDetailPage() {
               )}
             </>
           ) : (
-            <span className="font-mono">{eco}</span>
+            <span className="font-mono">{openingKey}</span>
           )}
         </h1>
         {/* <p className="text-sm text-[color:var(--zen-muted)] mt-2 flex items-center gap-2">
-          <span className="zen-pill px-2 py-0.5 text-xs font-mono">{eco}</span>
+          <span className="zen-pill px-2 py-0.5 text-xs font-mono">{openingKey}</span>
           <span>Recent games for {username}</span>
         </p> */}
       </div>
