@@ -344,6 +344,7 @@ def get_games_by_opening(
     conn: sqlite3.Connection,
     username: str,
     opening_key: str,
+    variation_key: str | None = None,
     color: str = "all",
     time_class: str = "all",
     result: str = "all",
@@ -373,6 +374,10 @@ def get_games_by_opening(
     else:
         base_where_conditions.append("o.opening_key = ?")
         base_params.append(opening_key)
+
+    if variation_key:
+        base_where_conditions.append("o.variation_key = ?")
+        base_params.append(variation_key)
     
     if site and site != "all":
         base_where_conditions.append("g.site = ?")
@@ -477,6 +482,91 @@ def get_games_by_opening(
         },
         "games": games
     }
+
+
+def get_variations_stats(
+    conn: sqlite3.Connection,
+    username: str,
+    opening_key: str,
+    color: str = "all",
+    time_class: str = "all",
+    site: str | None = None
+) -> list[dict]:
+    """
+    Aggregate variation statistics for a user and opening_key.
+    Returns list of dicts with variation_key, variation_label, games, wins, draws, losses, score_pct.
+    """
+    ensure_openings_table(conn)
+    cursor = conn.cursor()
+
+    if opening_key == "unknown":
+        return [
+            {
+                "variation_key": "unknown",
+                "variation_label": "Unknown",
+                "games": 0,
+                "wins": 0,
+                "draws": 0,
+                "losses": 0,
+                "score_pct": 0.0,
+            }
+        ]
+
+    query = """
+        SELECT 
+            COALESCE(o.variation_key, 'unknown') as variation_key,
+            COALESCE(o.variation_label, 'Unknown') as variation_label,
+            COUNT(*) as games,
+            SUM(CASE WHEN g.result = 'win' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN g.result = 'draw' THEN 1 ELSE 0 END) as draws,
+            SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
+        FROM games g
+        LEFT JOIN openings o ON g.opening_id = o.id
+        WHERE LOWER(g.username) = LOWER(?)
+          AND o.opening_key = ?
+    """
+    params: list = [username, opening_key]
+
+    if site and site != "all":
+        query += " AND g.site = ?"
+        params.append(site)
+
+    if color != "all":
+        query += " AND g.color = ?"
+        params.append(color)
+
+    if time_class != "all":
+        query += " AND g.time_class = ?"
+        params.append(time_class)
+
+    query += " GROUP BY variation_key, variation_label ORDER BY games DESC"
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+
+    results = []
+    for row in rows:
+        games = row["games"]
+        wins = row["wins"]
+        draws = row["draws"]
+        losses = row["losses"]
+
+        if games > 0:
+            score_pct = round((wins + 0.5 * draws) / games * 100, 1)
+        else:
+            score_pct = 0.0
+
+        results.append({
+            "variation_key": row["variation_key"],
+            "variation_label": row["variation_label"],
+            "games": games,
+            "wins": wins,
+            "draws": draws,
+            "losses": losses,
+            "score_pct": score_pct
+        })
+
+    return results
 
 
 def get_game_by_id(

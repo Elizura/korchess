@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
 const API_BASE_URL =
@@ -9,6 +9,16 @@ const API_BASE_URL =
 interface OpeningStats {
   opening_key: string;
   opening_label: string;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score_pct: number;
+}
+
+interface VariationStats {
+  variation_key: string;
+  variation_label: string;
   games: number;
   wins: number;
   draws: number;
@@ -55,6 +65,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<OpeningStats[] | null>(null);
+  const [expandedOpenings, setExpandedOpenings] = useState<Record<string, boolean>>({});
+  const [variationsByOpening, setVariationsByOpening] = useState<Record<string, VariationStats[]>>({});
+  const [variationsLoading, setVariationsLoading] = useState<Record<string, boolean>>({});
   const [importResult, setImportResult] = useState<ImportResponse | null>(null);
   const [colorFilter, setColorFilter] = useState<ColorFilter>("all");
   const [timeClassFilter, setTimeClassFilter] =
@@ -98,6 +111,23 @@ export default function Home() {
       return null; // Silently handle - not critical
     }
     
+    return response.json();
+  };
+
+  const fetchVariations = async (user: string, openingKey: string) => {
+    const params = new URLSearchParams();
+    params.set("opening_key", openingKey);
+    params.set("color", colorFilter);
+    params.set("time_class", timeClassFilter);
+
+    const response = await fetch(
+      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}/variations?${params}`
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
     return response.json();
   };
 
@@ -322,6 +352,20 @@ export default function Home() {
     }
   };
 
+  const toggleOpening = async (openingKey: string) => {
+    setExpandedOpenings((prev) => ({
+      ...prev,
+      [openingKey]: !prev[openingKey],
+    }));
+
+    if (!variationsByOpening[openingKey] && currentUsername) {
+      setVariationsLoading((prev) => ({ ...prev, [openingKey]: true }));
+      const variations = await fetchVariations(currentUsername, openingKey);
+      setVariationsByOpening((prev) => ({ ...prev, [openingKey]: variations }));
+      setVariationsLoading((prev) => ({ ...prev, [openingKey]: false }));
+    }
+  };
+
   const handleSort = (key: keyof OpeningStats) => {
     let direction: "asc" | "desc" = "desc";
     if (sortConfig.key === key && sortConfig.direction === "desc") {
@@ -361,7 +405,7 @@ export default function Home() {
   }, [report, hideUnknown, sortConfig]);
 
   return (
-    <main className="opening-page max-w-[1152px] mx-auto px-4 sm:px-6 py-10">
+    <div role="main" className="opening-page max-w-[1152px] mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
         <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
           Openingscope
@@ -605,17 +649,9 @@ export default function Home() {
                 <tbody className="divide-y divide-[color:var(--zen-border)]">
                   {processedReport &&
                     processedReport.map((opening, idx) => (
+                      <Fragment key={`${opening.opening_key}-${idx}`}>
                       <tr
-                        key={`${opening.opening_key}-${idx}`}
-                        onClick={() => {
-                          if (currentUsername) {
-                            router.push(
-                              `/opening/${encodeURIComponent(
-                                currentUsername
-                              )}/${encodeURIComponent(opening.opening_key)}?site=all`
-                            );
-                          }
-                        }}
+                        onClick={() => toggleOpening(opening.opening_key)}
                         className="cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
                       >
                         <td className="px-6 py-4">
@@ -648,12 +684,28 @@ export default function Home() {
                                     {badgeText}
                                   </span>
                                   {parsed.main}
+                                  <span className="opening-chevron">{expandedOpenings[opening.opening_key] ? "▾" : "▸"}</span>
                                   {parsed.variation && (
                                     <span className="font-normal text-[color:var(--zen-muted)]">
                                       {" : "}
                                       {parsed.variation}
                                     </span>
                                   )}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (currentUsername) {
+                                        router.push(
+                                          `/opening/${encodeURIComponent(
+                                            currentUsername
+                                          )}/${encodeURIComponent(opening.opening_key)}?site=all`
+                                        );
+                                      }
+                                    }}
+                                    className="opening-overall ml-2 px-2 py-1 text-xs"
+                                  >
+                                    Overall
+                                  </button>
                                 </div>
                               </>
                             );
@@ -687,6 +739,71 @@ export default function Home() {
                           </span>
                         </td>
                       </tr>
+                      {expandedOpenings[opening.opening_key] && (
+                        <tr className="opening-variation-row">
+                          <td colSpan={6} className="px-6 pb-6">
+                            <div className="opening-variation-panel">
+                              <div className="opening-variation-header">
+                                <span>Variation</span>
+                                <span>Games</span>
+                                <span>Wins</span>
+                                <span>Draws</span>
+                                <span>Losses</span>
+                                <span>Score %</span>
+                              </div>
+                              {variationsLoading[opening.opening_key] && (
+                                <div className="text-xs text-[color:var(--zen-muted)] py-3">Loading variations...</div>
+                              )}
+                              {!variationsLoading[opening.opening_key] &&
+                                (variationsByOpening[opening.opening_key] || []).map((variation) => {
+                                  const variationBadge =
+                                    variation.variation_key === "unknown"
+                                      ? "UNK"
+                                      : variation.variation_key.slice(0, 3).toUpperCase();
+                                  return (
+                                    <div
+                                      key={`${variation.variation_key}-${opening.opening_key}`}
+                                      className="opening-variation-item"
+                                      onClick={() => {
+                                        if (currentUsername) {
+                                          router.push(
+                                            `/opening/${encodeURIComponent(
+                                              currentUsername
+                                            )}/${encodeURIComponent(opening.opening_key)}/${encodeURIComponent(variation.variation_key)}`
+                                          );
+                                        }
+                                      }}
+                                    >
+                                      <div className="opening-variation-name">
+                                        <span className="eco-badge variation-badge">{variationBadge}</span>
+                                        <span>{variation.variation_label}</span>
+                                      </div>
+                                      <div className="opening-variation-stats">
+                                        <span>{variation.games}</span>
+                                        <span className="text-[color:var(--zen-success)]">{variation.wins}</span>
+                                        <span className="text-[color:var(--zen-muted)]">{variation.draws}</span>
+                                        <span className="text-[color:var(--zen-danger)]">{variation.losses}</span>
+                                        <span
+                                          style={{
+                                            color:
+                                              variation.score_pct >= 55
+                                                ? "var(--zen-success)"
+                                                : variation.score_pct <= 45
+                                                  ? "var(--zen-danger)"
+                                                  : "var(--zen-text)",
+                                          }}
+                                        >
+                                          {variation.score_pct.toFixed(1)}%
+                                        </span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     ))}
                 </tbody>
               </table>
@@ -708,6 +825,6 @@ export default function Home() {
           </div>
         )}
       </div>
-    </main>
+    </div>
   );
 }

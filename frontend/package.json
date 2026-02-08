@@ -23,5 +23,8 @@
     "postcss": "8.4.39",
     "tailwindcss": "3.4.6",
     "typescript": "5.5.3"
+  },
+  "optionalDependencies": {
+    "@next/swc-linux-x64-gnu": "14.2.33"
   }
 }

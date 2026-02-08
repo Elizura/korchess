@@ -14,7 +14,7 @@ from db import (
     get_game_by_id, get_analysis, save_analysis,
     get_full_analysis, save_full_analysis,
     create_analysis_job, get_analysis_job, delete_analysis_job, count_analysis_jobs,
-    ensure_games_schema,
+    ensure_games_schema, get_variations_stats,
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
@@ -120,6 +120,17 @@ class OpeningSummary(BaseModel):
     score_pct: float
     opening_key: str
     opening_label: str
+
+
+class VariationStats(BaseModel):
+    """Variation statistics for a single opening key."""
+    variation_key: str
+    variation_label: str
+    games: int
+    wins: int
+    draws: int
+    losses: int
+    score_pct: float
 
 
 class OpeningGamesResponse(BaseModel):
@@ -441,6 +452,7 @@ async def get_games_for_opening(
     site: str,
     username: str,
     opening_key: str = Query(..., description="Opening key for the opening"),
+    variation_key: str | None = Query(default=None, description="Variation key for the opening"),
     color: str = Query(default="all", pattern="^(all|white|black)$"),
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
     result: str = Query(default="all", pattern="^(all|win|draw|loss)$"),
@@ -460,7 +472,7 @@ async def get_games_for_opening(
     conn = get_connection()
     try:
         result_data = get_games_by_opening(
-            conn, username, opening_key, color, time_class, result, offset, limit, site
+            conn, username, opening_key, variation_key, color, time_class, result, offset, limit, site
         )
     finally:
         conn.close()
@@ -472,6 +484,32 @@ async def get_games_for_opening(
         )
     
     return OpeningGamesResponse(**result_data)
+
+@app.get("/api/openings/{site}/{username}/variations", response_model=list[VariationStats])
+async def get_opening_variations(
+    site: str,
+    username: str,
+    opening_key: str = Query(..., description="Opening key for the opening"),
+    color: str = Query(default="all", pattern="^(all|white|black)$"),
+    time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
+):
+    """Get variation statistics for a user's opening key with filters."""
+    site = validate_site(site)
+    username = username.strip()
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    if not opening_key:
+        raise HTTPException(status_code=400, detail="Opening key is required.")
+
+    conn = get_connection()
+    try:
+        stats = get_variations_stats(conn, username, opening_key, color, time_class, site)
+    finally:
+        conn.close()
+
+    return [VariationStats(**s) for s in stats]
+
 
 
 @app.get("/api/game/{site}/{username}/{game_id}", response_model=GameResponse)

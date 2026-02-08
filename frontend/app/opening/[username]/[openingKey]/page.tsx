@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
@@ -59,10 +59,9 @@ const parseOpeningName = (fullName: string) => {
 
 export default function OpeningDetailPage() {
   const params = useParams();
-  const searchParams = useSearchParams();
   const username = params.username as string;
-  const openingKey = params.eco as string;
-  const siteParam = searchParams.get("site") || "all";
+  const openingKey = params.openingKey as string;
+  const siteParam = "all";
   const [site] = useState<Site>(siteParam as Site);
   const [games, setGames] = useState<GameDetail[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -95,6 +94,7 @@ export default function OpeningDetailPage() {
         limit: "10"
       });
 
+      
       const response = await fetch(
         `${API_BASE_URL}/api/games/${site}/${encodeURIComponent(username)}?${params}`
       );
