@@ -651,7 +651,13 @@ export default function Home() {
                     processedReport.map((opening, idx) => (
                       <Fragment key={`${opening.opening_key}-${idx}`}>
                       <tr
-                        onClick={() => toggleOpening(opening.opening_key)}
+                        onClick={() => {
+                          if (currentUsername) {
+                            router.push(
+                              `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.opening_key)}?site=all`
+                            );
+                          }
+                        }}
                         className="cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
                       >
                         <td className="px-6 py-4">
@@ -662,52 +668,53 @@ export default function Home() {
                                 ? "UNK"
                                 : opening.opening_key.slice(0, 3).toUpperCase();
                             return (
-                              <>
-                                <div className="font-semibold text-xl flex items-center gap-3 flex-wrap">
-                                  <span
-                                    className="eco-badge"
-                                    style={{
-                                      borderColor:
-                                        opening.score_pct >= 55
-                                          ? "var(--zen-success)"
-                                          : opening.score_pct <= 45
-                                            ? "var(--zen-danger)"
-                                            : "var(--zen-accent)",
-                                      color:
-                                        opening.score_pct >= 55
-                                          ? "var(--zen-success)"
-                                          : opening.score_pct <= 45
-                                            ? "var(--zen-danger)"
-                                            : "var(--zen-accent)",
-                                    }}
-                                  >
-                                    {badgeText}
-                                  </span>
-                                  {parsed.main}
-                                  <span className="opening-chevron">{expandedOpenings[opening.opening_key] ? "▾" : "▸"}</span>
-                                  {parsed.variation && (
-                                    <span className="font-normal text-[color:var(--zen-muted)]">
-                                      {" : "}
-                                      {parsed.variation}
-                                    </span>
-                                  )}
-                                  <button
-                                    onClick={(e) => {
+                              <div className="font-semibold text-xl flex items-center gap-3 flex-wrap">
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  aria-expanded={!!expandedOpenings[opening.opening_key]}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleOpening(opening.opening_key);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
                                       e.stopPropagation();
-                                      if (currentUsername) {
-                                        router.push(
-                                          `/opening/${encodeURIComponent(
-                                            currentUsername
-                                          )}/${encodeURIComponent(opening.opening_key)}?site=all`
-                                        );
-                                      }
-                                    }}
-                                    className="opening-overall ml-2 px-2 py-1 text-xs"
-                                  >
-                                    Overall
-                                  </button>
-                                </div>
-                              </>
+                                      toggleOpening(opening.opening_key);
+                                    }
+                                  }}
+                                  className="opening-chevron w-6 shrink-0 flex items-center justify-center cursor-pointer text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition select-none"
+                                >
+                                  {expandedOpenings[opening.opening_key] ? "▾" : "▸"}
+                                </span>
+                                <span
+                                  className="eco-badge"
+                                  style={{
+                                    borderColor:
+                                      opening.score_pct >= 55
+                                        ? "var(--zen-success)"
+                                        : opening.score_pct <= 45
+                                          ? "var(--zen-danger)"
+                                          : "var(--zen-accent)",
+                                    color:
+                                      opening.score_pct >= 55
+                                        ? "var(--zen-success)"
+                                        : opening.score_pct <= 45
+                                          ? "var(--zen-danger)"
+                                          : "var(--zen-accent)",
+                                  }}
+                                >
+                                  {badgeText}
+                                </span>
+                                <span>{parsed.main}</span>
+                                {parsed.variation && (
+                                  <span className="font-normal text-[color:var(--zen-muted)]">
+                                    {" : "}
+                                    {parsed.variation}
+                                  </span>
+                                )}
+                              </div>
                             );
                           })()}
                         </td>

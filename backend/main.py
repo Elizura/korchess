@@ -120,6 +120,7 @@ class OpeningSummary(BaseModel):
     score_pct: float
     opening_key: str
     opening_label: str
+    variation_label: str | None = None
 
 
 class VariationStats(BaseModel):

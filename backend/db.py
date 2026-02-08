@@ -393,14 +393,15 @@ def get_games_by_opening(
     
     base_where_clause = " AND ".join(base_where_conditions)
     
-    # Get summary stats (UNFILTERED by result)
+    # Get summary stats (UNFILTERED by result). When filtering by variation, also get variation_label for title.
     summary_query = f"""
         SELECT 
             COUNT(*) as total_games,
             SUM(CASE WHEN g.result = 'win' THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN g.result = 'draw' THEN 1 ELSE 0 END) as draws,
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses,
-            COALESCE(MAX(o.opening_label), 'Unknown') as opening_label
+            COALESCE(MAX(o.opening_label), 'Unknown') as opening_label,
+            MAX(o.variation_label) as variation_label
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
         WHERE {base_where_clause}
@@ -414,6 +415,7 @@ def get_games_by_opening(
     draws = summary_row["draws"] or 0
     losses = summary_row["losses"] or 0
     opening_label = summary_row["opening_label"] if summary_row else "Unknown"
+    variation_label = (summary_row["variation_label"] if summary_row and summary_row["variation_label"] else None)
     score_pct = ((wins + 0.5 * draws) / total_games * 100) if total_games > 0 else 0.0
     
     # Build games WHERE clause (includes result filter)
@@ -470,18 +472,18 @@ def get_games_by_opening(
             "lichess_url": game_url,
         })
     
-    return {
-        "summary": {
-            "total_games": total_games,
-            "wins": wins,
-            "draws": draws,
-            "losses": losses,
-            "score_pct": round(score_pct, 1),
-            "opening_label": opening_label,
-            "opening_key": opening_key
-        },
-        "games": games
+    summary: dict = {
+        "total_games": total_games,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "score_pct": round(score_pct, 1),
+        "opening_label": opening_label,
+        "opening_key": opening_key
     }
+    if variation_key and variation_label:
+        summary["variation_label"] = variation_label
+    return {"summary": summary, "games": games}
 
 
 def get_variations_stats(

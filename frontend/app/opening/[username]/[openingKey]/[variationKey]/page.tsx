@@ -27,6 +27,7 @@ interface OpeningSummary {
   score_pct: number;
   opening_key: string;
   opening_label: string;
+  variation_label?: string | null;
 }
 
 interface OpeningGamesResponse {
@@ -165,6 +166,11 @@ export default function OpeningDetailPage() {
   };
 
   const parsedOpening = openingName ? parseOpeningName(openingName) : null;
+  // On variation page: show "Main opening: Variation" when we have variation_label from the API
+  const titleMain = summary?.variation_label
+    ? summary.opening_label
+    : parsedOpening?.main ?? openingKey;
+  const titleVariation = summary?.variation_label ?? parsedOpening?.variation ?? null;
 
   return (
     <main className="opening-detail-page opening-detail-frame max-w-5xl mx-auto px-4 sm:px-6 py-10">
@@ -176,19 +182,17 @@ export default function OpeningDetailPage() {
           ← Back to openings
         </Link>
 
-        <h1 className="mt-5 text-2xl sm:text-3xl font-semibold tracking-tight">
-          {parsedOpening ? (
+        <h1 className="mt-5 text-2xl sm:text-3xl font-semibold tracking-tight text-[color:var(--zen-text)]">
+          {titleVariation != null ? (
             <>
-              {parsedOpening.main}
-              {parsedOpening.variation && (
-                <span className="text-lg sm:text-xl font-normal text-[color:var(--zen-muted)]">
-                  {" : "}
-                  {parsedOpening.variation}
-                </span>
-              )}
+              {titleMain}
+              <span className="font-normal text-[color:var(--zen-muted)]">
+                {" : "}
+                {titleVariation}
+              </span>
             </>
           ) : (
-            <span className="font-mono">{openingKey}</span>
+            <>{titleMain}</>
           )}
         </h1>
         {/* <p className="text-sm text-[color:var(--zen-muted)] mt-2 flex items-center gap-2">
