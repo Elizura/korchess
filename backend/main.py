@@ -403,9 +403,11 @@ async def get_openings_report(
     username: str,
     color: str = Query(default="all", pattern="^(all|white|black)$"),
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
+    limit: int = Query(default=10, ge=1, le=100, description="Max number of openings to return (top by games)"),
 ):
     """
     Get aggregated opening statistics for a user.
+    Returns top N openings by games played (default 10).
     Supports filtering by color, time control, and site.
     Site can be 'lichess', 'chesscom', or 'all'.
     """
@@ -417,7 +419,7 @@ async def get_openings_report(
 
     conn = get_connection()
     try:
-        stats = get_openings_stats(conn, username, color, time_class, site)
+        stats = get_openings_stats(conn, username, color, time_class, site, limit)
     finally:
         conn.close()
 

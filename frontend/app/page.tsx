@@ -40,7 +40,7 @@ interface ImportStatus {
   total_games: number;
 }
 
-type ColorFilter = "all" | "white" | "black";
+type ColorFilter = "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 
 // Helper to parse opening name
@@ -69,7 +69,7 @@ export default function Home() {
   const [variationsByOpening, setVariationsByOpening] = useState<Record<string, VariationStats[]>>({});
   const [variationsLoading, setVariationsLoading] = useState<Record<string, boolean>>({});
   const [importResult, setImportResult] = useState<ImportResponse | null>(null);
-  const [colorFilter, setColorFilter] = useState<ColorFilter>("all");
+  const [colorFilter, setColorFilter] = useState<ColorFilter>("white");
   const [timeClassFilter, setTimeClassFilter] =
     useState<TimeClassFilter>("all");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
@@ -89,6 +89,7 @@ export default function Home() {
     const params = new URLSearchParams();
     params.set("color", color);
     params.set("time_class", timeClass);
+    params.set("limit", "10");
 
     const response = await fetch(
       `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}?${params}`
@@ -374,7 +375,7 @@ export default function Home() {
     setSortConfig({ key, direction });
   };
 
-  // Process report: filter -> sort
+  // Process report: filter -> sort (backend already returns top 10 by games)
   const processedReport = useMemo(() => {
     if (!report) return null;
     
@@ -385,7 +386,7 @@ export default function Home() {
         )
       : report;
     
-    // Step 2: Sort
+    // Step 2: Sort (e.g. by games desc for "most played")
     const sorted = [...filtered].sort((a, b) => {
       const aVal = a[sortConfig.key];
       const bVal = b[sortConfig.key];
@@ -505,7 +506,6 @@ export default function Home() {
             <div className="flex flex-wrap items-center gap-2">
               <div className="zen-pill p-1 flex gap-1">
                 {[
-                  { value: "all", label: "All" },
                   { value: "white", label: "As White" },
                   { value: "black", label: "As Black" },
                 ].map((tab) => {
@@ -612,7 +612,11 @@ export default function Home() {
 
         {/* Results */}
         {report && !loading && (
-          <div className="mt-6 overflow-hidden rounded-2xl border border-[color:var(--zen-border)]">
+          <div className="mt-6">
+            <h2 className="text-lg sm:text-xl font-semibold text-[color:var(--zen-text)] mb-4">
+              Your top 10 openings as {colorFilter === "white" ? "White" : "Black"}
+            </h2>
+            <div className="overflow-hidden rounded-2xl border border-[color:var(--zen-border)]">
             <div className="overflow-x-auto">
               <table className="opening-table min-w-full">
                 <thead className="bg-[color:var(--zen-surface-2)]">
@@ -820,6 +824,7 @@ export default function Home() {
                 No games found with the selected filters.
               </div>
             )}
+            </div>
           </div>
         )}
 

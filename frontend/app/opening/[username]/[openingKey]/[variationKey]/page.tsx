@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
@@ -60,7 +60,8 @@ const parseOpeningName = (fullName: string) => {
 
 export default function OpeningDetailPage() {
   const params = useParams();
-    const username = params.username as string;
+  const router = useRouter();
+  const username = params.username as string;
   const openingKey = params.openingKey as string;
   const variationKey = params.variationKey as string;
   const siteParam = "all";
@@ -94,7 +95,7 @@ export default function OpeningDetailPage() {
         time_class: timeClassFilter,
         result: resultFilter,
         offset: currentOffset.toString(),
-        limit: "10"
+        limit: "15"
       });
 
       const response = await fetch(
@@ -117,7 +118,7 @@ export default function OpeningDetailPage() {
       }
       
       setSummary(data.summary);
-      setHasMore(data.games.length === 10);
+      setHasMore(data.games.length === 15);
       
       if (data.summary?.opening_label) {
         setOpeningName(data.summary.opening_label);
@@ -325,7 +326,18 @@ export default function OpeningDetailPage() {
           {games.map((game, idx) => (
             <div
               key={`${game.site_game_id}-${idx}`}
-              className="opening-detail-card group zen-surface-flat px-4 py-4 sm:px-5 sm:py-4 hover:bg-[color:var(--zen-surface-2)] transition"
+              role="button"
+              tabIndex={0}
+              onClick={() =>
+                router.push(`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`)
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  router.push(`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`);
+                }
+              }}
+              className="opening-detail-card group zen-surface-flat px-4 py-4 sm:px-5 sm:py-4 rounded-lg border border-transparent cursor-pointer transition-all duration-[180ms] ease-out hover:scale-[1.02] hover:-translate-y-0.5 hover:bg-[color:var(--zen-surface-2)] hover:border-[color:var(--zen-accent)] hover:shadow-[var(--zen-shadow-sm)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--zen-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--zen-bg)]"
             >
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="min-w-0">
@@ -363,26 +375,20 @@ export default function OpeningDetailPage() {
                   </div>
                 </div>
 
-                <div className="flex gap-2">
-                  <Link
-                    href={`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`}
-                    className="detail-action zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
-                  >
-                    Analyze
-                  </Link>
-                  <a
-                    href={
-                      game.site === "lichess"
-                        ? `https://lichess.org/${game.site_game_id}`
-                        : `https://www.chess.com/game/live/${game.site_game_id}`
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="detail-action zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
-                  >
-                    {game.site === "lichess" ? "Lichess" : "Chess.com"} →
-                  </a>
-                </div>
+                <a
+                  href={
+                    game.site === "lichess"
+                      ? `https://lichess.org/${game.site_game_id}`
+                      : `https://www.chess.com/game/live/${game.site_game_id}`
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  className="detail-action zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
+                >
+                  {game.site === "lichess" ? "Lichess" : "Chess.com"} →
+                </a>
               </div>
             </div>
           ))}

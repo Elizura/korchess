@@ -216,12 +216,14 @@ def get_openings_stats(
     username: str,
     color: str = "all",
     time_class: str = "all",
-    site: str | None = None
+    site: str | None = None,
+    limit: int = 10,
 ) -> list[dict]:
     """
     Aggregate opening statistics for a user with optional filters.
     Returns list of dicts with opening_key, opening_label, games, wins, draws, losses, score_pct.
     If site is None or "all", includes games from all sites.
+    Limited to top `limit` openings by games played (default 10).
     """
     ensure_openings_table(conn)
     cursor = conn.cursor()
@@ -256,7 +258,8 @@ def get_openings_stats(
         query += " AND g.time_class = ?"
         params.append(time_class)
 
-    query += " GROUP BY opening_key, opening_label ORDER BY games DESC"
+    query += " GROUP BY opening_key, opening_label ORDER BY games DESC LIMIT ?"
+    params.append(limit)
 
     cursor.execute(query, params)
     rows = cursor.fetchall()
