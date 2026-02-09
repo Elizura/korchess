@@ -131,7 +131,7 @@ def main() -> None:
     total_openings = 0
     total_plies = 0
 
-    base_dir = Path(__file__).resolve().parent.parent
+    base_dir = Path(__file__).resolve().parent
     for filename in ["a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv"]:
       path = base_dir / filename
       if not path.exists():
