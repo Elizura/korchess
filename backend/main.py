@@ -59,10 +59,10 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://frontend:3000",
-        "http://72.62.24.92:3000",
         "https://korchess.com",
         "https://www.korchess.com",
+        "http://korchess.com",
+        "http://www.korchess.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
