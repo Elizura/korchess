@@ -1,4 +1,4 @@
-# Openingscope
+# Korchess
 
 Analyze your chess opening performance from Lichess games.
 
@@ -36,10 +36,10 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 ```bash
 # Build the backend image
-docker build -t openingscope-backend ./backend
+docker build -t korchess-backend ./backend
 
 # Run with data persistence
-docker run -p 8000:8000 -v $(pwd)/data:/data openingscope-backend
+docker run -p 8000:8000 -v $(pwd)/data:/data korchess-backend
 ```
 
 Backend will be available at http://localhost:8000
@@ -48,19 +48,19 @@ Backend will be available at http://localhost:8000
 
 ```bash
 # Build the frontend image (specify backend URL)
-docker build -t openingscope-frontend \
+docker build -t korchess-frontend \
   --build-arg NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 \
   ./frontend
 
 # Run the frontend
-docker run -p 3000:3000 openingscope-frontend
+docker run -p 3000:3000 korchess-frontend
 ```
 
 If backend is running in Docker and you're accessing frontend from host:
 ```bash
 docker run -p 3000:3000 \
   -e NEXT_PUBLIC_API_BASE_URL=http://host.docker.internal:8000 \
-  openingscope-frontend
+  korchess-frontend
 ```
 
 Frontend will be available at http://localhost:3000
@@ -150,7 +150,7 @@ When running with Docker Compose, game data is persisted in a Docker volume (`op
 
 When running backend standalone, mount a local directory:
 ```bash
-docker run -p 8000:8000 -v $(pwd)/data:/data openingscope-backend
+docker run -p 8000:8000 -v $(pwd)/data:/data korchess-backend
 ```
 
 ## Rate Limiting

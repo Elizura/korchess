@@ -1,4 +1,4 @@
-"""Database initialization and helper functions for Openingscope."""
+"""Database initialization and helper functions for Korchess."""
 
 import os
 import sqlite3

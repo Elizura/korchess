@@ -9,7 +9,7 @@ import {
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Openingscope - Chess Opening Analysis",
+  title: "Korchess - Chess Opening Analysis",
   description: "Analyze your chess opening performance from Lichess games",
 };
 

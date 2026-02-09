@@ -1,4 +1,4 @@
-"""Chess.com API fetching and game parsing for Openingscope."""
+"""Chess.com API fetching and game parsing for Korchess."""
 
 import io
 import re
@@ -10,7 +10,7 @@ import chess.pgn
 import httpx
 
 CHESSCOM_API_BASE = "https://api.chess.com/pub"
-USER_AGENT = "Openingscope/1.0 (Chess opening analyzer)"
+USER_AGENT = "Korchess/1.0 (Chess opening analyzer)"
 
 
 class ChesscomAPIError(Exception):

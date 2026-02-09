@@ -1,4 +1,4 @@
-"""FastAPI application for Openingscope."""
+"""FastAPI application for Korchess."""
 
 import json
 import uuid
@@ -47,7 +47,7 @@ active_analysis_count = 0
 active_analysis_lock = asyncio.Lock()
 
 app = FastAPI(
-    title="Openingscope API",
+    title="Korchess API",
     description="Chess opening performance analysis from Lichess games",
     version="1.0.0",
 )

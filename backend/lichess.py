@@ -1,4 +1,4 @@
-"""Lichess API fetching and PGN parsing for Openingscope."""
+"""Lichess API fetching and PGN parsing for Korchess."""
 
 import hashlib
 import io

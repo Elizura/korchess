@@ -409,7 +409,7 @@ export default function Home() {
     <div role="main" className="opening-page max-w-[1152px] mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
         <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
-          Openingscope
+          Korchess
         </h1>
         <p className="opening-subtitle mt-2 text-sm sm:text-base text-[color:var(--zen-muted)]">
           Analyze your chess opening performance from your games
