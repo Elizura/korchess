@@ -660,11 +660,16 @@ html:has(.analysis-page)::-webkit-scrollbar {
   padding: 12px;
 }
 
+/* Shared grid: name column + 5 fixed-width stat columns for alignment */
+.opening-page .opening-variation-header,
 .opening-page .opening-variation-item {
   display: grid;
-  grid-template-columns: 1fr repeat(5, auto);
-  gap: 16px;
+  grid-template-columns: 1fr 4rem 4rem 4rem 4rem 5.5rem;
+  gap: 12px 20px;
   align-items: center;
+}
+
+.opening-page .opening-variation-item {
   padding: 8px 10px;
   border: 1px solid #2d2d33;
   margin-bottom: 8px;
@@ -679,14 +684,17 @@ html:has(.analysis-page)::-webkit-scrollbar {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-size: 14px;
+  min-width: 0;
 }
 
-.opening-page .opening-variation-stats {
-  display: grid;
-  grid-template-columns: repeat(5, auto);
-  gap: 16px;
-  font-size: 14px;
+.opening-page .opening-variation-label {
+  font-size: 1.125rem; /* 18px - variation name emphasis */
+  font-weight: 500;
+}
+
+.opening-page .opening-variation-stat {
+  font-size: 1.125rem;
+  font-weight: 500;
 }
 
 .opening-page .variation-badge {
@@ -701,12 +709,13 @@ html:has(.analysis-page)::-webkit-scrollbar {
 }
 
 .opening-page .opening-variation-header {
-  display: grid;
-  grid-template-columns: 1fr repeat(5, auto);
-  gap: 16px;
-  font-size: 11px;
+  font-size: 0.8125rem; /* 13px - readable but secondary to row content */
   text-transform: uppercase;
   color: var(--zen-muted);
   letter-spacing: 0.08em;
   padding: 4px 10px 8px;
+}
+
+.opening-page .opening-variation-header-cell {
+  text-align: right;
 }

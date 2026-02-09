@@ -756,11 +756,11 @@ export default function Home() {
                             <div className="opening-variation-panel">
                               <div className="opening-variation-header">
                                 <span>Variation</span>
-                                <span>Games</span>
-                                <span>Wins</span>
-                                <span>Draws</span>
-                                <span>Losses</span>
-                                <span>Score %</span>
+                                <span className="opening-variation-header-cell">Games</span>
+                                <span className="opening-variation-header-cell">Wins</span>
+                                <span className="opening-variation-header-cell">Draws</span>
+                                <span className="opening-variation-header-cell">Losses</span>
+                                <span className="opening-variation-header-cell">Score %</span>
                               </div>
                               {variationsLoading[opening.opening_key] && (
                                 <div className="text-xs text-[color:var(--zen-muted)] py-3">Loading variations...</div>
@@ -787,26 +787,25 @@ export default function Home() {
                                     >
                                       <div className="opening-variation-name">
                                         <span className="eco-badge variation-badge">{variationBadge}</span>
-                                        <span>{variation.variation_label}</span>
+                                        <span className="opening-variation-label">{variation.variation_label}</span>
                                       </div>
-                                      <div className="opening-variation-stats">
-                                        <span>{variation.games}</span>
-                                        <span className="text-[color:var(--zen-success)]">{variation.wins}</span>
-                                        <span className="text-[color:var(--zen-muted)]">{variation.draws}</span>
-                                        <span className="text-[color:var(--zen-danger)]">{variation.losses}</span>
-                                        <span
-                                          style={{
-                                            color:
-                                              variation.score_pct >= 55
-                                                ? "var(--zen-success)"
-                                                : variation.score_pct <= 45
-                                                  ? "var(--zen-danger)"
-                                                  : "var(--zen-text)",
-                                          }}
-                                        >
-                                          {variation.score_pct.toFixed(1)}%
-                                        </span>
-                                      </div>
+                                      <span className="opening-variation-stat text-right tabular-nums">{variation.games}</span>
+                                      <span className="opening-variation-stat text-right tabular-nums text-[color:var(--zen-success)]">{variation.wins}</span>
+                                      <span className="opening-variation-stat text-right tabular-nums text-[color:var(--zen-muted)]">{variation.draws}</span>
+                                      <span className="opening-variation-stat text-right tabular-nums text-[color:var(--zen-danger)]">{variation.losses}</span>
+                                      <span
+                                        className="opening-variation-stat text-right tabular-nums"
+                                        style={{
+                                          color:
+                                            variation.score_pct >= 55
+                                              ? "var(--zen-success)"
+                                              : variation.score_pct <= 45
+                                                ? "var(--zen-danger)"
+                                                : "var(--zen-text)",
+                                        }}
+                                      >
+                                        {variation.score_pct.toFixed(1)}%
+                                      </span>
                                     </div>
                                   );
                                 })}
