@@ -1,5 +1,9 @@
 "use client";
 
+// This page uses client-side routing/searchParams; force dynamic rendering to
+// avoid Next.js "useSearchParams() should be wrapped in a suspense boundary" build errors.
+export const dynamic = "force-dynamic";
+
 import { useState, useMemo, useEffect, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
