@@ -8,7 +8,7 @@ import { useState, useMemo, useEffect, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://72.62.24.92:8000";
 
 interface OpeningStats {
   opening_key: string;
