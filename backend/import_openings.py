@@ -6,44 +6,7 @@ from pathlib import Path
 
 import chess.pgn
 import psycopg
-
-
-def init_db(conn: psycopg.Connection) -> None:
-  cur = conn.cursor()
-  cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS openings (
-      id SERIAL PRIMARY KEY,
-      eco TEXT NOT NULL,
-      name TEXT NOT NULL,
-      pgn TEXT NOT NULL,
-      ply_count INTEGER NOT NULL,
-      opening_key TEXT NOT NULL,
-      opening_label TEXT NOT NULL,
-      variation_key TEXT NOT NULL,
-      variation_label TEXT NOT NULL
-    );
-    """
-  )
-  cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS opening_moves (
-      opening_id INTEGER NOT NULL,
-      ply_index INTEGER NOT NULL,
-      uci TEXT NOT NULL,
-      PRIMARY KEY (opening_id, ply_index),
-      FOREIGN KEY (opening_id) REFERENCES openings(id)
-    );
-    """
-  )
-  cur.execute(
-    """
-    CREATE INDEX IF NOT EXISTS idx_opening_moves_lookup
-    ON opening_moves(ply_index, uci);
-    """
-  )
-  conn.commit()
-  print("finished initializing openings db")
+from dotenv import load_dotenv
 
 
 def parse_pgn_to_uci(pgn_moves: str) -> list[str]:
@@ -89,6 +52,7 @@ def import_tsv_file(conn: psycopg.Connection, path: Path) -> tuple[int, int]:
           variation_part.lower().replace(" ", "_").replace("-", "_").strip()
         )
         variation_label = variation_part.strip()
+      print(f"inserting [{eco}] {name}")
       cur.execute(
         """
         INSERT INTO openings
@@ -107,6 +71,7 @@ def import_tsv_file(conn: psycopg.Connection, path: Path) -> tuple[int, int]:
           variation_label,
         ),
       )
+      print(f"done instering inserted [{eco}] {name} {row_num}")
       opening_id = cur.fetchone()[0]
       cur.executemany(
         "INSERT INTO opening_moves (opening_id, ply_index, uci) VALUES (%s, %s, %s)",
@@ -119,14 +84,13 @@ def import_tsv_file(conn: psycopg.Connection, path: Path) -> tuple[int, int]:
 
 
 def main() -> None:
+  load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+
   database_url = os.environ.get("DATABASE_URL", "")
   if not database_url:
     raise RuntimeError("DATABASE_URL is not set.")
-
   conn = psycopg.connect(database_url, autocommit=False, connect_timeout=5)
   try:
-    init_db(conn)
-
     # Skip if already seeded
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM openings")
@@ -138,18 +102,26 @@ def main() -> None:
     total_openings = 0
     total_plies = 0
 
-    base_dir = Path(__file__).resolve().parent
+    base_dir = Path(__file__).resolve().parent / "openings"
+    ct = 0
     for filename in ["a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv"]:
+      ct += 1
       path = base_dir / filename
       if not path.exists():
         print(f"Warning: Missing file {filename}, skipping.", file=sys.stderr)
         continue
+      print(f"starting to import [{ct}] {filename}")
       openings, plies = import_tsv_file(conn, path)
+      print(f"finished importing [{ct}] {filename}")
       total_openings += openings
       total_plies += plies
 
     conn.commit()
-    print(f"Total openings imported: {total_openings}")
-    print(f"Total plies stored: {total_plies}")
+    print(f"Total openings imported: {total_openings}", flush=True)
+    print(f"Total plies stored: {total_plies}", flush=True)
   finally:
     conn.close()
+
+
+if __name__ == "__main__":
+  main()

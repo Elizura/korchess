@@ -23,11 +23,7 @@ from opening_match import game_to_uci_plies, best_opening_match
 import chess.pgn
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis, evaluate_position
-from import_openings import main as seed_openings
 
-# ============================================================================
-# Site validation
-# ============================================================================
 VALID_SITES = {"lichess", "chesscom", "all"}
 
 def validate_site(site: str) -> str:
@@ -260,11 +256,6 @@ class EvalResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    try:
-        seed_openings()
-    except Exception as exc:
-        # Don't crash the app if seeding fails; just log the error.
-        print(f"Opening seeding failed: {exc}")
 
 
 @app.get("/health")

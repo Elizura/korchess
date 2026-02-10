@@ -175,6 +175,41 @@ def init_db() -> None:
         """
     )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS openings (
+        id SERIAL PRIMARY KEY,
+        eco TEXT NOT NULL,
+        name TEXT NOT NULL,
+        pgn TEXT NOT NULL,
+        ply_count INTEGER NOT NULL,
+        opening_key TEXT NOT NULL,
+        opening_label TEXT NOT NULL,
+        variation_key TEXT NOT NULL,
+        variation_label TEXT NOT NULL
+        );
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS opening_moves (
+        opening_id INTEGER NOT NULL,
+        ply_index INTEGER NOT NULL,
+        uci TEXT NOT NULL,
+        PRIMARY KEY (opening_id, ply_index),
+        FOREIGN KEY (opening_id) REFERENCES openings(id)
+        );
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_opening_moves_lookup
+        ON opening_moves(ply_index, uci);
+        """
+    )
+
     conn.commit()
     conn.close()
 
