@@ -136,38 +136,27 @@ export default function Home() {
     return response.json();
   };
 
-  // Restore state from URL on mount or localStorage
+  // Restore state from URL on mount
   useEffect(() => {
     const userFromUrl = searchParams.get("user");
-    
+
     if (!initialized) {
       setInitialized(true);
-      
-      // Determine which user to load: URL param or localStorage
-      let userToLoad = userFromUrl;
-      if (!userToLoad && typeof window !== "undefined") {
-        userToLoad = localStorage.getItem("lastUsername");
-      }
-      
-      if (userToLoad) {
-        setUsername(userToLoad);
-        setCurrentUsername(userToLoad);
-        
-        // Fetch data for the user
+
+      if (userFromUrl) {
+        setUsername(userFromUrl);
+        setCurrentUsername(userFromUrl);
+
         const loadData = async () => {
           setLoading(true);
           try {
             const [reportData, statusData] = await Promise.all([
-              fetchReport(userToLoad, colorFilter, timeClassFilter),
-              fetchImportStatus(userToLoad)
+              fetchReport(userFromUrl, colorFilter, timeClassFilter),
+              fetchImportStatus(userFromUrl)
             ]);
             setReport(reportData);
             if (statusData) {
               setImportStatus(statusData);
-            }
-            // Update URL if we loaded from localStorage
-            if (!userFromUrl && userToLoad) {
-              router.replace(`/?user=${encodeURIComponent(userToLoad)}`, { scroll: false });
             }
           } catch (err) {
             setError(err instanceof Error ? err.message : "Failed to load data");
@@ -175,7 +164,7 @@ export default function Home() {
             setLoading(false);
           }
         };
-        
+
         loadData();
       }
     }
@@ -221,10 +210,6 @@ export default function Home() {
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
       updateUrl(trimmedUsername);
-
-      if (typeof window !== "undefined") {
-        localStorage.setItem("lastUsername", trimmedUsername);
-      }
 
       const reportData = await fetchReport(
         trimmedUsername,
@@ -277,10 +262,6 @@ export default function Home() {
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
       updateUrl(trimmedUsername);
-
-      if (typeof window !== "undefined") {
-        localStorage.setItem("lastUsername", trimmedUsername);
-      }
 
       const reportData = await fetchReport(
         trimmedUsername,
