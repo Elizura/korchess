@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Optional
 
 import chess.pgn
+import psycopg
 
 
 def game_to_uci_plies(
@@ -22,14 +22,14 @@ def game_to_uci_plies(
 
 
 def best_opening_match(
-    con: sqlite3.Connection,
+    con: psycopg.Connection,
     game_uci: list[str]
 ) -> dict | None:
     """Find the deepest prefix match from openings based on UCI plies."""
     if not game_uci:
         return None
 
-    values = ", ".join(["(?, ?)"] * len(game_uci))
+    values = ", ".join(["(%s, %s)"] * len(game_uci))
     params: list = []
     for idx, uci in enumerate(game_uci):
         params.extend([idx, uci])
@@ -40,7 +40,7 @@ def best_opening_match(
         FROM openings o
         JOIN opening_moves om ON om.opening_id = o.id
         JOIN game g ON g.ply_index = om.ply_index AND g.uci = om.uci
-        WHERE o.ply_count <= ?
+        WHERE o.ply_count <= %s
         GROUP BY o.id
         HAVING COUNT(*) = o.ply_count
         ORDER BY o.ply_count DESC
@@ -53,9 +53,9 @@ def best_opening_match(
     if not row:
         return None
     return {
-        "opening_id": row[0],
-        "eco": row[1],
-        "name": row[2],
-        "pgn": row[3],
-        "ply_count": row[4],
+        "opening_id": row["id"] if isinstance(row, dict) else row[0],
+        "eco": row["eco"] if isinstance(row, dict) else row[1],
+        "name": row["name"] if isinstance(row, dict) else row[2],
+        "pgn": row["pgn"] if isinstance(row, dict) else row[3],
+        "ply_count": row["ply_count"] if isinstance(row, dict) else row[4],
     }

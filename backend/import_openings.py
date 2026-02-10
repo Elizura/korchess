@@ -1,20 +1,19 @@
 import csv
 import io
-import sqlite3
+import os
 import sys
 from pathlib import Path
 
 import chess.pgn
+import psycopg
 
-from db import DATABASE_PATH
 
-
-def init_db(conn: sqlite3.Connection) -> None:
+def init_db(conn: psycopg.Connection) -> None:
   cur = conn.cursor()
   cur.execute(
     """
     CREATE TABLE IF NOT EXISTS openings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       eco TEXT NOT NULL,
       name TEXT NOT NULL,
       pgn TEXT NOT NULL,
@@ -55,7 +54,7 @@ def parse_pgn_to_uci(pgn_moves: str) -> list[str]:
   return [move.uci() for move in game.mainline_moves()]
 
 
-def import_tsv_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
+def import_tsv_file(conn: psycopg.Connection, path: Path) -> tuple[int, int]:
   openings_count = 0
   plies_count = 0
   cur = conn.cursor()
@@ -91,7 +90,12 @@ def import_tsv_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
         )
         variation_label = variation_part.strip()
       cur.execute(
-        "INSERT INTO openings (eco, name, pgn, ply_count, opening_key, opening_label, variation_key, variation_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        """
+        INSERT INTO openings
+          (eco, name, pgn, ply_count, opening_key, opening_label, variation_key, variation_label)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
         (
           eco,
           name,
@@ -103,9 +107,9 @@ def import_tsv_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
           variation_label,
         ),
       )
-      opening_id = cur.lastrowid
+      opening_id = cur.fetchone()[0]
       cur.executemany(
-        "INSERT INTO opening_moves (opening_id, ply_index, uci) VALUES (?, ?, ?)",
+        "INSERT INTO opening_moves (opening_id, ply_index, uci) VALUES (%s, %s, %s)",
         [(opening_id, i, uci) for i, uci in enumerate(uci_moves)],
       )
       openings_count += 1
@@ -115,15 +119,18 @@ def import_tsv_file(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
 
 
 def main() -> None:
-  db_path = Path(DATABASE_PATH)
-  conn = sqlite3.connect(db_path)
+  database_url = os.environ.get("DATABASE_URL", "")
+  if not database_url:
+    raise RuntimeError("DATABASE_URL is not set.")
+
+  conn = psycopg.connect(database_url, autocommit=False, connect_timeout=5)
   try:
     init_db(conn)
 
     # Skip if already seeded
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM openings")
-    (existing,) = cur.fetchone()
+    existing = cur.fetchone()[0]
     if existing > 0:
       print("Openings already present; skipping seeding.")
       return
@@ -146,4 +153,3 @@ def main() -> None:
     print(f"Total plies stored: {total_plies}")
   finally:
     conn.close()
-

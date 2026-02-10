@@ -1,6 +1,7 @@
 """FastAPI application for Korchess."""
 
 import json
+import os
 import uuid
 import asyncio
 import io
@@ -14,7 +15,7 @@ from db import (
     get_game_by_id, get_analysis, save_analysis,
     get_full_analysis, save_full_analysis,
     create_analysis_job, get_analysis_job, delete_analysis_job, count_analysis_jobs,
-    ensure_games_schema, get_variations_stats,
+    get_variations_stats,
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
@@ -258,7 +259,6 @@ class EvalResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup and seed openings."""
     init_db()
     try:
         seed_openings()
@@ -298,7 +298,6 @@ async def import_lichess_games(request: ImportRequest):
     conn = get_connection()
     imported = 0
     try:
-        ensure_games_schema(conn)
         games, skipped = parse_pgn_games(pgn_text, username, conn)
 
         if not games and skipped == 0:
@@ -364,7 +363,6 @@ async def import_chesscom_games(request: ImportRequest):
     imported = 0
     skipped = 0
     try:
-        ensure_games_schema(conn)
         for game in games:
             opening = None
             try:

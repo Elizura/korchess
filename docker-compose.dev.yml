@@ -5,7 +5,10 @@ services:
   backend:
     volumes:
       - ./backend:/app
-      - ./data:/data
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   frontend:
@@ -15,10 +18,11 @@ services:
     volumes:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
+    ports:
+      - "3000:3000"
     environment:
       - NODE_ENV=development
       - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-    # command comes from Dockerfile.dev (npm run dev)
 
 volumes:
   frontend-node-modules:

@@ -14,11 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create data directory for SQLite
-RUN mkdir -p /data
-
 # Environment variables
-ENV DATABASE_PATH=/data/openingscope.db
+ENV DATABASE_URL=postgresql://postgres.ojqpxvnbiavcdtvdialb:BGwvXUguK2SYGFM3@aws-1-eu-west-1.pooler.supabase.com:5432/postgres
 
 # Expose port
 EXPOSE 8000

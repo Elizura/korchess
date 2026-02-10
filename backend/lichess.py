@@ -5,7 +5,7 @@ import io
 import re
 import time
 from typing import Optional
-import sqlite3
+import psycopg
 
 import chess.pgn
 import httpx
@@ -23,7 +23,7 @@ class LichessAPIError(Exception):
         super().__init__(self.message)
 
 
-def fetch_lichess_pgn(username: str, max_games: int = 1000) -> str:
+def fetch_lichess_pgn(username: str, max_games: int = 10) -> str:
     """
     Fetch games for a user from Lichess as PGN text.
     Handles rate limiting with Retry-After header.
@@ -33,7 +33,7 @@ def fetch_lichess_pgn(username: str, max_games: int = 1000) -> str:
         "Accept": "application/x-chess-pgn",
     }
     params = {
-        # "max": max_games,
+        "max": max_games,
         "rated": "true",
         "opening": "true",
     }
@@ -173,7 +173,7 @@ def game_to_pgn_string(game: chess.pgn.Game) -> str:
 def parse_pgn_games(
     pgn_text: str,
     target_username: str,
-    db_con: sqlite3.Connection,
+    db_con: psycopg.Connection,
     max_plies: int = 40
 ) -> tuple[list[dict], int]:
     """
