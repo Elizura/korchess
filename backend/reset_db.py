@@ -4,7 +4,7 @@ Utility script to wipe the Postgres database used by Korchess.
 WARNING: This is destructive.
 
 - It will remove ALL DATA from all tables in the `public` schema
-  of the target database.
+  of the target database, except `openings` and `opening_moves`.
 - Use only against a development or throwaway database.
 
 Usage examples:
@@ -29,7 +29,8 @@ def reset_database(database_url: str) -> None:
     try:
         cur = conn.cursor()
 
-        # Find all user tables in the public schema
+        # Find all user tables in the public schema (excluding openings-related tables)
+        EXCLUDED_TABLES = {"opening_moves", "openings"}
         cur.execute(
             """
             SELECT tablename
@@ -38,13 +39,15 @@ def reset_database(database_url: str) -> None:
             """
         )
         rows = cur.fetchall()
-        table_names = [row[0] for row in rows]
+        table_names = [row[0] for row in rows if row[0] not in EXCLUDED_TABLES]
 
         if not table_names:
-            print("[reset_db] No tables found in public schema; nothing to do.")
+            print("[reset_db] No tables to truncate (only excluded tables exist or schema is empty).")
             conn.rollback()
             return
 
+        if EXCLUDED_TABLES:
+            print(f"[reset_db] Excluded from truncate: {', '.join(sorted(EXCLUDED_TABLES))}")
         print("[reset_db] The following tables will be truncated (CASCADE):")
         for name in table_names:
             print(f"  - {name}")
