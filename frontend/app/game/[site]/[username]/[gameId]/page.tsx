@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Chess } from "chess.js";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 
 import AnalysisBoard from "@/components/analysis/AnalysisBoard";
 import EvalBar from "@/components/analysis/EvalBar";
@@ -106,6 +107,14 @@ export default function GameAnalyzerPage() {
   const site = params.site as string;
   const username = decodeURIComponent(params.username as string);
   const gameId = params.gameId as string;
+  const { data: session } = useSession();
+
+  const authHeaders = useMemo(() => {
+    if (!session?.idToken) {
+      return {};
+    }
+    return { Authorization: `Bearer ${session.idToken}` };
+  }, [session?.idToken]);
 
   // State
   const [game, setGame] = useState<GameData | null>(null);
@@ -236,11 +245,15 @@ export default function GameAnalyzerPage() {
 
   // Evaluate a position with the engine
   const evaluatePosition = async (fen: string) => {
+    if (!session?.idToken) {
+      setError("Please sign in with Google to continue.");
+      return;
+    }
     setIsEvaluating(true);
     try {
       const res = await fetch(`${API_BASE_URL}/api/eval`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({ fen, depth, multipv: multiPv }),
       });
 
@@ -297,9 +310,14 @@ export default function GameAnalyzerPage() {
       setError(null);
 
       try {
+        if (!session?.idToken) {
+          setError("Please sign in with Google to continue.");
+          return;
+        }
         // Fetch game data
         const gameRes = await fetch(
-          `${API_BASE_URL}/api/game/${site}/${encodeURIComponent(username)}/${gameId}`
+          `${API_BASE_URL}/api/game/${site}/${encodeURIComponent(username)}/${gameId}`,
+          { headers: { ...authHeaders } }
         );
         if (!gameRes.ok) {
           const data = await gameRes.json().catch(() => ({}));
@@ -332,7 +350,8 @@ export default function GameAnalyzerPage() {
 
         // Fetch full analysis status
         const analysisRes = await fetch(
-          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
+          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
+          { headers: { ...authHeaders } }
         );
         if (analysisRes.ok) {
           const data: FullAnalysisResponse = await analysisRes.json();
@@ -366,7 +385,7 @@ export default function GameAnalyzerPage() {
     if (username && gameId) {
       fetchData();
     }
-  }, [username, gameId, depth, multiPv]);
+  }, [username, gameId, depth, multiPv, session?.idToken, authHeaders]);
 
   // Stop polling
   const stopPolling = useCallback(() => {
@@ -411,7 +430,8 @@ export default function GameAnalyzerPage() {
     pollInterval.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`
+          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
+          { headers: { ...authHeaders } }
         );
         const data: FullAnalysisResponse = await res.json();
         
@@ -432,10 +452,14 @@ export default function GameAnalyzerPage() {
         console.error("[Analysis] Polling error:", err);
       }
     }, 2000); // Poll every 2 seconds
-  }, [username, gameId, depth, multiPv, stopPolling, handleAnalysisReady]);
+  }, [username, gameId, depth, multiPv, stopPolling, handleAnalysisReady, authHeaders]);
 
   // Run full analysis (starts background job and begins polling)
   const runAnalysis = useCallback(async () => {
+    if (!session?.idToken) {
+      setError("Please sign in with Google to continue.");
+      return;
+    }
     setAnalyzing(true);
     setError(null);
     setSuccessMessage(null);
@@ -446,7 +470,7 @@ export default function GameAnalyzerPage() {
     try {
       const res = await fetch(
         `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-        { method: "POST" }
+        { method: "POST", headers: { ...authHeaders } }
       );
 
       // Handle 429 Too Many Requests
@@ -480,7 +504,7 @@ export default function GameAnalyzerPage() {
       setAnalyzing(false);
       analysisStartTime.current = null;
     }
-  }, [username, gameId, depth, multiPv, handleAnalysisReady]);
+  }, [username, gameId, depth, multiPv, handleAnalysisReady, session?.idToken, authHeaders]);
 
   // Start/stop polling based on status
   useEffect(() => {
