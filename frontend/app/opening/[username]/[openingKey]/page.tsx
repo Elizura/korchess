@@ -1,11 +1,10 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
 import { useCountUp } from "@/hooks/useCountUp";
-import { useSession } from "next-auth/react";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -61,7 +60,6 @@ const parseOpeningName = (fullName: string) => {
 export default function OpeningDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const { data: session } = useSession();
   const username = params.username as string;
   const openingKey = params.openingKey as string;
   const siteParam = "all";
@@ -81,18 +79,7 @@ export default function OpeningDetailPage() {
   const statsVisible = !!summary && !loading;
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
 
-  const authHeaders = useMemo(() => {
-    if (!session?.idToken) {
-      return {};
-    }
-    return { Authorization: `Bearer ${session.idToken}` };
-  }, [session?.idToken]);
-
   const fetchGames = async (resetOffset: boolean = false) => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
-      return;
-    }
     const currentOffset = resetOffset ? 0 : offset;
     setLoading(resetOffset);
     setLoadingMore(!resetOffset);
@@ -110,8 +97,7 @@ export default function OpeningDetailPage() {
 
       
       const response = await fetch(
-        `${API_BASE_URL}/api/games/${site}/${encodeURIComponent(username)}?${params}`,
-        { headers: { ...authHeaders } }
+        `${API_BASE_URL}/api/games/${site}/${encodeURIComponent(username)}?${params}`
       );
 
       if (!response.ok) {
@@ -148,12 +134,10 @@ export default function OpeningDetailPage() {
   };
 
   useEffect(() => {
-    if (username && openingKey && session?.idToken) {
+    if (username && openingKey) {
       fetchGames(true);
-    } else if (username && openingKey && !session?.idToken) {
-      setError("Please sign in with Google to continue.");
     }
-  }, [username, openingKey, colorFilter, timeClassFilter, resultFilter, site, session?.idToken]);
+  }, [username, openingKey, colorFilter, timeClassFilter, resultFilter, site]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";

@@ -7,7 +7,6 @@ import {
   VT323,
 } from "next/font/google";
 import "./globals.css";
-import Providers from "./providers";
 
 export const metadata: Metadata = {
   title: "Korchess - Chess Opening Analysis",
@@ -58,7 +57,7 @@ export default function RootLayout({
       className={`${inter.variable} ${jetbrainsMono.variable} ${pressStart.variable} ${silkscreen.variable} ${vt323.variable}`}
     >
       <body className="min-h-screen antialiased bg-[color:var(--zen-bg)] text-[color:var(--zen-text)]">
-        <Providers>{children}</Providers>
+        {children}
       </body>
     </html>
   );

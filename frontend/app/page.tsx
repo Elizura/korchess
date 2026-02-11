@@ -6,7 +6,6 @@ export const dynamic = "force-dynamic";
 
 import { useState, useMemo, useEffect, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { signIn, signOut, useSession } from "next-auth/react";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
@@ -63,14 +62,6 @@ const parseOpeningName = (fullName: string) => {
 export default function Home() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { data: session, status } = useSession();
-
-  const authHeaders = useMemo(() => {
-    if (!session?.idToken) {
-      return {};
-    }
-    return { Authorization: `Bearer ${session.idToken}` };
-  }, [session?.idToken]);
   
   const [username, setUsername] = useState("");
   const [lichessUsername, setLichessUsername] = useState("");
@@ -105,8 +96,7 @@ export default function Home() {
     params.set("limit", "10");
 
     const response = await fetch(
-      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}?${params}`,
-      { headers: { ...authHeaders } }
+      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}?${params}`
     );
 
     if (!response.ok) {
@@ -119,8 +109,7 @@ export default function Home() {
 
   const fetchImportStatus = async (user: string) => {
     const response = await fetch(
-      `${API_BASE_URL}/api/import-status/all/${encodeURIComponent(user)}`,
-      { headers: { ...authHeaders } }
+      `${API_BASE_URL}/api/import-status/all/${encodeURIComponent(user)}`
     );
     
     if (!response.ok) {
@@ -131,17 +120,13 @@ export default function Home() {
   };
 
   const fetchVariations = async (user: string, openingKey: string) => {
-    if (!session?.idToken) {
-      return [];
-    }
     const params = new URLSearchParams();
     params.set("opening_key", openingKey);
     params.set("color", colorFilter);
     params.set("time_class", timeClassFilter);
 
     const response = await fetch(
-      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}/variations?${params}`,
-      { headers: { ...authHeaders } }
+      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}/variations?${params}`
     );
 
     if (!response.ok) {
@@ -180,14 +165,10 @@ export default function Home() {
           }
         };
 
-        if (session?.idToken) {
-          loadData();
-        } else {
-          setError("Please sign in with Google to continue.");
-        }
+        loadData();
       }
     }
-  }, [searchParams, initialized, colorFilter, timeClassFilter, router, session?.idToken]);
+  }, [searchParams, initialized, colorFilter, timeClassFilter, router]);
 
   // Update URL when currentUsername changes
   const updateUrl = (user: string | null) => {
@@ -197,10 +178,6 @@ export default function Home() {
   };
 
   const handleImportLichess = async () => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
-      return;
-    }
     if (!lichessUsername.trim()) {
       setError("Please enter a Lichess username");
       return;
@@ -216,7 +193,7 @@ export default function Home() {
     try {
       const importResponse = await fetch(`${API_BASE_URL}/api/import/lichess`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
       });
 
@@ -253,10 +230,6 @@ export default function Home() {
   };
 
   const handleImportChesscom = async () => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
-      return;
-    }
     if (!chesscomUsername.trim()) {
       setError("Please enter a Chess.com username");
       return;
@@ -272,7 +245,7 @@ export default function Home() {
     try {
       const importResponse = await fetch(`${API_BASE_URL}/api/import/chesscom`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
       });
 
@@ -420,30 +393,6 @@ export default function Home() {
   return (
     <div role="main" className="opening-page max-w-[1152px] mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)]">
-            {status === "loading"
-              ? "Checking session..."
-              : session?.user
-              ? `Signed in as ${session.user.email ?? session.user.name ?? "Google user"}`
-              : "Not signed in"}
-          </div>
-          {session?.user ? (
-            <button
-              onClick={() => signOut()}
-              className="pixel-button px-4 py-2 text-xs rounded-lg border border-[color:var(--zen-border)]"
-            >
-              Sign out
-            </button>
-          ) : (
-            <button
-              onClick={() => signIn("google")}
-              className="pixel-button px-4 py-2 text-xs rounded-lg border border-[color:var(--zen-border)]"
-            >
-              Continue with Google
-            </button>
-          )}
-        </div>
         <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
           Korchess
         </h1>
