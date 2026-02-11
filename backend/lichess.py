@@ -23,7 +23,7 @@ class LichessAPIError(Exception):
         super().__init__(self.message)
 
 
-def fetch_lichess_pgn(username: str, since: int, until: int) -> str:
+def fetch_lichess_pgn(username: str, max_games: int = 1000) -> str:
     """
     Fetch games for a user from Lichess as PGN text.
     Handles rate limiting with Retry-After header.
@@ -35,8 +35,7 @@ def fetch_lichess_pgn(username: str, since: int, until: int) -> str:
     params = {
         "rated": "true",
         "opening": "true",
-        "since": since,
-        "until": until,
+        "max": max_games,
     }
 
     def make_request() -> httpx.Response:

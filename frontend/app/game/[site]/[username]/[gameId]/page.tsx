@@ -109,7 +109,7 @@ export default function GameAnalyzerPage() {
   const gameId = params.gameId as string;
   const { data: session } = useSession();
 
-  const authHeaders = useMemo(() => {
+  const authHeaders = useMemo((): Record<string, string> => {
     if (!session?.idToken) {
       return {};
     }
@@ -253,7 +253,7 @@ export default function GameAnalyzerPage() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/eval`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { "Content-Type": "application/json", ...authHeaders } as Record<string, string>,
         body: JSON.stringify({ fen, depth, multipv: multiPv }),
       });
 
@@ -317,7 +317,7 @@ export default function GameAnalyzerPage() {
         // Fetch game data
         const gameRes = await fetch(
           `${API_BASE_URL}/api/game/${site}/${encodeURIComponent(username)}/${gameId}`,
-          { headers: { ...authHeaders } }
+          { headers: authHeaders }
         );
         if (!gameRes.ok) {
           const data = await gameRes.json().catch(() => ({}));
@@ -351,7 +351,7 @@ export default function GameAnalyzerPage() {
         // Fetch full analysis status
         const analysisRes = await fetch(
           `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-          { headers: { ...authHeaders } }
+          { headers: authHeaders }
         );
         if (analysisRes.ok) {
           const data: FullAnalysisResponse = await analysisRes.json();
@@ -431,7 +431,7 @@ export default function GameAnalyzerPage() {
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-          { headers: { ...authHeaders } }
+          { headers: authHeaders }
         );
         const data: FullAnalysisResponse = await res.json();
         
@@ -470,7 +470,7 @@ export default function GameAnalyzerPage() {
     try {
       const res = await fetch(
         `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-        { method: "POST", headers: { ...authHeaders } }
+        { method: "POST", headers: authHeaders }
       );
 
       // Handle 429 Too Many Requests

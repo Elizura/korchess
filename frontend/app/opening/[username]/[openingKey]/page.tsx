@@ -81,7 +81,7 @@ export default function OpeningDetailPage() {
   const statsVisible = !!summary && !loading;
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
 
-  const authHeaders = useMemo(() => {
+  const authHeaders = useMemo((): Record<string, string> => {
     if (!session?.idToken) {
       return {};
     }
@@ -111,7 +111,7 @@ export default function OpeningDetailPage() {
       
       const response = await fetch(
         `${API_BASE_URL}/api/games/${site}/${encodeURIComponent(username)}?${params}`,
-        { headers: { ...authHeaders } }
+        { headers: authHeaders }
       );
 
       if (!response.ok) {

@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  darkMode: "media",
+  darkMode: "class",
   content: [
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
@@ -9,9 +9,19 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      colors: {
+        primary: "#5f6fc1",
+        "accent-green": "#4ade80",
+        "background-dark": "#0d1117",
+        "card-dark": "#161b22",
+      },
       fontFamily: {
         sans: ["var(--font-inter)", "system-ui", "sans-serif"],
-        mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
+        mono: ["var(--font-mono)", "var(--font-space-mono)", "ui-monospace", "monospace"],
+        display: ["var(--font-pixel)", "var(--font-pixel-bold)", "cursive"],
+      },
+      borderRadius: {
+        DEFAULT: "0px",
       },
     },
   },

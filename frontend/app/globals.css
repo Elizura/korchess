@@ -66,6 +66,58 @@ body {
   line-height: 1.6;
 }
 
+/* Landing page utilities - dark bluish grid */
+.crt-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%),
+    linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
+  background-size: 100% 2px, 3px 100%;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.grid-bg {
+  background-color: #0a0e18;
+  background-image:
+    linear-gradient(to right, rgba(70, 100, 150, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(70, 100, 150, 0.06) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.glitch-text {
+  text-shadow: 2px 0 #ff00c1, -2px 0 #00fff9;
+}
+
+.pixel-border {
+  box-shadow:
+    0 -3px 0 0 #000,
+    0 3px 0 0 #000,
+    -3px 0 0 0 #000,
+    3px 0 0 0 #000;
+}
+
+.pixel-border-primary {
+  box-shadow:
+    0 -3px 0 0 #3b4887,
+    0 3px 0 0 #3b4887,
+    -3px 0 0 0 #3b4887,
+    3px 0 0 0 #3b4887;
+}
+
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-15px); }
+  100% { transform: translateY(0px); }
+}
+
+.floating {
+  animation: float 6s ease-in-out infinite;
+}
+
 @layer components {
   .zen-surface {
     background: var(--zen-surface);
