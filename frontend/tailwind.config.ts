@@ -14,6 +14,7 @@ const config: Config = {
         "accent-green": "#4ade80",
         "background-dark": "#0d1117",
         "card-dark": "#161b22",
+        charcoal: "#0a0a0c",
       },
       fontFamily: {
         sans: ["var(--font-inter)", "system-ui", "sans-serif"],

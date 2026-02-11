@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 import { useState, useMemo, useEffect, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { signIn, signOut, useSession } from "next-auth/react";
+import { signOut, useSession } from "next-auth/react";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
@@ -93,6 +93,14 @@ export default function DashboardPage() {
     direction: "asc" | "desc";
   }>({ key: "games", direction: "desc" });
   const [initialized, setInitialized] = useState(false);
+
+  // Redirect unauthenticated users to signup
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.replace("/signup");
+    }
+  }, [status, router]);
+
   // Fetch combined report across all sites
   const fetchReport = async (
     user: string,
@@ -417,39 +425,33 @@ export default function DashboardPage() {
     return sorted;
   }, [report, hideUnknown, sortConfig]);
 
+  if (status === "loading" || status === "unauthenticated") {
+    return (
+      <div className="opening-page min-h-screen flex items-center justify-center">
+        <div className="font-display text-xs uppercase tracking-widest text-[color:var(--zen-muted)]">
+          Loading...
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div role="main" className="opening-page max-w-[1152px] mx-auto px-4 sm:px-6 py-10">
-      <div className="mb-6">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)]">
-            {status === "loading"
-              ? "Checking session..."
-              : session?.user
-              ? `Signed in as ${session.user.email ?? session.user.name ?? "Google user"}`
-              : "Not signed in"}
-          </div>
-          {session?.user ? (
-            <button
-              onClick={() => signOut()}
-              className="pixel-button px-4 py-2 text-xs rounded-lg border border-[color:var(--zen-border)]"
-            >
-              Sign out
-            </button>
-          ) : (
-            <button
-              onClick={() => signIn("google")}
-              className="pixel-button px-4 py-2 text-xs rounded-lg border border-[color:var(--zen-border)]"
-            >
-              Continue with Google
-            </button>
-          )}
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
+            Korchess
+          </h1>
+          <p className="opening-subtitle mt-2 text-sm sm:text-base text-[color:var(--zen-muted)]">
+            Analyze your chess opening performance from your games
+          </p>
         </div>
-        <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
-          Korchess
-        </h1>
-        <p className="opening-subtitle mt-2 text-sm sm:text-base text-[color:var(--zen-muted)]">
-          Analyze your chess opening performance from your games
-        </p>
+        <button
+          onClick={() => signOut()}
+          className="bg-[color:var(--zen-surface)] pixel-border-accent-green font-display text-[9px] uppercase tracking-wider px-3 py-1.5 text-[color:var(--zen-text)] hover:opacity-90 transition-opacity shrink-0"
+        >
+          LOG OUT
+        </button>
       </div>
 
       <div className="zen-surface opening-frame p-5 sm:p-6">
