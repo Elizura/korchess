@@ -26,6 +26,8 @@ services:
       - "3000"
     depends_on:
       - backend
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
 
