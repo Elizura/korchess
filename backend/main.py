@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db import init_db
-from routers import health, import_ as import_router, openings, games, analysis, eval as eval_router
+from routers import health, import_ as import_router, openings, games, analysis, eval as eval_router, auth as auth_router
 
 app = FastAPI(
     title="Korchess API",
@@ -34,6 +34,7 @@ async def startup_event():
 
 
 app.include_router(health.router)
+app.include_router(auth_router.router, prefix="/api")
 app.include_router(import_router.router, prefix="/api/import")
 app.include_router(openings.router, prefix="/api")
 app.include_router(games.router, prefix="/api")

@@ -23,6 +23,7 @@ from full_analysis import run_full_analysis
 
 from schemas import AnalysisResponse, FullAnalysisResponse
 from dependencies import get_db, validate_site
+from auth import get_registered_user
 
 router = APIRouter(tags=["analysis"])
 
@@ -33,6 +34,7 @@ active_analysis_lock = asyncio.Lock()
 
 async def run_analysis_background(
     job_id: str,
+    user_id: str,
     username: str,
     game_id: str,
     pgn: str,
@@ -53,7 +55,7 @@ async def run_analysis_background(
         conn = get_connection()
         try:
             save_full_analysis(
-                conn, username, game_id,
+                conn, user_id, username, game_id,
                 depth=depth,
                 multipv=multipv,
                 moves_json=json.dumps(result["moves"]),
@@ -88,6 +90,7 @@ async def get_analysis_endpoint(
     username: str,
     game_id: str,
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
 ):
     """Get cached analysis for a game."""
     site = validate_site(site)
@@ -96,7 +99,7 @@ async def get_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached = get_analysis(conn, username, game_id, site)
+    cached = get_analysis(conn, current_user["id"], username, game_id, site)
 
     if not cached:
         return AnalysisResponse(status="missing")
@@ -114,6 +117,7 @@ async def run_analysis_endpoint(
     username: str,
     game_id: str,
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
 ):
     """Run analysis on a game (or return cached)."""
     site = validate_site(site)
@@ -122,7 +126,7 @@ async def run_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached = get_analysis(conn, username, game_id, site)
+    cached = get_analysis(conn, current_user["id"], username, game_id, site)
     if cached:
         return AnalysisResponse(
             status="ready",
@@ -130,7 +134,7 @@ async def run_analysis_endpoint(
             created_at=cached["created_at"]
         )
 
-    game = get_game_by_id(conn, username, game_id, site)
+    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
@@ -144,7 +148,7 @@ async def run_analysis_endpoint(
 
     settings = {"time_ms": 150, "checkpoints": [10, 20, 30, 40]}
     save_analysis(
-        conn, username, game_id, site,
+        conn, current_user["id"], username, game_id, site,
         engine_name="stockfish",
         engine_version="15+",
         settings_json=json.dumps(settings),
@@ -152,7 +156,7 @@ async def run_analysis_endpoint(
     )
     conn.commit()
 
-    saved = get_analysis(conn, username, game_id, site)
+    saved = get_analysis(conn, current_user["id"], username, game_id, site)
 
     return AnalysisResponse(
         status="ready",
@@ -169,6 +173,7 @@ async def get_full_analysis_endpoint(
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
 ):
     """Get full analysis status for a game."""
     site = validate_site(site)
@@ -177,7 +182,7 @@ async def get_full_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
+    cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
     if cached:
         return FullAnalysisResponse(
             status="completed",
@@ -189,7 +194,7 @@ async def get_full_analysis_endpoint(
             created_at=cached["created_at"]
         )
 
-    job = get_analysis_job(conn, username, game_id, depth, multipv, site)
+    job = get_analysis_job(conn, current_user["id"], username, game_id, depth, multipv, site)
     if job:
         return FullAnalysisResponse(status="processing")
 
@@ -204,6 +209,7 @@ async def run_full_analysis_endpoint(
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
 ):
     """Start full move-by-move analysis on a game (async with background task)."""
     global active_analysis_count
@@ -214,7 +220,7 @@ async def run_full_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
+    cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
     if cached:
         return FullAnalysisResponse(
             status="completed",
@@ -226,7 +232,7 @@ async def run_full_analysis_endpoint(
             created_at=cached["created_at"]
         )
 
-    existing_job = get_analysis_job(conn, username, game_id, depth, multipv, site)
+    existing_job = get_analysis_job(conn, current_user["id"], username, game_id, depth, multipv, site)
     if existing_job:
         return FullAnalysisResponse(status="processing")
 
@@ -239,7 +245,7 @@ async def run_full_analysis_endpoint(
         active_analysis_count += 1
         print(f"[Analysis] Starting new analysis. Active count: {active_analysis_count}")
 
-    game = get_game_by_id(conn, username, game_id, site)
+    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
     if not game:
         async with active_analysis_lock:
             active_analysis_count -= 1
@@ -251,11 +257,11 @@ async def run_full_analysis_endpoint(
         raise HTTPException(status_code=400, detail="Game has no PGN")
 
     job_id = str(uuid.uuid4())
-    create_analysis_job(conn, job_id, username, game_id, depth, multipv, site)
+    create_analysis_job(conn, job_id, current_user["id"], username, game_id, depth, multipv, site)
     conn.commit()
 
     asyncio.create_task(run_analysis_background(
-        job_id, username, game_id, game["pgn"], depth, multipv, site
+        job_id, current_user["id"], username, game_id, game["pgn"], depth, multipv, site
     ))
 
     return FullAnalysisResponse(status="processing")

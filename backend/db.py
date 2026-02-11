@@ -26,11 +26,23 @@ def init_db() -> None:
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Create games table
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT,
+            name TEXT,
+            avatar_url TEXT,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+        """
+    )
+
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS games (
             id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
             username TEXT NOT NULL,
@@ -46,56 +58,58 @@ def init_db() -> None:
             white_elo INTEGER,
             black_elo INTEGER,
             pgn TEXT,
-            UNIQUE(site, site_game_id)
+            UNIQUE(user_id, site, site_game_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
     )
 
-    # Create indexes for fast aggregations
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_games_username
-        ON games(username)
+        CREATE INDEX IF NOT EXISTS idx_games_user
+        ON games(user_id)
         """
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_games_username_eco
-        ON games(username, eco)
+        CREATE INDEX IF NOT EXISTS idx_games_user_username
+        ON games(user_id, username)
         """
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_games_username_color_time_class
-        ON games(username, color, time_class)
+        CREATE INDEX IF NOT EXISTS idx_games_user_username_color_time_class
+        ON games(user_id, username, color, time_class)
         """
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_games_site_username
-        ON games(site, username)
+        CREATE INDEX IF NOT EXISTS idx_games_user_site_username
+        ON games(user_id, site, username)
         """
     )
 
-    # Create imports table
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS imports (
-            username TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
             site TEXT NOT NULL,
             imported INTEGER NOT NULL,
             skipped INTEGER NOT NULL,
             max_games INTEGER NOT NULL,
-            imported_at TEXT NOT NULL
+            imported_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, site, username),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
     )
 
-    # Create analysis table for cached engine analysis
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS analysis (
             id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
             username TEXT NOT NULL,
@@ -104,29 +118,30 @@ def init_db() -> None:
             engine_version TEXT,
             settings_json TEXT NOT NULL,
             result_json TEXT NOT NULL,
-            UNIQUE(site, site_game_id, username)
+            UNIQUE(user_id, site, site_game_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
     )
 
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_analysis_username
-        ON analysis(username)
+        CREATE INDEX IF NOT EXISTS idx_analysis_user
+        ON analysis(user_id)
         """
     )
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_analysis_lookup
-        ON analysis(username, site, site_game_id)
+        ON analysis(user_id, site, site_game_id)
         """
     )
 
-    # Create full_analysis table for comprehensive move-by-move analysis
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS full_analysis (
             id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
             username TEXT NOT NULL,
@@ -136,21 +151,22 @@ def init_db() -> None:
             summary_json TEXT NOT NULL,
             meta_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            UNIQUE(site, site_game_id, username, depth, multipv)
+            UNIQUE(user_id, site, site_game_id, depth, multipv),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
     )
 
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_full_analysis_username
-        ON full_analysis(username)
+        CREATE INDEX IF NOT EXISTS idx_full_analysis_user
+        ON full_analysis(user_id)
         """
     )
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_full_analysis_lookup
-        ON full_analysis(username, site, site_game_id, depth, multipv)
+        ON full_analysis(user_id, site, site_game_id, depth, multipv)
         """
     )
 
@@ -158,12 +174,15 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS analysis_jobs (
             id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
             username TEXT NOT NULL,
             depth INTEGER NOT NULL,
             multipv INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, site, site_game_id, depth, multipv),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
     )
@@ -171,42 +190,35 @@ def init_db() -> None:
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_analysis_jobs_lookup
-        ON analysis_jobs(username, site_game_id, depth, multipv)
+        ON analysis_jobs(user_id, site_game_id, depth, multipv)
         """
     )
 
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS openings (
-        id SERIAL PRIMARY KEY,
-        eco TEXT NOT NULL,
-        name TEXT NOT NULL,
-        pgn TEXT NOT NULL,
-        ply_count INTEGER NOT NULL,
-        opening_key TEXT NOT NULL,
-        opening_label TEXT NOT NULL,
-        variation_key TEXT NOT NULL,
-        variation_label TEXT NOT NULL
-        );
+            id SERIAL PRIMARY KEY,
+            eco TEXT NOT NULL,
+            name TEXT NOT NULL,
+            pgn TEXT NOT NULL,
+            ply_count INTEGER NOT NULL,
+            opening_key TEXT NOT NULL,
+            opening_label TEXT NOT NULL,
+            variation_key TEXT NOT NULL,
+            variation_label TEXT NOT NULL
+        )
         """
     )
 
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS opening_moves (
-        opening_id INTEGER NOT NULL,
-        ply_index INTEGER NOT NULL,
-        uci TEXT NOT NULL,
-        PRIMARY KEY (opening_id, ply_index),
-        FOREIGN KEY (opening_id) REFERENCES openings(id)
-        );
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_opening_moves_lookup
-        ON opening_moves(ply_index, uci);
+            opening_id INTEGER NOT NULL,
+            ply_index INTEGER NOT NULL,
+            uci TEXT NOT NULL,
+            PRIMARY KEY (opening_id, ply_index),
+            FOREIGN KEY (opening_id) REFERENCES openings(id)
+        )
         """
     )
 
@@ -222,6 +234,62 @@ def ensure_openings_table(conn: psycopg.Connection) -> None:
         raise RuntimeError("Openings table is missing or inaccessible.") from exc
 
 
+def upsert_user(conn: psycopg.Connection, user: dict) -> None:
+    """Insert or update a user record."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO users (id, email, name, avatar_url)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            email = EXCLUDED.email,
+            name = EXCLUDED.name,
+            avatar_url = EXCLUDED.avatar_url
+        """,
+        (
+            user.get("id"),
+            user.get("email"),
+            user.get("name"),
+            user.get("picture"),
+        ),
+    )
+
+
+def create_user_if_missing(conn: psycopg.Connection, user: dict) -> None:
+    """Insert a user record if it doesn't exist."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO users (id, email, name, avatar_url)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (
+            user.get("id"),
+            user.get("email"),
+            user.get("name"),
+            user.get("picture"),
+        ),
+    )
+
+
+def get_user_by_id(conn: psycopg.Connection, user_id: str) -> dict | None:
+    """Fetch a user by ID."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, email, name, avatar_url, created_at
+        FROM users
+        WHERE id = %s
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
 def upsert_game(conn: psycopg.Connection, game_row: dict) -> bool:
     """
     Insert a game, ignoring if it already exists (by site + site_game_id).
@@ -231,13 +299,14 @@ def upsert_game(conn: psycopg.Connection, game_row: dict) -> bool:
     cursor.execute(
         """
         INSERT INTO games (
-            site, site_game_id, username, played_at, time_class,
+            user_id, site, site_game_id, username, played_at, time_class,
             color, result, eco, opening_name, opening_id, opening_ply_count,
             opponent, white_elo, black_elo, pgn
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (site, site_game_id) DO NOTHING
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, site, site_game_id) DO NOTHING
         """,
         (
+            game_row["user_id"],
             game_row["site"],
             game_row["site_game_id"],
             game_row["username"].strip().lower(),
@@ -260,6 +329,7 @@ def upsert_game(conn: psycopg.Connection, game_row: dict) -> bool:
 
 def get_openings_stats(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     color: str = "all",
     time_class: str = "all",
@@ -285,9 +355,9 @@ def get_openings_stats(
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
-        WHERE LOWER(g.username) = LOWER(%s)
+        WHERE g.user_id = %s AND LOWER(g.username) = LOWER(%s)
     """
-    params: list = [username]
+    params: list = [user_id, username]
 
     if site and site != "all":
         query += " AND g.site = %s"
@@ -334,6 +404,7 @@ def get_openings_stats(
 
 def upsert_import_status(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site: str,
     imported: int,
@@ -347,22 +418,22 @@ def upsert_import_status(
     cursor.execute(
         """
         INSERT INTO imports 
-        (username, site, imported, skipped, max_games, imported_at)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (username)
+        (user_id, username, site, imported, skipped, max_games, imported_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, site, username)
         DO UPDATE SET
-            site = EXCLUDED.site,
             imported = EXCLUDED.imported,
             skipped = EXCLUDED.skipped,
             max_games = EXCLUDED.max_games,
             imported_at = EXCLUDED.imported_at
         """,
-        (canonical_username, site, imported, skipped, max_games, imported_at),
+        (user_id, canonical_username, site, imported, skipped, max_games, imported_at),
     )
 
 
 def get_import_status(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site: str = "lichess",
 ) -> dict:
@@ -374,9 +445,9 @@ def get_import_status(
         """
         SELECT imported, skipped, max_games, imported_at
         FROM imports
-        WHERE LOWER(username) = %s AND site = %s
+        WHERE user_id = %s AND LOWER(username) = %s AND site = %s
         """,
-        (canonical_username, site),
+        (user_id, canonical_username, site),
     )
     import_row = cursor.fetchone()
 
@@ -384,9 +455,9 @@ def get_import_status(
         """
         SELECT COUNT(*) as total
         FROM games
-        WHERE LOWER(username) = %s AND site = %s
+        WHERE user_id = %s AND LOWER(username) = %s AND site = %s
         """,
-        (canonical_username, site),
+        (user_id, canonical_username, site),
     )
     total_row = cursor.fetchone()
 
@@ -401,6 +472,7 @@ def get_import_status(
 
 def get_games_by_opening(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     opening_key: str,
     variation_key: str | None = None,
@@ -421,11 +493,12 @@ def get_games_by_opening(
     canonical_username = username.strip().lower()
 
     base_where_conditions = [
+        "g.user_id = %s",
         "LOWER(g.username) = %s",
         "g.site_game_id IS NOT NULL",
         "g.site_game_id != ''",
     ]
-    base_params = [canonical_username]
+    base_params = [user_id, canonical_username]
 
     if opening_key == "unknown":
         base_where_conditions.append("g.opening_id IS NULL")
@@ -544,6 +617,7 @@ def get_games_by_opening(
 
 def get_variations_stats(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     opening_key: str,
     color: str = "all",
@@ -580,10 +654,10 @@ def get_variations_stats(
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
-        WHERE LOWER(g.username) = LOWER(%s)
+        WHERE g.user_id = %s AND LOWER(g.username) = LOWER(%s)
           AND o.opening_key = %s
     """
-    params: list = [username, opening_key]
+    params: list = [user_id, username, opening_key]
 
     if site and site != "all":
         query += " AND g.site = %s"
@@ -629,6 +703,7 @@ def get_variations_stats(
 
 def get_game_by_id(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site_game_id: str,
     site: str,
@@ -640,9 +715,9 @@ def get_game_by_id(
         SELECT site, site_game_id, played_at, color, result, opponent, 
                opening_name, pgn, eco
         FROM games
-        WHERE LOWER(username) = %s AND site_game_id = %s AND site = %s
+        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s AND site = %s
         """,
-        (username.strip().lower(), site_game_id, site),
+        (user_id, username.strip().lower(), site_game_id, site),
     )
     row = cursor.fetchone()
     if not row:
@@ -652,6 +727,7 @@ def get_game_by_id(
 
 def get_analysis(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site_game_id: str,
     site: str,
@@ -662,9 +738,9 @@ def get_analysis(
         """
         SELECT result_json, created_at, engine_name, engine_version
         FROM analysis
-        WHERE LOWER(username) = %s AND site_game_id = %s AND site = %s
+        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s AND site = %s
         """,
-        (username.strip().lower(), site_game_id, site),
+        (user_id, username.strip().lower(), site_game_id, site),
     )
     row = cursor.fetchone()
     if not row:
@@ -674,6 +750,7 @@ def get_analysis(
 
 def save_analysis(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site_game_id: str,
     site: str,
@@ -690,10 +767,10 @@ def save_analysis(
     cursor.execute(
         """
         INSERT INTO analysis 
-        (site, site_game_id, username, created_at, engine_name, 
+        (user_id, site, site_game_id, username, created_at, engine_name, 
          engine_version, settings_json, result_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (site, site_game_id, username)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, site, site_game_id)
         DO UPDATE SET
             created_at = EXCLUDED.created_at,
             engine_name = EXCLUDED.engine_name,
@@ -702,6 +779,7 @@ def save_analysis(
             result_json = EXCLUDED.result_json
         """,
         (
+            user_id,
             site,
             site_game_id,
             username.strip().lower(),
@@ -716,6 +794,7 @@ def save_analysis(
 
 def get_full_analysis(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -728,10 +807,10 @@ def get_full_analysis(
         """
         SELECT moves_json, summary_json, meta_json, created_at
         FROM full_analysis
-        WHERE LOWER(username) = %s AND site_game_id = %s 
+        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s 
         AND depth = %s AND multipv = %s AND site = %s
         """,
-        (username.strip().lower(), site_game_id, depth, multipv, site),
+        (user_id, username.strip().lower(), site_game_id, depth, multipv, site),
     )
     row = cursor.fetchone()
     if not row:
@@ -741,6 +820,7 @@ def get_full_analysis(
 
 def save_full_analysis(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -758,10 +838,10 @@ def save_full_analysis(
     cursor.execute(
         """
         INSERT INTO full_analysis 
-        (site, site_game_id, username, depth, multipv, 
+        (user_id, site, site_game_id, username, depth, multipv, 
          moves_json, summary_json, meta_json, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (site, site_game_id, username, depth, multipv)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, site, site_game_id, depth, multipv)
         DO UPDATE SET
             moves_json = EXCLUDED.moves_json,
             summary_json = EXCLUDED.summary_json,
@@ -769,6 +849,7 @@ def save_full_analysis(
             created_at = EXCLUDED.created_at
         """,
         (
+            user_id,
             site,
             site_game_id,
             username.strip().lower(),
@@ -785,6 +866,7 @@ def save_full_analysis(
 def create_analysis_job(
     conn: psycopg.Connection,
     job_id: str,
+    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -798,16 +880,17 @@ def create_analysis_job(
     created_at = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         """
-        INSERT INTO analysis_jobs (id, site, site_game_id, username, depth, multipv, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO analysis_jobs (id, user_id, site, site_game_id, username, depth, multipv, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (id) DO NOTHING
         """,
-        (job_id, site, site_game_id, username.strip().lower(), depth, multipv, created_at),
+        (job_id, user_id, site, site_game_id, username.strip().lower(), depth, multipv, created_at),
     )
 
 
 def get_analysis_job(
     conn: psycopg.Connection,
+    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -820,9 +903,9 @@ def get_analysis_job(
         """
         SELECT id, site, site_game_id, username, depth, multipv, created_at
         FROM analysis_jobs
-        WHERE LOWER(username) = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
+        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
         """,
-        (username.strip().lower(), site_game_id, depth, multipv, site),
+        (user_id, username.strip().lower(), site_game_id, depth, multipv, site),
     )
     row = cursor.fetchone()
     if not row:

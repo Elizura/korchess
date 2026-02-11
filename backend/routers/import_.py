@@ -7,21 +7,27 @@ import chess.pgn
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
-from db import get_connection, upsert_game, upsert_import_status
+from db import upsert_game, upsert_import_status
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
 from opening_match import game_to_uci_plies, best_opening_match
 
 from schemas import ImportRequest, ImportResponse
 from dependencies import get_db
+from auth import get_registered_user
 
 router = APIRouter(tags=["import"])
 
 
 @router.post("/lichess", response_model=ImportResponse)
-async def import_lichess_games(request: ImportRequest, conn: psycopg.Connection = Depends(get_db)):
+async def import_lichess_games(
+    request: ImportRequest,
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
+):
     username = request.username.strip()
     max_games = request.max_games
+    user_id = current_user["id"]
 
     try:
         pgn_text = fetch_lichess_pgn(username, max_games)
@@ -49,6 +55,7 @@ async def import_lichess_games(request: ImportRequest, conn: psycopg.Connection 
         )
 
     for game in games:
+        game["user_id"] = user_id
         if upsert_game(conn, game):
             imported += 1
         else:
@@ -57,7 +64,7 @@ async def import_lichess_games(request: ImportRequest, conn: psycopg.Connection 
 
     imported_at = datetime.now(timezone.utc).isoformat()
     upsert_import_status(
-        conn, username, "lichess",
+        conn, user_id, username, "lichess",
         imported, skipped, max_games, imported_at
     )
     conn.commit()
@@ -70,13 +77,18 @@ async def import_lichess_games(request: ImportRequest, conn: psycopg.Connection 
 
 
 @router.post("/chesscom", response_model=ImportResponse)
-async def import_chesscom_games(request: ImportRequest, conn: psycopg.Connection = Depends(get_db)):
+async def import_chesscom_games(
+    request: ImportRequest,
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
+):
     """
     Import games from Chess.com for a user.
     Fetches games via Chess.com API, parses, and stores in database.
     """
     username = request.username.strip()
     max_games = request.max_games
+    user_id = current_user["id"]
 
     try:
         games = fetch_chesscom_games(username, max_games)
@@ -112,6 +124,7 @@ async def import_chesscom_games(request: ImportRequest, conn: psycopg.Connection
         game["opening_id"] = opening["opening_id"] if opening else None
         game["opening_ply_count"] = opening["ply_count"] if opening else None
 
+        game["user_id"] = user_id
         if upsert_game(conn, game):
             imported += 1
         else:
@@ -120,7 +133,7 @@ async def import_chesscom_games(request: ImportRequest, conn: psycopg.Connection
 
     imported_at = datetime.now(timezone.utc).isoformat()
     upsert_import_status(
-        conn, username, "chesscom",
+        conn, user_id, username, "chesscom",
         imported, skipped, max_games, imported_at
     )
     conn.commit()
