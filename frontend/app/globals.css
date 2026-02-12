@@ -306,6 +306,30 @@ body {
   box-shadow: 0 0 15px rgba(0, 242, 255, 0.4);
 }
 
+/* Profile edit page */
+.profile-edit-page {
+  background-color: #0a0c10;
+  background-image:
+    linear-gradient(rgba(95, 111, 193, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(95, 111, 193, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+.profile-glow {
+  box-shadow: 0 0 20px rgba(95, 111, 193, 0.3);
+}
+.profile-avatar-card:hover {
+  background: rgba(95, 111, 193, 0.1);
+}
+.profile-cursor {
+  display: inline-block;
+  width: 10px;
+  height: 20px;
+  background-color: #5f6fc1;
+  animation: blink 1s step-end infinite;
+  vertical-align: middle;
+  margin-left: 2px;
+}
+
 @layer components {
   .zen-surface {
     background: var(--zen-surface);

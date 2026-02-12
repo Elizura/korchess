@@ -35,10 +35,20 @@ def init_db() -> None:
             avatar_url TEXT,
             avatar TEXT,
             username TEXT,
-            created_at TIMESTAMPTZ DEFAULT now()
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
         )
         """
     )
+
+    cursor.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'updated_at'
+        """
+    )
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE users ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now()")
 
     cursor.execute(
         """
@@ -280,7 +290,7 @@ def get_user_by_id(conn: psycopg.Connection, user_id: str) -> dict | None:
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, email, name, avatar_url, avatar, username, created_at
+        SELECT id, email, name, avatar_url, avatar, username, created_at, updated_at
         FROM users
         WHERE id = %s
         """,
@@ -301,10 +311,40 @@ def update_user_profile(
     cursor.execute(
         """
         UPDATE users
-        SET avatar = %s, username = %s
+        SET avatar = %s, username = %s, updated_at = now()
         WHERE id = %s
         """,
         (avatar, canonical_username, user_id),
+    )
+
+
+def update_user_profile_partial(
+    conn: psycopg.Connection,
+    user_id: str,
+    avatar: str | None = None,
+    username: str | None = None,
+) -> None:
+    """Update user avatar and/or username (only provided fields)."""
+    if avatar is None and username is None:
+        return
+    cursor = conn.cursor()
+    updates = []
+    params: list = []
+    if avatar is not None:
+        updates.append("avatar = %s")
+        params.append(avatar)
+    if username is not None:
+        updates.append("username = %s")
+        params.append(username.strip().lower())
+    updates.append("updated_at = now()")
+    params.append(user_id)
+    cursor.execute(
+        f"""
+        UPDATE users
+        SET {", ".join(updates)}
+        WHERE id = %s
+        """,
+        params,
     )
 
 

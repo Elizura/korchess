@@ -469,12 +469,21 @@ export default function DashboardPage() {
             Analyze your chess opening performance from your games
           </p>
         </div>
-        <button
-          onClick={() => signOut()}
-          className="bg-[color:var(--zen-surface)] pixel-border-accent-green font-display text-[9px] uppercase tracking-wider px-3 py-1.5 text-[color:var(--zen-text)] hover:opacity-90 transition-opacity shrink-0"
-        >
-          LOG OUT
-        </button>
+        <div className="flex items-center gap-3 shrink-0">
+          <button
+            type="button"
+            onClick={() => router.push("/profile/edit")}
+            className="bg-[color:var(--zen-surface)] pixel-border-primary font-display text-[9px] uppercase tracking-wider px-3 py-1.5 text-[color:var(--zen-text)] hover:opacity-90 transition-opacity cursor-pointer"
+          >
+            PROFILE
+          </button>
+          <button
+            onClick={() => signOut()}
+            className="bg-[color:var(--zen-surface)] pixel-border-accent-green font-display text-[9px] uppercase tracking-wider px-3 py-1.5 text-[color:var(--zen-text)] hover:opacity-90 transition-opacity"
+          >
+            LOG OUT
+          </button>
+        </div>
       </div>
 
       <div className="zen-surface opening-frame p-5 sm:p-6">
