@@ -33,6 +33,8 @@ def init_db() -> None:
             email TEXT,
             name TEXT,
             avatar_url TEXT,
+            avatar TEXT,
+            username TEXT,
             created_at TIMESTAMPTZ DEFAULT now()
         )
         """
@@ -278,11 +280,45 @@ def get_user_by_id(conn: psycopg.Connection, user_id: str) -> dict | None:
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, email, name, avatar_url, created_at
+        SELECT id, email, name, avatar_url, avatar, username, created_at
         FROM users
         WHERE id = %s
         """,
         (user_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def update_user_profile(
+    conn: psycopg.Connection, user_id: str, avatar: str, username: str
+) -> None:
+    """Update user avatar and username."""
+    cursor = conn.cursor()
+    canonical_username = username.strip().lower()
+    cursor.execute(
+        """
+        UPDATE users
+        SET avatar = %s, username = %s
+        WHERE id = %s
+        """,
+        (avatar, canonical_username, user_id),
+    )
+
+
+def get_user_by_username(conn: psycopg.Connection, username: str) -> dict | None:
+    """Fetch a user by username (for uniqueness check)."""
+    cursor = conn.cursor()
+    canonical = username.strip().lower()
+    cursor.execute(
+        """
+        SELECT id, email, name, avatar_url, avatar, username, created_at
+        FROM users
+        WHERE LOWER(username) = %s
+        """,
+        (canonical,),
     )
     row = cursor.fetchone()
     if not row:
