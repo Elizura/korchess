@@ -11,6 +11,8 @@ const config: Config = {
     extend: {
       colors: {
         primary: "#5f6fc1",
+        "electric-blue": "#4d79ff",
+        "accent-blue": "#00f2ff",
         "accent-green": "#4ade80",
         "background-dark": "#0d1117",
         "card-dark": "#161b22",

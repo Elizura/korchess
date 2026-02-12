@@ -101,6 +101,29 @@ export default function DashboardPage() {
     }
   }, [status, router]);
 
+  // Redirect authenticated users who haven't completed onboarding
+  useEffect(() => {
+    if (status !== "authenticated" || !session?.idToken) return;
+
+    const checkOnboarding = async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/auth/profile`,
+          { headers: { Authorization: `Bearer ${session.idToken}` } }
+        );
+        if (!res.ok) return;
+        const profile = await res.json();
+        if (!profile.onboarding_complete) {
+          router.replace("/onboarding");
+        }
+      } catch {
+        // Ignore; user can still use dashboard
+      }
+    };
+
+    checkOnboarding();
+  }, [status, session?.idToken, router]);
+
   // Fetch combined report across all sites
   const fetchReport = async (
     user: string,
