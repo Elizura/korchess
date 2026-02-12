@@ -4,10 +4,14 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { signIn, useSession } from "next-auth/react";
 
-const PAWN_IMG =
-  "https://lh3.googleusercontent.com/aida-public/AB6AXuBMHIUaQcqKasjLtL8t8UI599RnKcHc-FORpYSbct2KIB--FIrl8l2-WJ69L3ultFqYFGWOHYO-9EJ2c7KzfnoiOWxrDhtP79tvYxDlhVlo6hmoU1NAJukmRnqUyNUX8ymm0Oq_WWX3Kghyh2NnZ-VD5R3Rz20HJ_kDgU6Rj0DPexSHBP7fV3iVIAIBtae1TZLC-i772zdT3ZNIH6QoVDyUzMUgNj0Vy7IPIQKDlJ3XqbxIDZjq-KJ3KRpbEbB74Li5QRNhNCCFYlld";
-const KNIGHT_IMG =
-  "https://lh3.googleusercontent.com/aida-public/AB6AXuA9tGTx-59N6y89hFnCSQd-VvguPlCqGRKPmkCvj1xXVRKZq_ah0AFxPWWSrnPqdLeOPc_OSO4CZ4f6G0xczmz4QVWGS-wQUh0jhU8lluhhSj3Uxinu_rU25WZT4ff1jSvBh-KxdXxV-XqKe_rfwKkgYcDqpvRc7hqVW4WNnESoxR0AV4WE2JQwtL59moXqO7O_06RhntKSZUKygdtMYVo7drUiXaJmHExJEYKk13n5IhMawJHYGWfeUG42qTwSUr6HnW6hzEayqEfs";
+const AVATARS = [
+  { id: "av-pawn", icon: "chess_pawn", label: "Pawn", piece: "pawn" },
+  { id: "av-knight", icon: "chess_knight", label: "Knight", piece: "knight" },
+  { id: "av-bishop", icon: "chess_bishop", label: "Bishop", piece: "bishop" },
+  { id: "av-rook", icon: "chess_rook", label: "Rook", piece: "rook" },
+  { id: "av-queen", icon: "chess_queen", label: "Queen", piece: "queen" },
+  { id: "av-king", icon: "chess_king", label: "King", piece: "king" },
+] as const;
 
 export default function SignupPage() {
   const router = useRouter();
@@ -51,93 +55,32 @@ export default function SignupPage() {
             </p>
           </div>
           <div className="mb-10">
-            <p className="font-display text-[10px] mb-6 tracking-widest uppercase">
+            <p className="font-display text-[10px] mb-6 tracking-widest uppercase text-white/60">
               Select Your Avatar
             </p>
-            <div className="flex justify-between items-center gap-2">
-              <div className="relative">
-                <input
-                  defaultChecked
-                  className="hidden avatar-radio"
-                  id="av1"
-                  name="avatar"
-                  type="radio"
-                />
-                <label
-                  className="avatar-option flex items-center justify-center p-2 cursor-pointer w-14 h-14 bg-black/40"
-                  htmlFor="av1"
-                >
-                  <img
-                    alt="Pawn"
-                    className="w-10 h-10 invert"
-                    src={PAWN_IMG}
+            <div className="grid grid-cols-3 gap-3 justify-items-center max-w-[200px] mx-auto">
+              {AVATARS.map((avatar, index) => (
+                <div key={avatar.id} className="relative">
+                  <input
+                    defaultChecked={index === 0}
+                    className="hidden avatar-radio"
+                    id={avatar.id}
+                    name="avatar"
+                    type="radio"
                   />
-                </label>
-              </div>
-              <div className="relative">
-                <input
-                  className="hidden avatar-radio"
-                  id="av2"
-                  name="avatar"
-                  type="radio"
-                />
-                <label
-                  className="avatar-option flex items-center justify-center p-2 cursor-pointer w-14 h-14 bg-black/40"
-                  htmlFor="av2"
-                >
-                  <img
-                    alt="Knight"
-                    className="w-10 h-10 invert"
-                    src={KNIGHT_IMG}
-                  />
-                </label>
-              </div>
-              <div className="relative">
-                <input
-                  className="hidden avatar-radio"
-                  id="av3"
-                  name="avatar"
-                  type="radio"
-                />
-                <label
-                  className="avatar-option flex items-center justify-center p-2 cursor-pointer w-14 h-14 bg-black/40"
-                  htmlFor="av3"
-                >
-                  <span className="material-symbols-outlined text-4xl">fort</span>
-                </label>
-              </div>
-              <div className="relative">
-                <input
-                  className="hidden avatar-radio"
-                  id="av4"
-                  name="avatar"
-                  type="radio"
-                />
-                <label
-                  className="avatar-option flex items-center justify-center p-2 cursor-pointer w-14 h-14 bg-black/40"
-                  htmlFor="av4"
-                >
-                  <span className="material-symbols-outlined text-4xl">
-                    person_2
-                  </span>
-                </label>
-              </div>
-              <div className="relative">
-                <input
-                  className="hidden avatar-radio"
-                  id="av5"
-                  name="avatar"
-                  type="radio"
-                />
-                <label
-                  className="avatar-option flex items-center justify-center p-2 cursor-pointer w-14 h-14 bg-black/40"
-                  htmlFor="av5"
-                >
-                  <span className="material-symbols-outlined text-4xl">
-                    crown
-                  </span>
-                </label>
-              </div>
+                  <label
+                    className={`avatar-option avatar-${avatar.piece} flex items-center justify-center p-2 cursor-pointer w-14 h-14 bg-black/40`}
+                    htmlFor={avatar.id}
+                  >
+                    <span
+                      className="material-symbols-outlined avatar-icon text-4xl"
+                      aria-hidden
+                    >
+                      {avatar.icon}
+                    </span>
+                  </label>
+                </div>
+              ))}
             </div>
           </div>
           <div className="space-y-6">

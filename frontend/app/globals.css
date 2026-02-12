@@ -172,16 +172,83 @@ body {
   image-rendering: pixelated;
   border: 4px solid transparent;
   transition: all 0.2s;
+  color: rgba(255, 255, 255, 0.5);
 }
 
-.avatar-option:hover {
-  background: rgba(95, 111, 193, 0.2);
-  border-color: #5f6fc1;
+.avatar-icon {
+  font-size: 2rem;
 }
 
-.avatar-radio:checked + .avatar-option {
-  border-color: #4ade80;
-  background: rgba(74, 222, 128, 0.1);
+/* Pawn: silver */
+.avatar-pawn:hover {
+  background: rgba(148, 163, 184, 0.25);
+  border-color: #94a3b8;
+  color: #cbd5e1;
+}
+.avatar-radio:checked + .avatar-pawn {
+  border-color: #94a3b8;
+  background: rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+}
+
+/* Knight: purple */
+.avatar-knight:hover {
+  background: rgba(167, 139, 250, 0.25);
+  border-color: #a78bfa;
+  color: #c4b5fd;
+}
+.avatar-radio:checked + .avatar-knight {
+  border-color: #a78bfa;
+  background: rgba(167, 139, 250, 0.2);
+  color: #a78bfa;
+}
+
+/* Bishop: blue */
+.avatar-bishop:hover {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
+.avatar-radio:checked + .avatar-bishop {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+}
+
+/* Rook: amber */
+.avatar-rook:hover {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: #f59e0b;
+  color: #fcd34d;
+}
+.avatar-radio:checked + .avatar-rook {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+}
+
+/* Queen: red */
+.avatar-queen:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+  color: #fca5a5;
+}
+.avatar-radio:checked + .avatar-queen {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+/* King: gold */
+.avatar-king:hover {
+  background: rgba(234, 179, 8, 0.25);
+  border-color: #eab308;
+  color: #fde047;
+}
+.avatar-radio:checked + .avatar-king {
+  border-color: #eab308;
+  background: rgba(234, 179, 8, 0.2);
+  color: #eab308;
 }
 
 .signup-glitch-text {
