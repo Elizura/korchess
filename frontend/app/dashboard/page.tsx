@@ -88,6 +88,8 @@ export default function DashboardPage() {
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const [hideUnknown, setHideUnknown] = useState(false);
+  const [profileUsername, setProfileUsername] = useState<string>("");
+  const [profileAvatar, setProfileAvatar] = useState<string>("pawn");
   const [sortConfig, setSortConfig] = useState<{
     key: keyof OpeningStats;
     direction: "asc" | "desc";
@@ -101,7 +103,7 @@ export default function DashboardPage() {
     }
   }, [status, router]);
 
-  // Redirect authenticated users who haven't completed onboarding
+  // Redirect authenticated users who haven't completed onboarding; fetch profile for nav
   useEffect(() => {
     if (status !== "authenticated" || !session?.idToken) return;
 
@@ -113,6 +115,8 @@ export default function DashboardPage() {
         );
         if (!res.ok) return;
         const profile = await res.json();
+        setProfileUsername(profile.username || "");
+        setProfileAvatar(profile.avatar || "pawn");
         if (!profile.onboarding_complete) {
           router.replace("/onboarding");
         }
@@ -473,15 +477,27 @@ export default function DashboardPage() {
           <button
             type="button"
             onClick={() => router.push("/profile/edit")}
-            className="bg-[color:var(--zen-surface)] pixel-border-primary font-display text-[9px] uppercase tracking-wider px-3 py-1.5 text-[color:var(--zen-text)] hover:opacity-90 transition-opacity cursor-pointer"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)] hover:bg-[color:var(--zen-surface-2)] transition-colors cursor-pointer"
           >
-            PROFILE
+            <div className="w-9 h-9 flex items-center justify-center shrink-0">
+              <span
+                className="material-symbols-outlined text-lg text-[color:var(--zen-text)]"
+                style={{
+                  fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 48",
+                }}
+              >
+                chess_{profileAvatar}
+              </span>
+            </div>
+            <span className="font-display text-[8px] uppercase tracking-wider text-[color:var(--zen-accent)]">
+              {profileUsername || "..."}
+            </span>
           </button>
           <button
             onClick={() => signOut()}
-            className="bg-[color:var(--zen-surface)] pixel-border-accent-green font-display text-[9px] uppercase tracking-wider px-3 py-1.5 text-[color:var(--zen-text)] hover:opacity-90 transition-opacity"
+            className="bg-primary text-white font-display text-[9px] uppercase tracking-wider px-5 py-2.5 rounded-lg border-2 border-[#7d8fd4] shadow-[0_4px_0_0_#3b4887] hover:bg-primary/90 active:translate-y-1 active:shadow-[0_2px_0_0_#3b4887] transition-all"
           >
-            LOG OUT
+            SIGN OUT
           </button>
         </div>
       </div>

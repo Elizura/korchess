@@ -83,7 +83,7 @@ export default function ProfileEditPage() {
         throw new Error(data.detail || "Failed to save");
       }
 
-      router.replace("/dashboard");
+      // router.replace("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {

@@ -26,6 +26,7 @@ export default function SignupPage() {
         const profileRes = await fetch(`${API_BASE_URL}/api/auth/profile`, {
           headers: { Authorization: `Bearer ${session.idToken}` },
         });
+
         if (!profileRes.ok) {
           router.replace("/dashboard");
           return;

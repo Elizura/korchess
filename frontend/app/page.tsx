@@ -16,7 +16,7 @@ export default function LandingPage() {
               KORCHESS
             </span>
           </Link>
-          <div className="flex items-center gap-4">
+          {/* <div className="flex items-center gap-4">
             {session?.user ? (
               <>
                 <span className="hidden md:block text-[9px] font-display uppercase opacity-50">
@@ -39,7 +39,7 @@ export default function LandingPage() {
                 SIGN IN
               </button>
             )}
-          </div>
+          </div> */}
         </div>
       </nav>
 
