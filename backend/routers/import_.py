@@ -7,16 +7,28 @@ import chess.pgn
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
-from db import upsert_game, upsert_import_status
+from db import upsert_game, upsert_import_status, get_import_history
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
 from opening_match import game_to_uci_plies, best_opening_match
 
-from schemas import ImportRequest, ImportResponse
+from schemas import ImportRequest, ImportResponse, ImportHistoryResponse, ImportHistoryItem
 from dependencies import get_db
 from auth import get_registered_user
 
 router = APIRouter(tags=["import"])
+
+
+@router.get("/history", response_model=ImportHistoryResponse)
+async def get_import_history_endpoint(
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
+):
+    """Get last 10 import records for the authenticated user."""
+    rows = get_import_history(conn, current_user["id"], limit=10)
+    return ImportHistoryResponse(
+        history=[ImportHistoryItem(**r) for r in rows]
+    )
 
 
 @router.post("/lichess", response_model=ImportResponse)

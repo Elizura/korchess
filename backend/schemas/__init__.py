@@ -16,6 +16,18 @@ class ImportResponse(BaseModel):
     skipped: int
 
 
+class ImportHistoryItem(BaseModel):
+    """Single item in import history."""
+    username: str
+    site: str
+    imported_at: str
+
+
+class ImportHistoryResponse(BaseModel):
+    """Response for import history endpoint."""
+    history: list[ImportHistoryItem]
+
+
 class OpeningStats(BaseModel):
     """Opening statistics for a single opening key."""
     opening_key: str

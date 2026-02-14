@@ -45,6 +45,12 @@ interface ImportStatus {
   total_games: number;
 }
 
+interface ImportHistoryItem {
+  username: string;
+  site: string;
+  imported_at: string;
+}
+
 type ColorFilter = "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 
@@ -95,6 +101,7 @@ export default function DashboardPage() {
     direction: "asc" | "desc";
   }>({ key: "games", direction: "desc" });
   const [initialized, setInitialized] = useState(false);
+  const [importHistory, setImportHistory] = useState<ImportHistoryItem[]>([]);
 
   // Redirect unauthenticated users to signup
   useEffect(() => {
@@ -127,6 +134,13 @@ export default function DashboardPage() {
 
     checkOnboarding();
   }, [status, session?.idToken, router]);
+
+  // Fetch import history when authenticated
+  useEffect(() => {
+    if (status === "authenticated" && session?.idToken) {
+      fetchImportHistory();
+    }
+  }, [status, session?.idToken]);
 
   // Fetch combined report across all sites
   const fetchReport = async (
@@ -163,6 +177,21 @@ export default function DashboardPage() {
     }
     
     return response.json();
+  };
+
+  const fetchImportHistory = async () => {
+    if (!session?.idToken) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/import/history`, {
+        headers: authHeaders,
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setImportHistory(data.history || []);
+      }
+    } catch {
+      // Silently ignore - not critical
+    }
   };
 
   const fetchVariations = async (user: string, openingKey: string) => {
@@ -280,6 +309,7 @@ export default function DashboardPage() {
       if (status) {
         setImportStatus(status);
       }
+      fetchImportHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -336,8 +366,30 @@ export default function DashboardPage() {
       if (status) {
         setImportStatus(status);
       }
+      fetchImportHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleHistoryItemClick = async (item: ImportHistoryItem) => {
+    setCurrentUsername(item.username);
+    updateUrl(item.username);
+    setLoading(true);
+    setError(null);
+    try {
+      const [reportData, statusData] = await Promise.all([
+        fetchReport(item.username, colorFilter, timeClassFilter),
+        fetchImportStatus(item.username),
+      ]);
+      setReport(reportData);
+      if (statusData) {
+        setImportStatus(statusData);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
       setLoading(false);
     }
@@ -583,6 +635,30 @@ export default function DashboardPage() {
         {error && (
           <div className="mt-4 zen-surface-flat px-4 py-3 border-[color:var(--zen-danger)]/30">
             <p className="text-sm text-[color:var(--zen-danger)]">{error}</p>
+          </div>
+        )}
+
+        {/* Recently analyzed */}
+        {importHistory.length > 0 && (
+          <div className="mt-4 zen-surface-flat px-4 py-3">
+            <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+              Recently analyzed
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {importHistory.map((item) => (
+                <button
+                  key={`${item.username}-${item.site}`}
+                  type="button"
+                  onClick={() => handleHistoryItemClick(item)}
+                  className="zen-pill px-3 py-2 text-sm text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface)] hover:text-[color:var(--zen-accent)] transition cursor-pointer flex items-center gap-2"
+                >
+                  <span>{item.username}</span>
+                  <span className="text-[10px] uppercase text-[color:var(--zen-muted)]">
+                    {item.site === "lichess" ? "Lichess" : "Chess.com"}
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

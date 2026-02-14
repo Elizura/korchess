@@ -546,6 +546,26 @@ def get_import_status(
     }
 
 
+def get_import_history(
+    conn: psycopg.Connection,
+    user_id: str,
+    limit: int = 10,
+) -> list[dict]:
+    """Get last N import records for a user, ordered by most recent first."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT username, site, imported_at
+        FROM imports
+        WHERE user_id = %s
+        ORDER BY imported_at DESC
+        LIMIT %s
+        """,
+        (user_id, limit),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
 def get_games_by_opening(
     conn: psycopg.Connection,
     user_id: str,
