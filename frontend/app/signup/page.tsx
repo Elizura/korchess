@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { signIn, useSession } from "next-auth/react";
 
@@ -10,42 +10,49 @@ const API_BASE_URL =
 export default function SignupPage() {
   const router = useRouter();
   const { data: session, status } = useSession();
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  const ensureAndRedirect = useCallback(async () => {
+    if (!session?.idToken || !session?.userId) return;
+
+    setProfileError(null);
+
+    try {
+      await fetch(`${API_BASE_URL}/api/auth/register`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.idToken}` },
+      });
+
+      const profileRes = await fetch(`${API_BASE_URL}/api/auth/profile`, {
+        headers: { Authorization: `Bearer ${session.idToken}` },
+      });
+
+      if (!profileRes.ok) {
+        setProfileError("Couldn't load your profile. Please try again.");
+        return;
+      }
+
+      const profile = await profileRes.json();
+      if (profile.onboarding_complete) {
+        router.replace("/dashboard");
+      } else {
+        router.replace("/onboarding");
+      }
+    } catch {
+      setProfileError("Something went wrong. Please try again.");
+    }
+  }, [session?.idToken, session?.userId, router]);
 
   useEffect(() => {
     if (status !== "authenticated" || !session?.idToken || !session?.userId) {
       return;
     }
+    if (!profileError) {
+      ensureAndRedirect();
+    }
+  }, [status, session?.idToken, session?.userId, ensureAndRedirect]);
 
-    const ensureAndRedirect = async () => {
-      try {
-        await fetch(`${API_BASE_URL}/api/auth/register`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${session.idToken}` },
-        });
-
-        const profileRes = await fetch(`${API_BASE_URL}/api/auth/profile`, {
-          headers: { Authorization: `Bearer ${session.idToken}` },
-        });
-
-        if (!profileRes.ok) {
-          router.replace("/dashboard");
-          return;
-        }
-        const profile = await profileRes.json();
-        if (profile.onboarding_complete) {
-          router.replace("/dashboard");
-        } else {
-          router.replace("/onboarding");
-        }
-      } catch {
-        router.replace("/dashboard");
-      }
-    };
-
-    ensureAndRedirect();
-  }, [status, session?.idToken, session?.userId, router]);
-
-  if (status === "authenticated") {
+  if (status === "authenticated" && !profileError) {
     return (
       <div className="bg-charcoal font-mono text-white min-h-screen flex items-center justify-center">
         <div className="font-display text-xs uppercase tracking-widest opacity-60">
@@ -76,6 +83,11 @@ export default function SignupPage() {
               Noir Protocol v1.0.4
             </p>
           </div>
+          {profileError && (
+            <p className="mb-6 text-sm text-red-400 font-display uppercase tracking-wider">
+              {profileError}
+            </p>
+          )}
           <div className="space-y-10">
             <button
               type="button"

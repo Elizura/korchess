@@ -120,6 +120,10 @@ export default function DashboardPage() {
           `${API_BASE_URL}/api/auth/profile`,
           { headers: { Authorization: `Bearer ${session.idToken}` } }
         );
+        if (res.status === 401) {
+          router.replace("/signup");
+          return;
+        }
         if (!res.ok) return;
         const profile = await res.json();
         setProfileUsername(profile.username || "");
