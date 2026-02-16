@@ -13,6 +13,10 @@ import Providers from "./providers";
 export const metadata: Metadata = {
   title: "Korchess - Chess Opening Analysis",
   description: "Analyze your chess opening performance from Lichess games",
+  icons: {
+    icon: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 const inter = Inter({
