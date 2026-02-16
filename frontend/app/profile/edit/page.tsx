@@ -36,7 +36,7 @@ export default function ProfileEditPage() {
     const fetchProfile = async () => {
       setFetchError(null);
       try {
-        const res = await fetch(`${API_BASE_URL}/api/auth/profile`, {
+        const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
           headers: { Authorization: `Bearer ${session.idToken}` },
         });
         if (!res.ok) {
@@ -69,7 +69,7 @@ export default function ProfileEditPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/profile`, {
+      const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",

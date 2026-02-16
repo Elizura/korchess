@@ -117,7 +117,7 @@ export default function DashboardPage() {
     const checkOnboarding = async () => {
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/auth/profile`,
+          `${API_BASE_URL}/api/v1/auth/profile`,
           { headers: { Authorization: `Bearer ${session.idToken}` } }
         );
         if (res.status === 401) {
@@ -158,7 +158,7 @@ export default function DashboardPage() {
     params.set("limit", "10");
 
     const response = await fetch(
-      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}?${params}`,
+      `${API_BASE_URL}/api/v1/openings/all/${encodeURIComponent(user)}?${params}`,
       { headers: authHeaders }
     );
 
@@ -172,7 +172,7 @@ export default function DashboardPage() {
 
   const fetchImportStatus = async (user: string) => {
     const response = await fetch(
-      `${API_BASE_URL}/api/import-status/all/${encodeURIComponent(user)}`,
+      `${API_BASE_URL}/api/v1/import-status/all/${encodeURIComponent(user)}`,
       { headers: authHeaders }
     );
     
@@ -186,7 +186,7 @@ export default function DashboardPage() {
   const fetchImportHistory = async () => {
     if (!session?.idToken) return;
     try {
-      const response = await fetch(`${API_BASE_URL}/api/import/history`, {
+      const response = await fetch(`${API_BASE_URL}/api/v1/import/history`, {
         headers: authHeaders,
       });
       if (response.ok) {
@@ -208,7 +208,7 @@ export default function DashboardPage() {
     params.set("time_class", timeClassFilter);
 
     const response = await fetch(
-      `${API_BASE_URL}/api/openings/all/${encodeURIComponent(user)}/variations?${params}`,
+      `${API_BASE_URL}/api/v1/openings/all/${encodeURIComponent(user)}/variations?${params}`,
       { headers: authHeaders }
     );
 
@@ -282,7 +282,7 @@ export default function DashboardPage() {
     const trimmedUsername = lichessUsername.trim();
 
     try {
-      const importResponse = await fetch(`${API_BASE_URL}/api/import/lichess`, {
+      const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/lichess`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders } as Record<string, string>,
         body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
@@ -339,7 +339,7 @@ export default function DashboardPage() {
     const trimmedUsername = chesscomUsername.trim();
 
     try {
-      const importResponse = await fetch(`${API_BASE_URL}/api/import/chesscom`, {
+      const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/chesscom`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders } as Record<string, string>,
         body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),

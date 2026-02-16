@@ -36,7 +36,7 @@ export default function OnboardingPage() {
 
     const checkProfile = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/auth/profile`, {
+        const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
           headers: { Authorization: `Bearer ${session.idToken}` },
         });
         if (!res.ok) {
@@ -68,7 +68,7 @@ export default function OnboardingPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/onboarding`, {
+      const res = await fetch(`${API_BASE_URL}/api/v1/auth/onboarding`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",

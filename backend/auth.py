@@ -60,7 +60,7 @@ def get_registered_user(
     if not existing:
         raise HTTPException(
             status_code=403,
-            detail="User not registered. Call /api/auth/register",
+            detail="User not registered. Call /api/v1/auth/register",
         )
 
     return user

@@ -21,7 +21,7 @@ function RegisterOnLogin() {
       return;
     }
 
-    fetch(`${API_BASE_URL}/api/auth/register`, {
+    fetch(`${API_BASE_URL}/api/v1/auth/register`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${idToken}`,

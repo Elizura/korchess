@@ -34,9 +34,9 @@ async def startup_event():
 
 
 app.include_router(health.router)
-app.include_router(auth_router.router, prefix="/api")
-app.include_router(import_router.router, prefix="/api/import")
-app.include_router(openings.router, prefix="/api")
-app.include_router(games.router, prefix="/api")
-app.include_router(analysis.router, prefix="/api/analysis")
-app.include_router(eval_router.router, prefix="/api")
+app.include_router(auth_router.router, prefix="/api/v1")
+app.include_router(import_router.router, prefix="/api/v1/import")
+app.include_router(openings.router, prefix="/api/v1")
+app.include_router(games.router, prefix="/api/v1")
+app.include_router(analysis.router, prefix="/api/v1/analysis")
+app.include_router(eval_router.router, prefix="/api/v1")

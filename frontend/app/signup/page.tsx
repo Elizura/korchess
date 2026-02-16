@@ -18,12 +18,12 @@ export default function SignupPage() {
     setProfileError(null);
 
     try {
-      await fetch(`${API_BASE_URL}/api/auth/register`, {
+      await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
         method: "POST",
         headers: { Authorization: `Bearer ${session.idToken}` },
       });
 
-      const profileRes = await fetch(`${API_BASE_URL}/api/auth/profile`, {
+      const profileRes = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
         headers: { Authorization: `Bearer ${session.idToken}` },
       });
 

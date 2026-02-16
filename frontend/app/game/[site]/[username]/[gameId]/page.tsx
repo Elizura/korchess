@@ -251,7 +251,7 @@ export default function GameAnalyzerPage() {
     }
     setIsEvaluating(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/eval`, {
+      const res = await fetch(`${API_BASE_URL}/api/v1/eval`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders } as Record<string, string>,
         body: JSON.stringify({ fen, depth, multipv: multiPv }),
@@ -316,7 +316,7 @@ export default function GameAnalyzerPage() {
         }
         // Fetch game data
         const gameRes = await fetch(
-          `${API_BASE_URL}/api/game/${site}/${encodeURIComponent(username)}/${gameId}`,
+          `${API_BASE_URL}/api/v1/game/${site}/${encodeURIComponent(username)}/${gameId}`,
           { headers: authHeaders }
         );
         if (!gameRes.ok) {
@@ -350,7 +350,7 @@ export default function GameAnalyzerPage() {
 
         // Fetch full analysis status
         const analysisRes = await fetch(
-          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
+          `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
           { headers: authHeaders }
         );
         if (analysisRes.ok) {
@@ -430,7 +430,7 @@ export default function GameAnalyzerPage() {
     pollInterval.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
+          `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
           { headers: authHeaders }
         );
         const data: FullAnalysisResponse = await res.json();
@@ -469,7 +469,7 @@ export default function GameAnalyzerPage() {
 
     try {
       const res = await fetch(
-        `${API_BASE_URL}/api/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
+        `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
         { method: "POST", headers: authHeaders }
       );
 
