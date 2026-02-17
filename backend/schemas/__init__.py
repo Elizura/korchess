@@ -199,3 +199,41 @@ class EvalResponse(BaseModel):
     eval: EvalLineResult | None = None
     multipv: list[EvalLineResult] | None = None
     fen: str
+
+
+class InsightsRequest(BaseModel):
+    """Request body for scheduling user insights refresh."""
+    username: str = Field(..., min_length=1, max_length=50)
+    site: str = Field(default="all", pattern="^(all|lichess|chesscom)$")
+    force: bool = False
+
+
+class InsightsClaim(BaseModel):
+    """A grounded narrative claim that references fact IDs."""
+    text: str
+    fact_ids: list[str] = []
+
+
+class InsightsJobStatus(BaseModel):
+    """Background job status for insights generation."""
+    id: str | None = None
+    status: str
+    stage: str
+    reason: str | None = None
+    error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class InsightsProfileResponse(BaseModel):
+    """Current AI insights state for a user."""
+    username: str
+    site: str
+    lifecycle_status: str
+    feature_version: str
+    narrative_version: str
+    updated_at: str | None = None
+    coverage: dict | None = None
+    features: dict | None = None
+    narrative: dict | None = None
+    active_job: InsightsJobStatus | None = None
