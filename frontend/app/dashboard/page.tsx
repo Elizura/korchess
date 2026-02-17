@@ -883,7 +883,7 @@ export default function DashboardPage() {
                 value={lichessUsername}
                 onChange={(e) => setLichessUsername(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleImportLichess()}
-                placeholder="e.g. elizura"
+                placeholder="e.g. hikaru"
                 className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
                 disabled={loading}
               />
@@ -912,7 +912,7 @@ export default function DashboardPage() {
                 value={chesscomUsername}
                 onChange={(e) => setChesscomUsername(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleImportChesscom()}
-                placeholder="e.g. elizura"
+                placeholder="e.g. hikaru"
                 className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
                 disabled={loading}
               />

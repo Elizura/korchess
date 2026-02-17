@@ -95,7 +95,7 @@ export default function LandingPage() {
                 <div className="flex">
                   <input
                     className="flex-1 bg-gray-900 border-2 border-r-0 border-gray-700 p-2.5 font-mono text-xs focus:outline-none focus:border-accent-green"
-                    placeholder="e.g. elizura"
+                    placeholder="e.g. hikaru"
                     type="text"
                     readOnly
                   />
@@ -111,7 +111,7 @@ export default function LandingPage() {
                 <div className="flex">
                   <input
                     className="flex-1 bg-gray-900 border-2 border-r-0 border-gray-700 p-2.5 font-mono text-xs focus:outline-none focus:border-accent-green"
-                    placeholder="e.g. elizura"
+                    placeholder="e.g. hikaru"
                     type="text"
                     readOnly
                   />
