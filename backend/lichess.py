@@ -35,6 +35,7 @@ def fetch_lichess_pgn(username: str, max_games: int = 1000) -> str:
     params = {
         "rated": "true",
         "opening": "true",
+        "clocks": "true",
         "max": max_games,
     }
 

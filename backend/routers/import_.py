@@ -1,6 +1,7 @@
 """Import games from Lichess and Chess.com."""
 
 import io
+import logging
 from datetime import datetime, timezone
 
 import chess.pgn
@@ -11,12 +12,14 @@ from db import upsert_game, upsert_import_status, get_import_history
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
 from opening_match import game_to_uci_plies, best_opening_match
+from insights import schedule_insights_refresh
 
 from schemas import ImportRequest, ImportResponse, ImportHistoryResponse, ImportHistoryItem
 from dependencies import get_db
 from auth import get_registered_user
 
 router = APIRouter(tags=["import"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/history", response_model=ImportHistoryResponse)
@@ -80,6 +83,16 @@ async def import_lichess_games(
         imported, skipped, max_games, imported_at
     )
     conn.commit()
+
+    try:
+        schedule_insights_refresh(
+            user_id=user_id,
+            username=username,
+            site="all",
+            reason="import",
+        )
+    except Exception as exc:
+        logger.warning("Failed to schedule insights refresh after Lichess import: %s", exc)
 
     return ImportResponse(
         username=username,
@@ -149,6 +162,16 @@ async def import_chesscom_games(
         imported, skipped, max_games, imported_at
     )
     conn.commit()
+
+    try:
+        schedule_insights_refresh(
+            user_id=user_id,
+            username=username,
+            site="all",
+            reason="import",
+        )
+    except Exception as exc:
+        logger.warning("Failed to schedule insights refresh after Chess.com import: %s", exc)
 
     return ImportResponse(
         username=username,
