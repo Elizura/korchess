@@ -51,6 +51,55 @@ interface ImportHistoryItem {
   imported_at: string;
 }
 
+interface InsightsClaim {
+  text: string;
+  fact_ids: string[];
+}
+
+interface InsightsProfile {
+  username: string;
+  site: string;
+  lifecycle_status: "missing" | "queued" | "baseline_ready" | "enriching" | "complete" | "stale" | "not_enough_data" | "failed";
+  feature_version: string;
+  narrative_version: string;
+  updated_at: string | null;
+  coverage?: {
+    games_total?: number;
+    games_light?: number;
+    games_deep?: number;
+    deep_coverage?: number;
+    games_with_clock?: number;
+    clock_coverage?: number;
+    has_enough_games?: boolean;
+  };
+  features?: {
+    style?: {
+      label?: string;
+    };
+    confidence?: {
+      value?: number;
+    };
+    recurring_themes?: Array<{
+      theme: string;
+      count: number;
+    }>;
+  };
+  narrative?: {
+    player_type?: InsightsClaim;
+    strengths?: InsightsClaim[];
+    weaknesses?: InsightsClaim[];
+    phase_performance?: InsightsClaim;
+    time_pressure?: InsightsClaim;
+    recurring_mistakes?: InsightsClaim[];
+    coaching_takeaways?: InsightsClaim[];
+  };
+  active_job?: {
+    id?: string;
+    status: string;
+    stage: string;
+  } | null;
+}
+
 type ColorFilter = "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 
@@ -102,6 +151,9 @@ export default function DashboardPage() {
   }>({ key: "games", direction: "desc" });
   const [initialized, setInitialized] = useState(false);
   const [importHistory, setImportHistory] = useState<ImportHistoryItem[]>([]);
+  const [insights, setInsights] = useState<InsightsProfile | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsRefreshing, setInsightsRefreshing] = useState(false);
 
   // Redirect unauthenticated users to signup
   useEffect(() => {
@@ -145,6 +197,48 @@ export default function DashboardPage() {
       fetchImportHistory();
     }
   }, [status, session?.idToken]);
+
+  useEffect(() => {
+    if (status !== "authenticated" || !session?.idToken || !currentUsername) {
+      setInsights(null);
+      return;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const loadInsights = async () => {
+      if (!cancelled) {
+        setInsightsLoading(true);
+      }
+      try {
+        const data = await fetchInsights(currentUsername);
+        if (cancelled) return;
+        setInsights(data);
+        const lifecycleStatus = data?.lifecycle_status;
+        if (
+          lifecycleStatus === "queued" ||
+          lifecycleStatus === "baseline_ready" ||
+          lifecycleStatus === "enriching"
+        ) {
+          timer = setTimeout(loadInsights, 8000);
+        }
+      } finally {
+        if (!cancelled) {
+          setInsightsLoading(false);
+        }
+      }
+    };
+
+    loadInsights();
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [status, session?.idToken, currentUsername, authHeaders]);
 
   // Fetch combined report across all sites
   const fetchReport = async (
@@ -196,6 +290,47 @@ export default function DashboardPage() {
     } catch {
       // Silently ignore - not critical
     }
+  };
+
+  const fetchInsights = async (user: string): Promise<InsightsProfile | null> => {
+    if (!session?.idToken) {
+      return null;
+    }
+    const params = new URLSearchParams();
+    params.set("username", user);
+    params.set("site", "all");
+
+    const response = await fetch(
+      `${API_BASE_URL}/api/v1/insights/profile?${params.toString()}`,
+      { headers: authHeaders }
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const data = await response.json();
+    return data as InsightsProfile;
+  };
+
+  const requestInsightsRefresh = async (user: string, force = true): Promise<InsightsProfile | null> => {
+    if (!session?.idToken) {
+      return null;
+    }
+    const response = await fetch(`${API_BASE_URL}/api/v1/insights/profile`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+      } as Record<string, string>,
+      body: JSON.stringify({
+        username: user,
+        site: "all",
+        force,
+      }),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as InsightsProfile;
   };
 
   const fetchVariations = async (user: string, openingKey: string) => {
@@ -314,6 +449,8 @@ export default function DashboardPage() {
         setImportStatus(status);
       }
       fetchImportHistory();
+      const insightsData = await fetchInsights(trimmedUsername);
+      setInsights(insightsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -371,6 +508,8 @@ export default function DashboardPage() {
         setImportStatus(status);
       }
       fetchImportHistory();
+      const insightsData = await fetchInsights(trimmedUsername);
+      setInsights(insightsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -392,6 +531,8 @@ export default function DashboardPage() {
       if (statusData) {
         setImportStatus(statusData);
       }
+      const insightsData = await fetchInsights(item.username);
+      setInsights(insightsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
@@ -418,10 +559,25 @@ export default function DashboardPage() {
       if (status) {
         setImportStatus(status);
       }
+      const insightsData = await fetchInsights(currentUsername);
+      setInsights(insightsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRefreshInsights = async () => {
+    if (!currentUsername) return;
+    setInsightsRefreshing(true);
+    try {
+      const refreshed = await requestInsightsRefresh(currentUsername, true);
+      if (refreshed) {
+        setInsights(refreshed);
+      }
+    } finally {
+      setInsightsRefreshing(false);
     }
   };
 
@@ -507,6 +663,19 @@ export default function DashboardPage() {
     
     return sorted;
   }, [report, hideUnknown, sortConfig]);
+
+  const insightsStatusLabel = useMemo(() => {
+    const statusValue = insights?.lifecycle_status;
+    if (!statusValue) return "Unavailable";
+    if (statusValue === "queued") return "Queued";
+    if (statusValue === "baseline_ready") return "Baseline ready";
+    if (statusValue === "enriching") return "Refining";
+    if (statusValue === "complete") return "Complete";
+    if (statusValue === "not_enough_data") return "Not enough data";
+    if (statusValue === "stale") return "Stale";
+    if (statusValue === "failed") return "Failed";
+    return "Unavailable";
+  }, [insights?.lifecycle_status]);
 
   if (status === "loading" || status === "unauthenticated") {
     return (
@@ -772,6 +941,162 @@ export default function DashboardPage() {
                   {currentUsername}
                 </span>
               </p>
+            )}
+          </div>
+        )}
+
+        {/* AI Insights */}
+        {currentUsername && (
+          <div className="mt-5 zen-surface-flat px-4 py-4 border border-[color:var(--zen-border)]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                  AI Insights
+                </p>
+                <h3 className="text-base font-semibold text-[color:var(--zen-text)] mt-1">
+                  Coaching summary for {currentUsername}
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="zen-pill px-3 py-1.5 text-xs uppercase tracking-wide text-[color:var(--zen-muted)]">
+                  {insightsStatusLabel}
+                </span>
+                <button
+                  onClick={handleRefreshInsights}
+                  disabled={insightsRefreshing || insightsLoading}
+                  className="zen-pill px-3 py-1.5 text-xs font-medium text-[color:var(--zen-text)] hover:text-[color:var(--zen-accent)] transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {insightsRefreshing ? "Refreshing..." : "Refresh AI"}
+                </button>
+              </div>
+            </div>
+
+            {insightsLoading && !insights && (
+              <p className="mt-4 text-sm text-[color:var(--zen-muted)]">
+                Loading AI insights...
+              </p>
+            )}
+
+            {!insightsLoading && !insights && (
+              <p className="mt-4 text-sm text-[color:var(--zen-muted)]">
+                Insights are not available yet for this username.
+              </p>
+            )}
+
+            {insights && (
+              <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
+                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                    Player Type
+                  </p>
+                  <p className="text-lg font-semibold text-[color:var(--zen-text)]">
+                    {insights.features?.style?.label || insights.narrative?.player_type?.text || "Building profile"}
+                  </p>
+                  {insights.narrative?.player_type?.text && (
+                    <p className="mt-2 text-sm text-[color:var(--zen-muted)]">
+                      {insights.narrative.player_type.text}
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-[color:var(--zen-muted)]">
+                    <span className="zen-pill px-2 py-1">
+                      Confidence: {Math.round((insights.features?.confidence?.value || 0) * 100)}%
+                    </span>
+                    <span className="zen-pill px-2 py-1">
+                      Deep coverage: {Math.round((insights.coverage?.deep_coverage || 0) * 100)}%
+                    </span>
+                    <span className="zen-pill px-2 py-1">
+                      Clock coverage: {Math.round((insights.coverage?.clock_coverage || 0) * 100)}%
+                    </span>
+                  </div>
+                </div>
+
+                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
+                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                    Time Pressure
+                  </p>
+                  <p className="text-sm text-[color:var(--zen-text)]">
+                    {insights.narrative?.time_pressure?.text || "Time-pressure insights are still being computed."}
+                  </p>
+                  {insights.updated_at && (
+                    <p className="mt-3 text-xs text-[color:var(--zen-muted)]">
+                      Updated:{" "}
+                      {new Date(insights.updated_at).toLocaleString("en-US", {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  )}
+                </div>
+
+                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
+                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                    Strengths
+                  </p>
+                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
+                    {(insights.narrative?.strengths || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`strength-${idx}`} className="leading-relaxed">
+                        - {claim.text}
+                      </li>
+                    ))}
+                    {(!insights.narrative?.strengths || insights.narrative.strengths.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">No strengths generated yet.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
+                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                    Weaknesses
+                  </p>
+                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
+                    {(insights.narrative?.weaknesses || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`weakness-${idx}`} className="leading-relaxed">
+                        - {claim.text}
+                      </li>
+                    ))}
+                    {(!insights.narrative?.weaknesses || insights.narrative.weaknesses.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">No weaknesses generated yet.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
+                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                    Recurring Mistakes
+                  </p>
+                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
+                    {(insights.narrative?.recurring_mistakes || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`mistake-${idx}`} className="leading-relaxed">
+                        - {claim.text}
+                      </li>
+                    ))}
+                    {(!insights.narrative?.recurring_mistakes ||
+                      insights.narrative.recurring_mistakes.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">No recurring mistakes surfaced yet.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
+                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                    Coaching Focus
+                  </p>
+                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
+                    {(insights.narrative?.coaching_takeaways || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`focus-${idx}`} className="leading-relaxed">
+                        - {claim.text}
+                      </li>
+                    ))}
+                    {(!insights.narrative?.coaching_takeaways ||
+                      insights.narrative.coaching_takeaways.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">Coaching recommendations are not ready yet.</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
             )}
           </div>
         )}
