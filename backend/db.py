@@ -1,5 +1,6 @@
 """Database initialization and helper functions for Korchess (Postgres)."""
 
+import json
 import os
 from typing import Optional
 
@@ -231,6 +232,92 @@ def init_db() -> None:
             PRIMARY KEY (opening_id, ply_index),
             FOREIGN KEY (opening_id) REFERENCES openings(id)
         )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS insight_jobs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            site TEXT NOT NULL,
+            status TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            reason TEXT,
+            error TEXT,
+            feature_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            meta_json TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_insight_jobs_lookup
+        ON insight_jobs(user_id, username, site, status, updated_at DESC)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS insight_game_features (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            feature_version TEXT NOT NULL,
+            analysis_tier TEXT NOT NULL,
+            light_json TEXT NOT NULL,
+            deep_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, site, site_game_id, feature_version),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_insight_game_features_lookup
+        ON insight_game_features(user_id, username, site, feature_version)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_insights (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            site TEXT NOT NULL,
+            status TEXT NOT NULL,
+            feature_version TEXT NOT NULL,
+            narrative_version TEXT NOT NULL,
+            coverage_json TEXT NOT NULL,
+            features_json TEXT NOT NULL,
+            fact_map_json TEXT NOT NULL,
+            narrative_json TEXT NOT NULL,
+            source_job_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, username, site),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_player_insights_lookup
+        ON player_insights(user_id, username, site, updated_at DESC)
         """
     )
 
@@ -1021,3 +1108,344 @@ def count_analysis_jobs(conn: psycopg.Connection) -> int:
     cursor.execute("SELECT COUNT(*) as total FROM analysis_jobs")
     row = cursor.fetchone()
     return row["total"] if row else 0
+
+
+def create_insight_job(
+    conn: psycopg.Connection,
+    job_id: str,
+    user_id: str,
+    username: str,
+    site: str,
+    status: str,
+    stage: str,
+    reason: str,
+    feature_version: str,
+    meta: dict | None = None,
+) -> None:
+    """Create an insights background job."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO insight_jobs
+        (id, user_id, username, site, status, stage, reason, error, feature_version,
+         created_at, started_at, finished_at, updated_at, meta_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, NULL, NULL, %s, %s)
+        """,
+        (
+            job_id,
+            user_id,
+            username.strip().lower(),
+            site,
+            status,
+            stage,
+            reason,
+            feature_version,
+            now,
+            now,
+            json.dumps(meta or {}),
+        ),
+    )
+
+
+def get_active_insight_job(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> dict | None:
+    """Get the latest active insights job for this user/username/site."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, status, stage, reason, error, feature_version, created_at,
+               started_at, finished_at, updated_at, meta_json
+        FROM insight_jobs
+        WHERE user_id = %s
+          AND LOWER(username) = %s
+          AND site = %s
+          AND status IN ('queued', 'running')
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (user_id, username.strip().lower(), site),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    data["meta"] = json.loads(data.get("meta_json") or "{}")
+    return data
+
+
+def get_insight_job_by_id(
+    conn: psycopg.Connection,
+    job_id: str,
+) -> dict | None:
+    """Fetch an insights job by ID."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, user_id, username, site, status, stage, reason, error, feature_version,
+               created_at, started_at, finished_at, updated_at, meta_json
+        FROM insight_jobs
+        WHERE id = %s
+        """,
+        (job_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    data["meta"] = json.loads(data.get("meta_json") or "{}")
+    return data
+
+
+def update_insight_job(
+    conn: psycopg.Connection,
+    job_id: str,
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    error: str | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    meta: dict | None = None,
+) -> None:
+    """Update mutable fields of an insights job."""
+    from datetime import datetime, timezone
+
+    fields = ["updated_at = %s"]
+    params: list = [datetime.now(timezone.utc).isoformat()]
+
+    if status is not None:
+        fields.append("status = %s")
+        params.append(status)
+    if stage is not None:
+        fields.append("stage = %s")
+        params.append(stage)
+    if error is not None:
+        fields.append("error = %s")
+        params.append(error)
+    if started_at is not None:
+        fields.append("started_at = %s")
+        params.append(started_at)
+    if finished_at is not None:
+        fields.append("finished_at = %s")
+        params.append(finished_at)
+    if meta is not None:
+        fields.append("meta_json = %s")
+        params.append(json.dumps(meta))
+
+    params.append(job_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        UPDATE insight_jobs
+        SET {", ".join(fields)}
+        WHERE id = %s
+        """,
+        params,
+    )
+
+
+def upsert_insight_game_feature(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str,
+    site_game_id: str,
+    feature_version: str,
+    light: dict,
+    deep: dict | None = None,
+) -> None:
+    """Insert or update per-game insight features."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    analysis_tier = "deep" if deep else "light"
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO insight_game_features
+        (user_id, username, site, site_game_id, feature_version, analysis_tier,
+         light_json, deep_json, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, site, site_game_id, feature_version)
+        DO UPDATE SET
+            analysis_tier = CASE
+                WHEN EXCLUDED.deep_json IS NOT NULL THEN 'deep'
+                ELSE insight_game_features.analysis_tier
+            END,
+            light_json = EXCLUDED.light_json,
+            deep_json = COALESCE(EXCLUDED.deep_json, insight_game_features.deep_json),
+            updated_at = EXCLUDED.updated_at
+        """,
+        (
+            user_id,
+            username.strip().lower(),
+            site,
+            site_game_id,
+            feature_version,
+            analysis_tier,
+            json.dumps(light),
+            json.dumps(deep) if deep is not None else None,
+            now,
+            now,
+        ),
+    )
+
+
+def get_insight_game_features(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+    feature_version: str | None = None,
+) -> list[dict]:
+    """Fetch stored per-game insights feature artifacts."""
+    cursor = conn.cursor()
+    query = """
+        SELECT site, site_game_id, feature_version, analysis_tier,
+               light_json, deep_json, created_at, updated_at
+        FROM insight_game_features
+        WHERE user_id = %s AND LOWER(username) = %s
+    """
+    params: list = [user_id, username.strip().lower()]
+
+    if site != "all":
+        query += " AND site = %s"
+        params.append(site)
+
+    if feature_version is not None:
+        query += " AND feature_version = %s"
+        params.append(feature_version)
+
+    cursor.execute(query + " ORDER BY updated_at DESC", params)
+    rows = cursor.fetchall()
+    results = []
+    for row in rows:
+        data = dict(row)
+        data["light"] = json.loads(data.get("light_json") or "{}")
+        data["deep"] = json.loads(data.get("deep_json") or "{}") if data.get("deep_json") else None
+        results.append(data)
+    return results
+
+
+def get_games_for_insights(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+    limit: int = 500,
+) -> list[dict]:
+    """Fetch recent games with PGN and metadata for insights processing."""
+    cursor = conn.cursor()
+    query = """
+        SELECT site, site_game_id, played_at, time_class, color, result, eco,
+               opening_name, opponent, white_elo, black_elo, pgn
+        FROM games
+        WHERE user_id = %s AND LOWER(username) = %s
+    """
+    params: list = [user_id, username.strip().lower()]
+    if site != "all":
+        query += " AND site = %s"
+        params.append(site)
+
+    query += """
+        ORDER BY
+            CASE WHEN played_at IS NULL THEN 1 ELSE 0 END,
+            played_at DESC,
+            id DESC
+        LIMIT %s
+    """
+    params.append(limit)
+    cursor.execute(query, params)
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def upsert_player_insights(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str,
+    status: str,
+    feature_version: str,
+    narrative_version: str,
+    coverage: dict,
+    features: dict,
+    fact_map: dict,
+    narrative: dict,
+    source_job_id: str | None = None,
+) -> None:
+    """Insert or update latest user-level insights snapshot."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO player_insights
+        (user_id, username, site, status, feature_version, narrative_version,
+         coverage_json, features_json, fact_map_json, narrative_json,
+         source_job_id, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, username, site)
+        DO UPDATE SET
+            status = EXCLUDED.status,
+            feature_version = EXCLUDED.feature_version,
+            narrative_version = EXCLUDED.narrative_version,
+            coverage_json = EXCLUDED.coverage_json,
+            features_json = EXCLUDED.features_json,
+            fact_map_json = EXCLUDED.fact_map_json,
+            narrative_json = EXCLUDED.narrative_json,
+            source_job_id = EXCLUDED.source_job_id,
+            updated_at = EXCLUDED.updated_at
+        """,
+        (
+            user_id,
+            username.strip().lower(),
+            site,
+            status,
+            feature_version,
+            narrative_version,
+            json.dumps(coverage),
+            json.dumps(features),
+            json.dumps(fact_map),
+            json.dumps(narrative),
+            source_job_id,
+            now,
+            now,
+        ),
+    )
+
+
+def get_player_insights(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> dict | None:
+    """Fetch latest user-level insights snapshot."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT status, feature_version, narrative_version,
+               coverage_json, features_json, fact_map_json, narrative_json,
+               source_job_id, created_at, updated_at
+        FROM player_insights
+        WHERE user_id = %s AND LOWER(username) = %s AND site = %s
+        """,
+        (user_id, username.strip().lower(), site),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    data["coverage"] = json.loads(data.get("coverage_json") or "{}")
+    data["features"] = json.loads(data.get("features_json") or "{}")
+    data["fact_map"] = json.loads(data.get("fact_map_json") or "{}")
+    data["narrative"] = json.loads(data.get("narrative_json") or "{}")
+    return data
