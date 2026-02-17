@@ -4,12 +4,24 @@
 // avoid Next.js "useSearchParams() should be wrapped in a suspense boundary" build errors.
 export const dynamic = "force-dynamic";
 
-import { useState, useMemo, useEffect, Fragment } from "react";
+import { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
+
+const DASHBOARD_LAST_USER_KEY = "korchess_dashboard_last_user";
+
+const persistLastUser = (user: string) => {
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(DASHBOARD_LAST_USER_KEY, user);
+    } catch {
+      // Ignore localStorage errors
+    }
+  }
+};
 
 interface OpeningStats {
   opening_key: string;
@@ -150,6 +162,7 @@ export default function DashboardPage() {
     direction: "asc" | "desc";
   }>({ key: "games", direction: "desc" });
   const [initialized, setInitialized] = useState(false);
+  const hasAutoLoadedFromHistory = useRef(false);
   const [importHistory, setImportHistory] = useState<ImportHistoryItem[]>([]);
   const [insights, setInsights] = useState<InsightsProfile | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
@@ -354,48 +367,50 @@ export default function DashboardPage() {
     return response.json();
   };
 
-  // Restore state from URL on mount
+  // Restore state from URL on mount and when session becomes available
   useEffect(() => {
     const userFromUrl = searchParams.get("user");
+    if (!userFromUrl) return;
 
     if (!initialized) {
       setInitialized(true);
-
-      if (userFromUrl) {
-        setUsername(userFromUrl);
-        setCurrentUsername(userFromUrl);
-
-        const loadData = async () => {
-          setLoading(true);
-          try {
-            const [reportData, statusData] = await Promise.all([
-              fetchReport(userFromUrl, colorFilter, timeClassFilter),
-              fetchImportStatus(userFromUrl)
-            ]);
-            setReport(reportData);
-            if (statusData) {
-              setImportStatus(statusData);
-            }
-          } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to load data");
-          } finally {
-            setLoading(false);
-          }
-        };
-
-        if (session?.idToken) {
-          loadData();
-        } else {
-          setError("Please sign in with Google to continue.");
-        }
-      }
+      setUsername(userFromUrl);
+      setCurrentUsername(userFromUrl);
+      persistLastUser(userFromUrl);
     }
+
+    // Wait for session to be ready before loading - don't set error if session is still loading
+    if (!session?.idToken) {
+      return; // Session may still be hydrating; effect will re-run when it's ready
+    }
+
+    setError(null);
+    const loadData = async () => {
+      setLoading(true);
+      try {
+        const [reportData, statusData] = await Promise.all([
+          fetchReport(userFromUrl, colorFilter, timeClassFilter),
+          fetchImportStatus(userFromUrl)
+        ]);
+        setReport(reportData);
+        if (statusData) {
+          setImportStatus(statusData);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load data");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
   }, [searchParams, initialized, colorFilter, timeClassFilter, router, session?.idToken]);
 
-  // Update URL when currentUsername changes
+  // Update URL and persist last selected user
   const updateUrl = (user: string | null) => {
     if (user) {
       router.replace(`/dashboard?user=${encodeURIComponent(user)}`, { scroll: false });
+      persistLastUser(user);
     }
   };
 
@@ -635,6 +650,60 @@ export default function DashboardPage() {
   };
 
   // Process report: filter -> sort (backend already returns top 10 by games)
+  // Group import history by username (one entry per user, most recent first)
+  const uniqueHistoryByUser = useMemo(() => {
+    const byUser = new Map<string, ImportHistoryItem>();
+    for (const item of importHistory) {
+      const key = item.username.toLowerCase();
+      const existing = byUser.get(key);
+      if (
+        !existing ||
+        new Date(item.imported_at).getTime() > new Date(existing.imported_at).getTime()
+      ) {
+        byUser.set(key, item);
+      }
+    }
+    return Array.from(byUser.values()).sort(
+      (a, b) =>
+        new Date(b.imported_at).getTime() - new Date(a.imported_at).getTime()
+    );
+  }, [importHistory]);
+
+  // When no user in URL but we have history: auto-load last selected or most recent user
+  useEffect(() => {
+    if (status !== "authenticated" || !session?.idToken) return;
+    if (searchParams.get("user")) {
+      hasAutoLoadedFromHistory.current = false;
+      return;
+    }
+    if (uniqueHistoryByUser.length === 0) return;
+    if (hasAutoLoadedFromHistory.current) return;
+
+    hasAutoLoadedFromHistory.current = true;
+
+    const lastUser =
+      typeof window !== "undefined"
+        ? localStorage.getItem(DASHBOARD_LAST_USER_KEY)
+        : null;
+    const userToLoad =
+      lastUser &&
+      uniqueHistoryByUser.some(
+        (h) => h.username.toLowerCase() === lastUser.toLowerCase()
+      )
+        ? uniqueHistoryByUser.find(
+            (h) => h.username.toLowerCase() === lastUser.toLowerCase()
+          )!
+        : uniqueHistoryByUser[0];
+
+    handleHistoryItemClick(userToLoad);
+  }, [
+    status,
+    session?.idToken,
+    searchParams,
+    uniqueHistoryByUser,
+    // handleHistoryItemClick intentionally omitted to avoid re-running on every render
+  ]);
+
   const processedReport = useMemo(() => {
     if (!report) return null;
     
@@ -688,7 +757,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div role="main" className="opening-page max-w-[1152px] mx-auto px-4 sm:px-6 py-10">
+    <div role="main" className="opening-page max-w-[1500px] mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
@@ -727,7 +796,49 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="zen-surface opening-frame p-5 sm:p-6">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+        {/* Recently analyzed - always visible */}
+        <div className="zen-surface-flat px-4 py-4 h-fit rounded-xl border border-[color:var(--zen-border)]">
+          <div className="flex items-baseline justify-between gap-2 mb-3">
+            <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+              Recently analyzed
+            </p>
+            <span className="text-[10px] uppercase tracking-wider text-[color:var(--zen-muted)]/80">
+              Last 10
+            </span>
+          </div>
+          <div className="space-y-2">
+            {uniqueHistoryByUser.length === 0 ? (
+              <p className="text-sm text-[color:var(--zen-muted)] py-4 text-center">
+                No users analyzed yet
+              </p>
+            ) : (
+              uniqueHistoryByUser.map((item) => {
+                const isSelected =
+                  currentUsername &&
+                  item.username.toLowerCase() === currentUsername.toLowerCase();
+                return (
+                  <button
+                    key={item.username}
+                    type="button"
+                    onClick={() => handleHistoryItemClick(item)}
+                    className={[
+                      "w-full zen-pill px-3 py-2 text-sm transition cursor-pointer flex items-center justify-center",
+                      isSelected
+                        ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-accent)] border border-[color:var(--zen-accent)]"
+                        : "text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface)] hover:text-[color:var(--zen-accent)]",
+                    ].join(" ")}
+                  >
+                    <span className="truncate">{item.username}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="min-w-0 space-y-6">
+        <div className="zen-surface opening-frame p-5 sm:p-6">
         {/* Import inputs row */}
         <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
           {/* Lichess import */}
@@ -811,33 +922,239 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Recently analyzed */}
-        {importHistory.length > 0 && (
-          <div className="mt-4 zen-surface-flat px-4 py-3">
-            <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-              Recently analyzed
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {importHistory.map((item) => (
-                <button
-                  key={`${item.username}-${item.site}`}
-                  type="button"
-                  onClick={() => handleHistoryItemClick(item)}
-                  className="zen-pill px-3 py-2 text-sm text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface)] hover:text-[color:var(--zen-accent)] transition cursor-pointer flex items-center gap-2"
-                >
-                  <span>{item.username}</span>
-                  <span className="text-[10px] uppercase text-[color:var(--zen-muted)]">
-                    {item.site === "lichess" ? "Lichess" : "Chess.com"}
-                  </span>
-                </button>
-              ))}
-            </div>
+        {/* Data Freshness Line */}
+        {importStatus && currentUsername && !loading && (
+          <div className="mt-5 zen-surface-flat px-4 py-3">
+            {importStatus.imported_at ? (
+              <p className="text-sm text-[color:var(--zen-muted)]">
+                Report generated from{" "}
+                <span className="text-[color:var(--zen-text)] font-medium">
+                  {importStatus.total_games}
+                </span>{" "}
+                games
+                {importStatus.total_games > 0 && (
+                  <>
+                    {" "}
+                    (last import:{" "}
+                    {new Date(importStatus.imported_at).toLocaleString("en-US", {
+                      year: "numeric",
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                    {/* {importStatus.last_imported === 0 &&
+                      `, imported: 0, skipped: ${importStatus.last_skipped}`} */}
+                    )
+                  </>
+                )}
+              </p>
+            ) : (
+              <p className="text-sm text-[color:var(--zen-muted)]">
+                No imports yet for{" "}
+                <span className="text-[color:var(--zen-text)] font-medium">
+                  {currentUsername}
+                </span>
+              </p>
+            )}
           </div>
         )}
 
-        {/* Toolbar */}
+        </div>
+
+        {/* AI Coaching Summary - outside the upper box, with its own borders */}
         {currentUsername && (
-          <div className="mt-6 flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
+          <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                  AI Insights
+                </p>
+                <h3 className="text-2xl sm:text-3xl font-semibold text-[color:var(--zen-text)] mt-1">
+                  Coaching summary for {currentUsername}
+                </h3>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="zen-pill px-4 py-2 text-sm uppercase tracking-wide text-[color:var(--zen-muted)]">
+                  {insightsStatusLabel}
+                </span>
+                <button
+                  onClick={handleRefreshInsights}
+                  disabled={insightsRefreshing || insightsLoading}
+                  className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:text-[color:var(--zen-accent)] transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {insightsRefreshing ? "Refreshing..." : "Refresh AI"}
+                </button>
+              </div>
+            </div>
+
+            {insightsLoading && !insights && (
+              <p className="mt-6 text-base text-[color:var(--zen-muted)]">
+                Loading AI insights...
+              </p>
+            )}
+
+            {!insightsLoading && !insights && (
+              <p className="mt-6 text-base text-[color:var(--zen-muted)]">
+                Insights are not available yet for this username.
+              </p>
+            )}
+
+            {insights && (
+              <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                  <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
+                    Player Type
+                  </p>
+                  <p className="text-2xl font-semibold text-[color:var(--zen-text)]">
+                    {insights.features?.style?.label || insights.narrative?.player_type?.text || "Building profile"}
+                  </p>
+                  {insights.narrative?.player_type?.text && (
+                    <p className="mt-3 text-base text-[color:var(--zen-muted)] leading-relaxed">
+                      {insights.narrative.player_type.text}
+                    </p>
+                  )}
+                  <div className="mt-5 grid grid-cols-3 gap-4">
+                    <div className="rounded-lg border border-[color:var(--zen-border)] px-4 py-3 text-center">
+                      <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)]">Confidence</p>
+                      <p className="text-base font-semibold text-[color:var(--zen-accent)]">
+                        {Math.round((insights.features?.confidence?.value || 0) * 100)}%
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-[color:var(--zen-border)] px-4 py-3 text-center">
+                      <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)]">Deep</p>
+                      <p className="text-base font-semibold text-[color:var(--zen-text)]">
+                        {Math.round((insights.coverage?.deep_coverage || 0) * 100)}%
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-[color:var(--zen-border)] px-4 py-3 text-center">
+                      <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)]">Clock</p>
+                      <p className="text-base font-semibold text-[color:var(--zen-text)]">
+                        {Math.round((insights.coverage?.clock_coverage || 0) * 100)}%
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                  <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-3">
+                    Time Pressure
+                  </p>
+                  <p className="text-base sm:text-lg text-[color:var(--zen-text)] leading-relaxed">
+                    {insights.narrative?.time_pressure?.text || "Time-pressure insights are still being computed."}
+                  </p>
+                  {insights.updated_at && (
+                    <p className="mt-4 text-sm text-[color:var(--zen-muted)]">
+                      Updated:{" "}
+                      {new Date(insights.updated_at).toLocaleString("en-US", {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  )}
+                </div>
+
+                <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                  <div className="flex items-center gap-2 mb-3">
+                    {/* <span className="text-[color:var(--zen-success)] text-lg" aria-hidden>✓</span> */}
+                    <p className="text-base sm:text-lg font-bold uppercase tracking-wider text-[color:var(--zen-text)]">
+                      Strengths
+                    </p>
+                  </div>
+                  <ul className="space-y-3 text-base sm:text-lg text-[color:var(--zen-text)] leading-relaxed">
+                    {(insights.narrative?.strengths || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`strength-${idx}`} className="flex gap-2">
+                        <span className="text-[color:var(--zen-success)] shrink-0">✓</span>
+                        <span>{claim.text}</span>
+                      </li>
+                    ))}
+                    {(!insights.narrative?.strengths || insights.narrative.strengths.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">No strengths generated yet.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                  <div className="flex items-center gap-2 mb-3">
+                    {/* <span className="text-[color:var(--zen-danger)] text-lg" aria-hidden>✗</span> */}
+                    <p className="text-base sm:text-lg font-bold uppercase tracking-wider text-[color:var(--zen-text)]">
+                      Weaknesses
+                    </p>
+                  </div>
+                  <ul className="space-y-3 text-base sm:text-lg text-[color:var(--zen-text)] leading-relaxed">
+                    {(insights.narrative?.weaknesses || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`weakness-${idx}`} className="flex gap-2">
+                        <span className="text-[color:var(--zen-danger)] shrink-0">✗</span>
+                        <span>{claim.text}</span>
+                      </li>
+                    ))}
+                    {(!insights.narrative?.weaknesses || insights.narrative.weaknesses.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">No weaknesses generated yet.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                  <div className="flex items-center gap-2 mb-3">
+                    {/* <span className="text-[color:var(--zen-accent)] text-lg" aria-hidden>⚠</span> */}
+                    <p className="text-base sm:text-lg font-bold uppercase tracking-wider text-[color:var(--zen-text)]">
+                      Recurring Mistakes
+                    </p>
+                  </div>
+                  <ul className="space-y-3 text-base sm:text-lg text-[color:var(--zen-text)] leading-relaxed">
+                    {(insights.narrative?.recurring_mistakes || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`mistake-${idx}`} className="flex gap-2">
+                        <span className="text-[color:var(--zen-accent)] shrink-0">⚠</span>
+                        <span>{claim.text}</span>
+                      </li>
+                    ))}
+                    {(!insights.narrative?.recurring_mistakes ||
+                      insights.narrative.recurring_mistakes.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">No recurring mistakes surfaced yet.</li>
+                    )}
+                  </ul>
+                </div>
+
+                <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                  <div className="flex items-center gap-2 mb-3">
+                    {/* <span className="text-[color:var(--zen-accent)] text-lg" aria-hidden>⚡</span> */}
+                    <p className="text-base sm:text-lg font-bold uppercase tracking-wider text-[color:var(--zen-text)]">
+                      Coaching Focus
+                    </p>
+                  </div>
+                  <ul className="space-y-3 text-base sm:text-lg text-[color:var(--zen-text)] leading-relaxed">
+                    {(insights.narrative?.coaching_takeaways || []).slice(0, 3).map((claim, idx) => (
+                      <li key={`focus-${idx}`} className="flex gap-2">
+                        <span className="text-[color:var(--zen-accent)] shrink-0">→</span>
+                        <span>{claim.text}</span>
+                      </li>
+                    ))}
+                    {(!insights.narrative?.coaching_takeaways ||
+                      insights.narrative.coaching_takeaways.length === 0) && (
+                      <li className="text-[color:var(--zen-muted)]">Coaching recommendations are not ready yet.</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Top 10 Openings - outside the main box, with its own borders */}
+        <div className="zen-surface opening-frame p-5 sm:p-6 border border-[color:var(--zen-border)] rounded-2xl">
+        {/* Loading State - shown in openings box when loading */}
+        {loading && (
+          <div className="py-10 flex justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
+          </div>
+        )}
+
+        {/* Filters - inside the openings box */}
+        {currentUsername && (
+          <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between mb-4">
             <div className="flex flex-wrap items-center gap-2">
               <div className="zen-pill p-1 flex gap-1">
                 {[
@@ -878,16 +1195,6 @@ export default function DashboardPage() {
                 <option value="rapid">Rapid</option>
                 <option value="classical">Classical</option>
               </select>
-
-              {/* <label className="zen-pill px-3 py-2.5 flex items-center gap-2 text-sm text-[color:var(--zen-muted)] cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={hideUnknown}
-                  onChange={(e) => setHideUnknown(e.target.checked)}
-                  className="accent-[color:var(--zen-accent)]"
-                />
-                Hide UNKNOWN
-              </label> */}
             </div>
 
             <button
@@ -900,213 +1207,16 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Loading State */}
-        {loading && (
-          <div className="py-10 flex justify-center">
-            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
-          </div>
-        )}
-
-        {/* Data Freshness Line */}
-        {importStatus && currentUsername && !loading && (
-          <div className="mt-5 zen-surface-flat px-4 py-3">
-            {importStatus.imported_at ? (
-              <p className="text-sm text-[color:var(--zen-muted)]">
-                Report generated from{" "}
-                <span className="text-[color:var(--zen-text)] font-medium">
-                  {importStatus.total_games}
-                </span>{" "}
-                games
-                {importStatus.total_games > 0 && (
-                  <>
-                    {" "}
-                    (last import:{" "}
-                    {new Date(importStatus.imported_at).toLocaleString("en-US", {
-                      year: "numeric",
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                    {/* {importStatus.last_imported === 0 &&
-                      `, imported: 0, skipped: ${importStatus.last_skipped}`} */}
-                    )
-                  </>
-                )}
-              </p>
-            ) : (
-              <p className="text-sm text-[color:var(--zen-muted)]">
-                No imports yet for{" "}
-                <span className="text-[color:var(--zen-text)] font-medium">
-                  {currentUsername}
-                </span>
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* AI Insights */}
-        {currentUsername && (
-          <div className="mt-5 zen-surface-flat px-4 py-4 border border-[color:var(--zen-border)]">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
-                  AI Insights
-                </p>
-                <h3 className="text-base font-semibold text-[color:var(--zen-text)] mt-1">
-                  Coaching summary for {currentUsername}
-                </h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="zen-pill px-3 py-1.5 text-xs uppercase tracking-wide text-[color:var(--zen-muted)]">
-                  {insightsStatusLabel}
-                </span>
-                <button
-                  onClick={handleRefreshInsights}
-                  disabled={insightsRefreshing || insightsLoading}
-                  className="zen-pill px-3 py-1.5 text-xs font-medium text-[color:var(--zen-text)] hover:text-[color:var(--zen-accent)] transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {insightsRefreshing ? "Refreshing..." : "Refresh AI"}
-                </button>
-              </div>
-            </div>
-
-            {insightsLoading && !insights && (
-              <p className="mt-4 text-sm text-[color:var(--zen-muted)]">
-                Loading AI insights...
-              </p>
-            )}
-
-            {!insightsLoading && !insights && (
-              <p className="mt-4 text-sm text-[color:var(--zen-muted)]">
-                Insights are not available yet for this username.
-              </p>
-            )}
-
-            {insights && (
-              <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
-                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-                    Player Type
-                  </p>
-                  <p className="text-lg font-semibold text-[color:var(--zen-text)]">
-                    {insights.features?.style?.label || insights.narrative?.player_type?.text || "Building profile"}
-                  </p>
-                  {insights.narrative?.player_type?.text && (
-                    <p className="mt-2 text-sm text-[color:var(--zen-muted)]">
-                      {insights.narrative.player_type.text}
-                    </p>
-                  )}
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-[color:var(--zen-muted)]">
-                    <span className="zen-pill px-2 py-1">
-                      Confidence: {Math.round((insights.features?.confidence?.value || 0) * 100)}%
-                    </span>
-                    <span className="zen-pill px-2 py-1">
-                      Deep coverage: {Math.round((insights.coverage?.deep_coverage || 0) * 100)}%
-                    </span>
-                    <span className="zen-pill px-2 py-1">
-                      Clock coverage: {Math.round((insights.coverage?.clock_coverage || 0) * 100)}%
-                    </span>
-                  </div>
-                </div>
-
-                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
-                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-                    Time Pressure
-                  </p>
-                  <p className="text-sm text-[color:var(--zen-text)]">
-                    {insights.narrative?.time_pressure?.text || "Time-pressure insights are still being computed."}
-                  </p>
-                  {insights.updated_at && (
-                    <p className="mt-3 text-xs text-[color:var(--zen-muted)]">
-                      Updated:{" "}
-                      {new Date(insights.updated_at).toLocaleString("en-US", {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </p>
-                  )}
-                </div>
-
-                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
-                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-                    Strengths
-                  </p>
-                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
-                    {(insights.narrative?.strengths || []).slice(0, 3).map((claim, idx) => (
-                      <li key={`strength-${idx}`} className="leading-relaxed">
-                        - {claim.text}
-                      </li>
-                    ))}
-                    {(!insights.narrative?.strengths || insights.narrative.strengths.length === 0) && (
-                      <li className="text-[color:var(--zen-muted)]">No strengths generated yet.</li>
-                    )}
-                  </ul>
-                </div>
-
-                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
-                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-                    Weaknesses
-                  </p>
-                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
-                    {(insights.narrative?.weaknesses || []).slice(0, 3).map((claim, idx) => (
-                      <li key={`weakness-${idx}`} className="leading-relaxed">
-                        - {claim.text}
-                      </li>
-                    ))}
-                    {(!insights.narrative?.weaknesses || insights.narrative.weaknesses.length === 0) && (
-                      <li className="text-[color:var(--zen-muted)]">No weaknesses generated yet.</li>
-                    )}
-                  </ul>
-                </div>
-
-                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
-                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-                    Recurring Mistakes
-                  </p>
-                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
-                    {(insights.narrative?.recurring_mistakes || []).slice(0, 3).map((claim, idx) => (
-                      <li key={`mistake-${idx}`} className="leading-relaxed">
-                        - {claim.text}
-                      </li>
-                    ))}
-                    {(!insights.narrative?.recurring_mistakes ||
-                      insights.narrative.recurring_mistakes.length === 0) && (
-                      <li className="text-[color:var(--zen-muted)]">No recurring mistakes surfaced yet.</li>
-                    )}
-                  </ul>
-                </div>
-
-                <div className="zen-surface p-4 rounded-xl border border-[color:var(--zen-border)]">
-                  <p className="text-xs uppercase tracking-wider text-[color:var(--zen-muted)] mb-2">
-                    Coaching Focus
-                  </p>
-                  <ul className="space-y-2 text-sm text-[color:var(--zen-text)]">
-                    {(insights.narrative?.coaching_takeaways || []).slice(0, 3).map((claim, idx) => (
-                      <li key={`focus-${idx}`} className="leading-relaxed">
-                        - {claim.text}
-                      </li>
-                    ))}
-                    {(!insights.narrative?.coaching_takeaways ||
-                      insights.narrative.coaching_takeaways.length === 0) && (
-                      <li className="text-[color:var(--zen-muted)]">Coaching recommendations are not ready yet.</li>
-                    )}
-                  </ul>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Results */}
         {report && !loading && (
-          <div className="mt-6">
-            <h2 className="text-lg sm:text-xl font-semibold text-[color:var(--zen-text)] mb-4">
-              Your top 10 openings as {colorFilter === "white" ? "White" : "Black"}
-            </h2>
+          <div>
+            <div className="flex items-baseline justify-between gap-2 mb-4">
+              <h2 className="text-lg sm:text-xl font-semibold text-[color:var(--zen-text)]">
+                Your top 10 openings as {colorFilter === "white" ? "White" : "Black"}
+              </h2>
+              <span className="text-[10px] uppercase tracking-wider text-[color:var(--zen-muted)]/80 shrink-0">
+                Top 10
+              </span>
+            </div>
             <div className="overflow-hidden rounded-2xl border border-[color:var(--zen-border)]">
             <div className="overflow-x-auto">
               <table className="opening-table min-w-full">
@@ -1319,13 +1429,15 @@ export default function DashboardPage() {
         )}
 
         {!report && !loading && !error && (
-          <div className="mt-6 zen-surface-flat p-10 text-center">
+          <div className="zen-surface-flat p-10 text-center">
             <p className="text-[color:var(--zen-muted)]">
               Select a source, enter a username, and click Import Games to see opening
               statistics.
             </p>
           </div>
         )}
+        </div>
+        </div>
       </div>
     </div>
   );

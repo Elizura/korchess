@@ -231,8 +231,6 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    print(move_events, "shele calling move_events")
-
     total_plies = len(move_events)
     opening_end_ply = min(20, total_plies)
 
