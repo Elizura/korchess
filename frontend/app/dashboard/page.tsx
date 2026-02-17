@@ -532,55 +532,82 @@ export default function DashboardPage() {
     }
   };
 
-  const handleHistoryItemClick = async (item: ImportHistoryItem) => {
+  const handleHistoryItemClick = (item: ImportHistoryItem) => {
     setCurrentUsername(item.username);
     updateUrl(item.username);
+    setReport(null);
+    setInsights(null);
     setLoading(true);
+    setInsightsLoading(true);
     setError(null);
-    try {
-      const [reportData, statusData] = await Promise.all([
-        fetchReport(item.username, colorFilter, timeClassFilter),
-        fetchImportStatus(item.username),
-      ]);
-      setReport(reportData);
-      if (statusData) {
-        setImportStatus(statusData);
-      }
-      const insightsData = await fetchInsights(item.username);
-      setInsights(insightsData);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load data");
-    } finally {
-      setLoading(false);
-    }
+
+    // Openings flow: report + import status (clears loading when done)
+    Promise.all([
+      fetchReport(item.username, colorFilter, timeClassFilter),
+      fetchImportStatus(item.username),
+    ])
+      .then(([reportData, statusData]) => {
+        setReport(reportData);
+        if (statusData) {
+          setImportStatus(statusData);
+        }
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load data");
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+
+    // Insights flow: run in parallel (clears insightsLoading when done)
+    fetchInsights(item.username)
+      .then((insightsData) => {
+        setInsights(insightsData);
+      })
+      .catch(() => {
+        setInsights(null);
+      })
+      .finally(() => {
+        setInsightsLoading(false);
+      });
   };
 
-  const handleRefresh = async () => {
+  const handleRefresh = () => {
     if (!currentUsername) return;
 
     setLoading(true);
+    setInsightsLoading(true);
     setError(null);
 
-    try {
-      const reportData = await fetchReport(
-        currentUsername,
-        colorFilter,
-        timeClassFilter
-      );
-      setReport(reportData);
-      
-      // Also fetch status
-      const status = await fetchImportStatus(currentUsername);
-      if (status) {
-        setImportStatus(status);
-      }
-      const insightsData = await fetchInsights(currentUsername);
-      setInsights(insightsData);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      setLoading(false);
-    }
+    // Openings flow: report + import status
+    Promise.all([
+      fetchReport(currentUsername, colorFilter, timeClassFilter),
+      fetchImportStatus(currentUsername),
+    ])
+      .then(([reportData, statusData]) => {
+        setReport(reportData);
+        if (statusData) {
+          setImportStatus(statusData);
+        }
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "An error occurred");
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+
+    // Insights flow: run in parallel
+    fetchInsights(currentUsername)
+      .then((insightsData) => {
+        setInsights(insightsData);
+      })
+      .catch(() => {
+        setInsights(null);
+      })
+      .finally(() => {
+        setInsightsLoading(false);
+      });
   };
 
   const handleRefreshInsights = async () => {
@@ -1145,13 +1172,6 @@ export default function DashboardPage() {
 
         {/* Top 10 Openings - outside the main box, with its own borders */}
         <div className="zen-surface opening-frame p-5 sm:p-6 border border-[color:var(--zen-border)] rounded-2xl">
-        {/* Loading State - shown in openings box when loading */}
-        {loading && (
-          <div className="py-10 flex justify-center">
-            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
-          </div>
-        )}
-
         {/* Filters - inside the openings box */}
         {currentUsername && (
           <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between mb-4">
@@ -1204,6 +1224,13 @@ export default function DashboardPage() {
             >
               Refresh
             </button>
+          </div>
+        )}
+
+        {/* Loading State - below filters when loading */}
+        {loading && (
+          <div className="py-10 flex justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
           </div>
         )}
 

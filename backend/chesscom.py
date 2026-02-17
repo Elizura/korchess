@@ -8,9 +8,22 @@ from typing import Optional
 
 import chess.pgn
 import httpx
+import psycopg
+
+from opening_match import game_to_uci_plies, best_opening_match
 
 CHESSCOM_API_BASE = "https://api.chess.com/pub"
 USER_AGENT = "Korchess/1.0 (Chess opening analyzer)"
+
+
+def _get_follow_redirect(client: httpx.Client, url: str, headers: dict) -> httpx.Response:
+    """GET url; if 301, follow Location header and return that response."""
+    response = client.get(url, headers=headers)
+    if response.status_code == 301:
+        location = response.headers.get("Location")
+        if location:
+            response = client.get(location, headers=headers)
+    return response
 
 
 class ChesscomAPIError(Exception):
@@ -22,7 +35,7 @@ class ChesscomAPIError(Exception):
         super().__init__(self.message)
 
 
-def fetch_chesscom_games(username: str, max_games: int = 200) -> list[dict]:
+def fetch_chesscom_games(username: str, max_games: int = 200, conn: psycopg.Connection | None = None) -> list[dict]:
 
     headers = {
         "User-Agent": USER_AGENT,
@@ -33,7 +46,7 @@ def fetch_chesscom_games(username: str, max_games: int = 200) -> list[dict]:
     
     try:
         with httpx.Client(timeout=30.0) as client:
-            response = client.get(archives_url, headers=headers)
+            response = _get_follow_redirect(client, archives_url, headers)
     except httpx.RequestError as e:
         raise ChesscomAPIError(f"Network error: {str(e)}")
 
@@ -86,8 +99,29 @@ def fetch_chesscom_games(username: str, max_games: int = 200) -> list[dict]:
             # Parse game
             game_data = parse_chesscom_game(game_json, target_lower)
             if game_data:
+                opening = None
+                if conn:
+                    try:
+                        pgn_text = game_data.get("pgn", "")
+                        if pgn_text:
+                            game_obj = chess.pgn.read_game(io.StringIO(pgn_text))
+                            if game_obj:
+                                uci_plies = game_to_uci_plies(game_obj, max_plies=40)
+                                opening = best_opening_match(conn, uci_plies)
+                    except Exception:
+                        opening = None
+
+                if opening:
+                    game_data["eco"] = opening["eco"]
+                    game_data["opening_name"] = opening["name"]
+                    game_data["opening_id"] = opening["opening_id"]
+                    game_data["opening_ply_count"] = opening["ply_count"]
+                else:
+                    game_data["opening_id"] = None
+                    game_data["opening_ply_count"] = None
+
                 all_games.append(game_data)
-    
+
     return all_games
 
 
@@ -100,8 +134,8 @@ def fetch_archive_with_retry(archive_url: str, headers: dict, max_retries: int =
     for attempt in range(max_retries):
         try:
             with httpx.Client(timeout=30.0) as client:
-                response = client.get(archive_url, headers=headers)
-            
+                response = _get_follow_redirect(client, archive_url, headers)
+
             if response.status_code == 429:
                 if attempt < max_retries - 1:
                     print(f"[Chess.com] Rate limited, waiting {wait_time}s...")
