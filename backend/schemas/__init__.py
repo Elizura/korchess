@@ -141,6 +141,9 @@ class MoveEvaluation(BaseModel):
     classification: str | None = None
     cp_loss: int | None = None
     multi_pv: list[dict] | None = None
+    clock_seconds: int | None = None
+    time_spent_seconds: int | None = None
+    time_source: str | None = None
 
 
 class FullAnalysisSummary(BaseModel):
@@ -176,6 +179,26 @@ class FullAnalysisResponse(BaseModel):
     status: str  # "completed" | "missing" | "processing"
     analysis: FullAnalysisResult | None = None
     created_at: str | None = None
+
+
+class SingleGameInsightsResponse(BaseModel):
+    """Response for deterministic single-game rule insights endpoint."""
+    status: str  # "ready" | "analysis_missing" | "analysis_processing"
+    version: str | None = None
+    analysis_ref: dict | None = None
+    cards: dict | None = None
+    result_cause: dict | None = None
+    decisive_phase: dict | None = None
+    turning_points: dict | None = None
+    missed_winning_chances: dict | None = None
+    got_away_with_it: dict | None = None
+    conversion_quality: dict | None = None
+    resilience_quality: dict | None = None
+    time_pressure_collapse: dict | None = None
+    phase_grades: dict | None = None
+    game_character: dict | None = None
+    confidence: float | None = None
+    meta: dict | None = None
 
 
 class EvalRequest(BaseModel):

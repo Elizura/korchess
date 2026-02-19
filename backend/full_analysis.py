@@ -5,6 +5,7 @@ import chess.engine
 import chess.pgn
 import io
 import math
+import re
 import time
 from typing import Optional
 from dataclasses import dataclass, asdict
@@ -12,6 +13,9 @@ from dataclasses import dataclass, asdict
 STOCKFISH_PATH = "/usr/games/stockfish"
 DEFAULT_DEPTH = 18
 DEFAULT_TIME_MS = 1000  # ~0.2s per position
+
+_CLOCK_RE = re.compile(r"\[%clk\s+([0-9:.]+)\]")
+_ELAPSED_RE = re.compile(r"\[%emt\s+([0-9:.]+)\]")
 
 
 @dataclass
@@ -37,6 +41,9 @@ class MoveEvaluation:
     pv: list[str] = None  # Principal variation
     classification: Optional[str] = None  # best/excellent/good/inaccuracy/mistake/blunder
     cp_loss: Optional[int] = None  # Centipawn loss vs best move
+    clock_seconds: Optional[int] = None
+    time_spent_seconds: Optional[int] = None
+    time_source: Optional[str] = None  # clock|elapsed|inferred|missing
 
     def __post_init__(self):
         if self.pv is None:
@@ -66,6 +73,46 @@ def classify_move(cp_loss: Optional[int]) -> Optional[str]:
         return "mistake"
     else:
         return "blunder"
+
+
+def _clock_to_seconds(raw_value: str | None) -> int | None:
+    if not raw_value:
+        return None
+    cleaned = raw_value.strip()
+    if not cleaned:
+        return None
+
+    if ":" not in cleaned:
+        try:
+            return int(float(cleaned))
+        except ValueError:
+            return None
+
+    parts = cleaned.split(":")
+    try:
+        if len(parts) == 3:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = float(parts[2])
+            return int(hours * 3600 + minutes * 60 + seconds)
+        if len(parts) == 2:
+            minutes = int(parts[0])
+            seconds = float(parts[1])
+            return int(minutes * 60 + seconds)
+        if len(parts) == 1:
+            return int(float(parts[0]))
+    except ValueError:
+        return None
+    return None
+
+
+def _extract_tag_seconds(comment: str | None, pattern: re.Pattern[str]) -> int | None:
+    if not comment:
+        return None
+    match = pattern.search(comment)
+    if not match:
+        return None
+    return _clock_to_seconds(match.group(1))
 
 
 def score_to_dict(score: chess.engine.PovScore, perspective: chess.Color) -> dict:
@@ -140,6 +187,8 @@ def run_full_analysis(
     
     board = game.board()
     moves_list = list(game.mainline_moves())
+    move_nodes = list(game.mainline())
+    move_nodes = move_nodes[1:] if move_nodes else []
     
     # Clamp multipv
     multipv = max(1, min(5, multipv))
@@ -154,6 +203,8 @@ def run_full_analysis(
         move_evaluations: list[dict] = []
         white_cp_losses: list[int] = []
         black_cp_losses: list[int] = []
+        previous_clock_white: int | None = None
+        previous_clock_black: int | None = None
         
         # We need to evaluate position BEFORE each move to get best move
         # Then compare played move vs best move
@@ -162,6 +213,37 @@ def run_full_analysis(
         for ply, move in enumerate(moves_list):
             fen_before = current_board.fen()
             side_to_move = current_board.turn  # WHITE = True, BLACK = False
+
+            # Parse PGN time tags for this ply: [%clk ...] and [%emt ...]
+            node = move_nodes[ply] if ply < len(move_nodes) else None
+            comment = node.comment if node else None
+            clock_seconds = _extract_tag_seconds(comment, _CLOCK_RE)
+            elapsed_seconds = _extract_tag_seconds(comment, _ELAPSED_RE)
+
+            actor_is_white = side_to_move == chess.WHITE
+            previous_clock = previous_clock_white if actor_is_white else previous_clock_black
+            inferred_spent: int | None = None
+            if elapsed_seconds is None and clock_seconds is not None and previous_clock is not None:
+                # No increment metadata available; infer only when monotonic.
+                delta = previous_clock - clock_seconds
+                if delta >= 0:
+                    inferred_spent = int(delta)
+
+            if clock_seconds is not None:
+                if actor_is_white:
+                    previous_clock_white = clock_seconds
+                else:
+                    previous_clock_black = clock_seconds
+
+            time_spent_seconds = elapsed_seconds if elapsed_seconds is not None else inferred_spent
+            if elapsed_seconds is not None:
+                time_source = "elapsed"
+            elif inferred_spent is not None:
+                time_source = "inferred"
+            elif clock_seconds is not None:
+                time_source = "clock"
+            else:
+                time_source = "missing"
             
             # Analyze position BEFORE the move
             try:
@@ -281,6 +363,9 @@ def run_full_analysis(
                 "pv": [m.uci() for m in pv_moves[:8]],
                 "classification": classification,
                 "cp_loss": cp_loss,
+                "clock_seconds": clock_seconds,
+                "time_spent_seconds": time_spent_seconds,
+                "time_source": time_source,
             }
             
             # Add multipv data if available

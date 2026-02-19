@@ -20,8 +20,9 @@ from db import (
 )
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis
+from single_game_insights import compute_single_game_insights
 
-from schemas import AnalysisResponse, FullAnalysisResponse
+from schemas import AnalysisResponse, FullAnalysisResponse, SingleGameInsightsResponse
 from dependencies import get_db, validate_site
 from auth import get_registered_user
 
@@ -163,6 +164,62 @@ async def run_analysis_endpoint(
         analysis=result,
         created_at=saved["created_at"] if saved else None
     )
+
+
+@router.get(
+    "/{site}/{username}/{game_id}/single-insights",
+    response_model=SingleGameInsightsResponse,
+)
+async def get_single_game_insights_endpoint(
+    site: str,
+    username: str,
+    game_id: str,
+    depth: int = Query(default=18, ge=1, le=30),
+    multipv: int = Query(default=1, ge=1, le=5),
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_registered_user),
+):
+    """Get deterministic single-game rule insights derived from cached full analysis."""
+    site = validate_site(site)
+    username = username.strip()
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+
+    cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
+    if not cached:
+        job = get_analysis_job(conn, current_user["id"], username, game_id, depth, multipv, site)
+        if job:
+            return SingleGameInsightsResponse(
+                status="analysis_processing",
+                version="single_game_rules_v2",
+            )
+        return SingleGameInsightsResponse(
+            status="analysis_missing",
+            version="single_game_rules_v2",
+        )
+
+    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    full_analysis = {
+        "moves": json.loads(cached["moves_json"]),
+        "summary": json.loads(cached["summary_json"]),
+        "meta": json.loads(cached["meta_json"]),
+    }
+
+    insights_payload = compute_single_game_insights(
+        site=site,
+        game_id=game_id,
+        username=username,
+        depth=depth,
+        multipv=multipv,
+        full_analysis=full_analysis,
+        game_meta=game,
+    )
+
+    return SingleGameInsightsResponse(**insights_payload)
 
 
 @router.get("/{site}/{username}/{game_id}/full", response_model=FullAnalysisResponse)

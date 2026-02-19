@@ -22,7 +22,6 @@ import {
   goToEnd,
   goBack,
   goForward,
-  formatEval,
 } from "@/lib/moveTree";
 
 const API_BASE_URL =
@@ -54,6 +53,9 @@ interface MoveEvaluation {
   pv: string[];
   classification: string | null;
   cp_loss: number | null;
+  clock_seconds?: number | null;
+  time_spent_seconds?: number | null;
+  time_source?: "clock" | "elapsed" | "inferred" | "missing" | null;
   multi_pv?: Array<{ cp?: number; mate?: number; pv: string[] }>;
 }
 
@@ -82,6 +84,179 @@ interface FullAnalysisResponse {
     };
   } | null;
   created_at: string | null;
+}
+
+interface InsightEvidence {
+  ply: number;
+  move_index?: number | null;
+  uci?: string | null;
+  san?: string | null;
+}
+
+interface InsightAnchor {
+  ply: number;
+  move_index: number;
+  uci?: string | null;
+  san?: string | null;
+  fen_before?: string | null;
+  fen_after?: string | null;
+}
+
+interface InsightEvent {
+  event_id: string;
+  label_enum: string;
+  label: string;
+  ply: number;
+  actor?: "user" | "opponent";
+  phase?: "opening" | "middlegame" | "endgame";
+  pre_eval_cp?: number;
+  post_eval_cp?: number;
+  swing_cp?: number;
+  severity?: string;
+  severity_score?: number;
+  priority?: number;
+  is_decisive?: boolean;
+  lost_advantage_cp?: number;
+  delta_cp?: number;
+  cp_loss?: number;
+  persisted_ratio?: number;
+  anchor?: InsightAnchor;
+  confidence?: number;
+  evidence?: InsightEvidence[];
+}
+
+interface SingleGameInsightCard {
+  label_enum: string;
+  confidence: number;
+  evidence: Array<InsightEvidence | InsightEvent>;
+}
+
+interface SingleGameInsightsResponse {
+  status: "ready" | "analysis_missing" | "analysis_processing";
+  version?: string;
+  analysis_ref?: {
+    site: string;
+    game_id: string;
+    username?: string;
+    depth: number;
+    multipv: number;
+  };
+  cards?: Record<string, SingleGameInsightCard>;
+  result_cause?: {
+    label_enum: string;
+    primary_reason_code: string;
+    secondary_reason_code: string;
+    primary_label: string;
+    secondary_label: string;
+    cause_hierarchy_version: string;
+    factor_impacts: {
+      self_errors: number;
+      opponent_errors: number;
+      conversion: number;
+      resilience: number;
+      time_pressure: number;
+    };
+    confidence: number;
+    evidence: InsightEvidence[];
+  };
+  decisive_phase?: {
+    label_enum: string;
+    decisive_phase: "opening" | "middlegame" | "endgame" | "mixed";
+    confidence: number;
+  };
+  turning_points?: {
+    label_enum: string;
+    confidence: number;
+    events: InsightEvent[];
+  };
+  missed_winning_chances?: {
+    label_enum: string;
+    count: number;
+    confidence: number;
+    events: InsightEvent[];
+  };
+  got_away_with_it?: {
+    label_enum: string;
+    count: number;
+    confidence: number;
+    events: InsightEvent[];
+  };
+  conversion_quality?: {
+    label_enum: string;
+    available: boolean;
+    score: number | null;
+    grade: string;
+    opportunities: number;
+    confidence: number;
+    reason?: string;
+  };
+  resilience_quality?: {
+    label_enum: string;
+    available: boolean;
+    score: number | null;
+    grade: string;
+    defense_opportunities: number;
+    confidence: number;
+    reason?: string;
+  };
+  phase_grades?: {
+    label_enum: string;
+    opening: {
+      score: number | null;
+      grade: string;
+      evaluation_state: "scored" | "not_reached" | "too_short";
+      confidence: number;
+    };
+    middlegame: {
+      score: number | null;
+      grade: string;
+      evaluation_state: "scored" | "not_reached" | "too_short";
+      confidence: number;
+    };
+    endgame: {
+      score: number | null;
+      grade: string;
+      evaluation_state: "scored" | "not_reached" | "too_short";
+      confidence: number;
+    };
+  };
+  game_character?: {
+    label_enum:
+      | "defensive_grind"
+      | "advantage_lost"
+      | "stable"
+      | "volatile"
+      | "sharp"
+      | "technical"
+      | "chaotic"
+      | "controlled";
+    label: string;
+    sublabel?: string;
+    confidence: number;
+  };
+  time_pressure_collapse?: {
+    label_enum: string;
+    status: "detected" | "not_detected" | "insufficient_data" | "unavailable";
+    status_reason: string;
+    low_time_threshold_s: number | null;
+    low_time_moves: number;
+    normal_time_moves: number;
+    avg_cp_low: number | null;
+    avg_cp_normal: number | null;
+    cp_drop: number | null;
+    blunder_rate_low: number | null;
+    blunder_rate_normal: number | null;
+    blunder_delta: number | null;
+    critical_low_time_swings: number;
+    data_quality: {
+      user_moves: number;
+      clock_moves: number;
+      time_spent_moves: number;
+      missing_time_moves: number;
+    };
+    confidence: number;
+  };
+  confidence?: number;
 }
 
 interface EvalResponse {
@@ -125,10 +300,16 @@ export default function GameAnalyzerPage() {
   const [error, setError] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<"completed" | "missing" | "processing" | "loading">("loading");
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [singleInsights, setSingleInsights] = useState<SingleGameInsightsResponse | null>(null);
+  const [singleInsightsStatus, setSingleInsightsStatus] = useState<
+    "idle" | "loading" | "ready" | "analysis_missing" | "analysis_processing" | "error"
+  >("idle");
+  const [activeInsightEventId, setActiveInsightEventId] = useState<string | null>(null);
   
   // Polling for async analysis
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
   const analysisStartTime = useRef<number | null>(null);
+  const insightHighlightTimer = useRef<NodeJS.Timeout | null>(null);
   
   // Board settings
   const [orientation, setOrientation] = useState<"white" | "black">("white");
@@ -196,6 +377,52 @@ export default function GameAnalyzerPage() {
       ? analysisData.summary.accuracy_white
       : analysisData.summary.accuracy_black;
   }, [analysisData, game]);
+
+  const nodeIdByPly = useMemo(() => {
+    const mapping = new Map<number, string>();
+    moveTree.nodes.forEach((node) => {
+      if (node.ply > 0 && !mapping.has(node.ply)) {
+        mapping.set(node.ply, node.id);
+      }
+    });
+    return mapping;
+  }, [moveTree]);
+
+  const formatCp = useCallback((cp?: number | null) => {
+    if (cp === undefined || cp === null) return "—";
+    const value = (cp / 100).toFixed(2);
+    return `${cp > 0 ? "+" : ""}${value}`;
+  }, []);
+
+  const formatPhaseState = useCallback(
+    (phase?: { evaluation_state: "scored" | "not_reached" | "too_short"; grade: string; score: number | null }) => {
+      if (!phase) return "N/A";
+      if (phase.evaluation_state === "not_reached") return "Not reached";
+      if (phase.evaluation_state === "too_short") return "Too short to evaluate";
+      return `${phase.grade}${phase.score !== null ? ` (${phase.score.toFixed(1)})` : ""}`;
+    },
+    []
+  );
+
+  const jumpToInsightEvent = useCallback(
+    (event: InsightEvent) => {
+      const ply = event.anchor?.ply ?? event.ply;
+      if (!ply) return;
+      const nodeId = nodeIdByPly.get(ply);
+      if (!nodeId) return;
+
+      setMoveTree((tree) => navigateTo(tree, nodeId));
+      setActiveInsightEventId(event.event_id);
+
+      if (insightHighlightTimer.current) {
+        clearTimeout(insightHighlightTimer.current);
+      }
+      insightHighlightTimer.current = setTimeout(() => {
+        setActiveInsightEventId(null);
+      }, 1400);
+    },
+    [nodeIdByPly]
+  );
 
   // Navigation handlers
   const handleGoToStart = useCallback(() => {
@@ -506,6 +733,29 @@ export default function GameAnalyzerPage() {
     }
   }, [username, gameId, depth, multiPv, handleAnalysisReady, session?.idToken, authHeaders]);
 
+  const fetchSingleInsights = useCallback(async () => {
+    if (!session?.idToken) return;
+    setSingleInsightsStatus("loading");
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(
+          username
+        )}/${gameId}/single-insights?depth=${depth}&multipv=${multiPv}`,
+        { headers: authHeaders }
+      );
+      if (!res.ok) {
+        setSingleInsightsStatus("error");
+        return;
+      }
+      const data: SingleGameInsightsResponse = await res.json();
+      setSingleInsights(data);
+      setSingleInsightsStatus(data.status === "ready" ? "ready" : data.status);
+    } catch (insightsErr) {
+      console.error("Failed to fetch single-game insights:", insightsErr);
+      setSingleInsightsStatus("error");
+    }
+  }, [site, username, gameId, depth, multiPv, session?.idToken, authHeaders]);
+
   // Start/stop polling based on status
   useEffect(() => {
     if (analysisStatus === "processing" && analyzing && !pollInterval.current) {
@@ -522,7 +772,12 @@ export default function GameAnalyzerPage() {
 
   // Cleanup polling on unmount
   useEffect(() => {
-    return () => stopPolling();
+    return () => {
+      stopPolling();
+      if (insightHighlightTimer.current) {
+        clearTimeout(insightHighlightTimer.current);
+      }
+    };
   }, [stopPolling]);
 
   // Auto-start analysis if missing (only once per page load)
@@ -533,6 +788,16 @@ export default function GameAnalyzerPage() {
       runAnalysis();
     }
   }, [analysisStatus, analyzing, game, runAnalysis]);
+
+  // Fetch deterministic single-game insights once full analysis is ready
+  useEffect(() => {
+    if (analysisStatus === "completed" && analysisData) {
+      fetchSingleInsights();
+    } else {
+      setSingleInsights(null);
+      setSingleInsightsStatus("idle");
+    }
+  }, [analysisStatus, analysisData, fetchSingleInsights]);
 
   // Format date
   const formatDate = (dateStr: string | null) => {
@@ -811,6 +1076,228 @@ export default function GameAnalyzerPage() {
                   <p className="text-sm text-[color:var(--zen-success)] mt-1">
                     Best: <span className="font-mono">{currentNode.bestMove.san}</span>
                   </p>
+                )}
+              </div>
+            )}
+
+            {/* Deterministic single-game insights */}
+            {analysisStatus === "completed" && (
+              <div className="zen-surface p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-[color:var(--zen-text)]">Game Insights</h3>
+                  {singleInsights?.confidence !== undefined && (
+                    <span className="text-xs text-[color:var(--zen-muted)]">
+                      {Math.round((singleInsights.confidence || 0) * 100)}% confidence
+                    </span>
+                  )}
+                </div>
+
+                {singleInsightsStatus === "loading" && (
+                  <p className="text-sm text-[color:var(--zen-muted)]">Computing deterministic insights…</p>
+                )}
+                {singleInsightsStatus === "analysis_processing" && (
+                  <p className="text-sm text-[color:var(--zen-muted)]">
+                    Insights will be available when full analysis finishes.
+                  </p>
+                )}
+                {singleInsightsStatus === "analysis_missing" && (
+                  <p className="text-sm text-[color:var(--zen-muted)]">
+                    Run full analysis to unlock game insights.
+                  </p>
+                )}
+                {singleInsightsStatus === "error" && (
+                  <p className="text-sm text-[color:var(--zen-danger)]">
+                    Unable to load game insights right now.
+                  </p>
+                )}
+
+                {singleInsightsStatus === "ready" && singleInsights && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="zen-surface-flat p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                          Result Cause
+                        </p>
+                        <p className="text-sm font-medium text-[color:var(--zen-text)] mt-1">
+                          {singleInsights.result_cause?.primary_label || "—"}
+                        </p>
+                        <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                          Secondary: {singleInsights.result_cause?.secondary_label || "—"}
+                        </p>
+                      </div>
+                      <div className="zen-surface-flat p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                          Character
+                        </p>
+                        <p className="text-sm font-medium text-[color:var(--zen-text)] mt-1">
+                          {singleInsights.game_character?.label || "—"}
+                        </p>
+                        {singleInsights.game_character?.sublabel && (
+                          <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                            {singleInsights.game_character.sublabel}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="zen-surface-flat p-3">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                          Turning Points (Top 3)
+                        </p>
+                        <p className="text-xs text-[color:var(--zen-muted)]">
+                          Decisive phase: {singleInsights.decisive_phase?.decisive_phase || "mixed"}
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        {(singleInsights.turning_points?.events || []).slice(0, 3).map((event) => (
+                          <button
+                            key={event.event_id}
+                            type="button"
+                            onClick={() => jumpToInsightEvent(event)}
+                            className={`w-full text-left border px-2 py-2 transition ${
+                              activeInsightEventId === event.event_id
+                                ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
+                                : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-sm text-[color:var(--zen-text)]">
+                                Ply {event.ply}: {formatCp(event.pre_eval_cp)} → {formatCp(event.post_eval_cp)}
+                              </span>
+                              <span className="text-xs text-[color:var(--zen-muted)]">
+                                Severity {Math.round(event.severity_score || 0)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="text-xs text-[color:var(--zen-muted)]">
+                                {event.actor === "user" ? "You" : "Opponent"} • {event.phase}
+                              </span>
+                              {event.is_decisive && (
+                                <span className="text-[10px] px-1.5 py-0.5 border border-[color:var(--zen-accent)] text-[color:var(--zen-accent)]">
+                                  Decisive Turning Point
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                        {(!singleInsights.turning_points?.events ||
+                          singleInsights.turning_points.events.length === 0) && (
+                          <p className="text-xs text-[color:var(--zen-muted)]">No major turning points detected.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="zen-surface-flat p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                          Missed Winning Chances
+                        </p>
+                        <div className="space-y-2">
+                          {(singleInsights.missed_winning_chances?.events || []).slice(0, 3).map((event) => (
+                            <button
+                              key={event.event_id}
+                              type="button"
+                              onClick={() => jumpToInsightEvent(event)}
+                              className={`w-full text-left border px-2 py-1.5 transition ${
+                                activeInsightEventId === event.event_id
+                                  ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
+                                  : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
+                              }`}
+                            >
+                              <p className="text-sm text-[color:var(--zen-text)]">
+                                Ply {event.ply} • {event.label}
+                              </p>
+                              <p className="text-xs text-[color:var(--zen-muted)]">
+                                Severity {Math.round(event.severity_score || 0)}
+                              </p>
+                            </button>
+                          ))}
+                          {(!singleInsights.missed_winning_chances?.events ||
+                            singleInsights.missed_winning_chances.events.length === 0) && (
+                            <p className="text-xs text-[color:var(--zen-muted)]">No missed winning chances detected.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="zen-surface-flat p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                          Got Away With It
+                        </p>
+                        <div className="space-y-2">
+                          {(singleInsights.got_away_with_it?.events || []).slice(0, 3).map((event) => (
+                            <button
+                              key={event.event_id}
+                              type="button"
+                              onClick={() => jumpToInsightEvent(event)}
+                              className={`w-full text-left border px-2 py-1.5 transition ${
+                                activeInsightEventId === event.event_id
+                                  ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
+                                  : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
+                              }`}
+                            >
+                              <p className="text-sm text-[color:var(--zen-text)]">
+                                Ply {event.ply} • {event.label}
+                              </p>
+                              <p className="text-xs text-[color:var(--zen-muted)]">
+                                Severity {Math.round(event.severity_score || 0)}
+                              </p>
+                            </button>
+                          ))}
+                          {(!singleInsights.got_away_with_it?.events ||
+                            singleInsights.got_away_with_it.events.length === 0) && (
+                            <p className="text-xs text-[color:var(--zen-muted)]">No escape moments detected.</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="zen-surface-flat p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                          Phase Grades
+                        </p>
+                        <div className="space-y-1.5 text-sm">
+                          <p className="text-[color:var(--zen-text)]">
+                            Opening: {formatPhaseState(singleInsights.phase_grades?.opening)}
+                          </p>
+                          <p className="text-[color:var(--zen-text)]">
+                            Middlegame: {formatPhaseState(singleInsights.phase_grades?.middlegame)}
+                          </p>
+                          <p className="text-[color:var(--zen-text)]">
+                            Endgame: {formatPhaseState(singleInsights.phase_grades?.endgame)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="zen-surface-flat p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                          Time Pressure
+                        </p>
+                        <p className="text-sm text-[color:var(--zen-text)]">
+                          {singleInsights.time_pressure_collapse?.status === "detected"
+                            ? "Collapse detected"
+                            : singleInsights.time_pressure_collapse?.status === "not_detected"
+                            ? "No collapse detected"
+                            : singleInsights.time_pressure_collapse?.status === "insufficient_data"
+                            ? "Insufficient data"
+                            : "Unavailable"}
+                        </p>
+                        <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                          Clock samples: {singleInsights.time_pressure_collapse?.data_quality.clock_moves ?? 0}/
+                          {singleInsights.time_pressure_collapse?.data_quality.user_moves ?? 0}
+                        </p>
+                        {singleInsights.time_pressure_collapse?.avg_cp_low !== null &&
+                          singleInsights.time_pressure_collapse?.avg_cp_normal !== null && (
+                            <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                              ACPL low vs normal:{" "}
+                              {Math.round(singleInsights.time_pressure_collapse?.avg_cp_low || 0)} /{" "}
+                              {Math.round(singleInsights.time_pressure_collapse?.avg_cp_normal || 0)}
+                            </p>
+                          )}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
