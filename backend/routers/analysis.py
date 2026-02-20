@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,6 +20,7 @@ from db import (
     create_analysis_job,
     get_analysis_job,
     delete_analysis_job,
+    count_user_full_analysis_completed_utc_day,
 )
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis
@@ -33,6 +36,42 @@ router = APIRouter(tags=["analysis"])
 MAX_CONCURRENT_ANALYSES = 2
 active_analysis_count = 0
 active_analysis_lock = asyncio.Lock()
+DEEP_ANALYSIS_DAILY_LIMIT = max(0, int(os.environ.get("DEEP_ANALYSIS_DAILY_LIMIT", "3")))
+DEEP_ANALYSIS_LIMIT_FORCE = os.environ.get("DEEP_ANALYSIS_LIMIT_FORCE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+DEEP_ANALYSIS_UNLIMITED_EMAILS = {
+    entry.strip().lower()
+    for entry in os.environ.get("DEEP_ANALYSIS_UNLIMITED_EMAILS", "").split(",")
+    if entry.strip()
+}
+
+
+def _is_production_environment() -> bool:
+    for key in ("ENVIRONMENT", "APP_ENV", "NODE_ENV"):
+        if os.environ.get(key, "").strip().lower() == "production":
+            return True
+    return False
+
+
+def _is_limit_enabled() -> bool:
+    return DEEP_ANALYSIS_LIMIT_FORCE or _is_production_environment()
+
+
+def _is_unlimited_email(email: str | None) -> bool:
+    if not email:
+        return False
+    return email.strip().lower() in DEEP_ANALYSIS_UNLIMITED_EMAILS
+
+
+def _current_utc_day_bounds() -> tuple[datetime, datetime]:
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    return day_start, day_end
 
 
 def _build_full_analysis_payload(cached: dict) -> dict:
@@ -418,6 +457,27 @@ async def run_full_analysis_endpoint(
     existing_job = get_analysis_job(conn, current_user["id"], username, game_id, depth, multipv, site)
     if existing_job:
         return FullAnalysisResponse(status="processing")
+
+    if (
+        _is_limit_enabled()
+        and DEEP_ANALYSIS_DAILY_LIMIT > 0
+        and not _is_unlimited_email(current_user.get("email"))
+    ):
+        day_start_utc, day_end_utc = _current_utc_day_bounds()
+        completed_today = count_user_full_analysis_completed_utc_day(
+            conn,
+            current_user["id"],
+            day_start_utc,
+            day_end_utc,
+        )
+        if completed_today >= DEEP_ANALYSIS_DAILY_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Daily in-depth analysis limit reached ({DEEP_ANALYSIS_DAILY_LIMIT} per day). "
+                    "You can request more after 00:00 UTC."
+                ),
+            )
 
     async with active_analysis_lock:
         if active_analysis_count >= MAX_CONCURRENT_ANALYSES:

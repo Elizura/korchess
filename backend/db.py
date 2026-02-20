@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime
 from typing import Optional
 
 import psycopg
@@ -1092,6 +1093,30 @@ def save_full_analysis_insights(
             site,
         ),
     )
+
+
+def count_user_full_analysis_completed_utc_day(
+    conn: psycopg.Connection,
+    user_id: str,
+    day_start_utc: datetime,
+    day_end_utc: datetime,
+) -> int:
+    """Count completed full analyses for a user within a UTC day window."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM full_analysis
+        WHERE user_id = %s
+          AND created_at::timestamptz >= %s
+          AND created_at::timestamptz < %s
+        """,
+        (user_id, day_start_utc, day_end_utc),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return 0
+    return int(row.get("total") or 0)
 
 
 def create_analysis_job(
