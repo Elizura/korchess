@@ -27,7 +27,7 @@ import {
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
-const LOCAL_ENGINE_DEPTH = 32;
+const LOCAL_ENGINE_DEPTH = 18;
 const LOCAL_ENGINE_MULTIPV = 1;
 
 interface GameData {
