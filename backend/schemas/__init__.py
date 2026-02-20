@@ -200,6 +200,8 @@ class SingleGameInsightsResponse(BaseModel):
     game_character: dict | None = None
     confidence: float | None = None
     meta: dict | None = None
+    narration: dict | None = None
+    narration_meta: dict | None = None
 
 
 class EvalRequest(BaseModel):

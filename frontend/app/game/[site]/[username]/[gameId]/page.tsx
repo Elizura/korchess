@@ -135,6 +135,31 @@ interface SingleGameInsightCard {
   evidence: Array<InsightEvidence | InsightEvent>;
 }
 
+interface GameInsightsNarrationSection {
+  heading: string;
+  bullets: string[];
+}
+
+interface GameInsightsNarration {
+  title: string;
+  one_liner: string;
+  confidence_note: string;
+  sections: GameInsightsNarrationSection[];
+  labels: {
+    decisive_phase: "opening" | "middlegame" | "endgame" | "unknown";
+    player_style: string;
+  };
+}
+
+interface GameInsightsNarrationMeta {
+  source?: string;
+  cache_key?: string;
+  schema_version?: string;
+  model?: string;
+  generated_at?: string;
+  reason?: string;
+}
+
 interface SingleGameInsightsResponse {
   status: "ready" | "analysis_missing" | "analysis_processing";
   version?: string;
@@ -261,6 +286,8 @@ interface SingleGameInsightsResponse {
     confidence: number;
   };
   confidence?: number;
+  narration?: GameInsightsNarration;
+  narration_meta?: GameInsightsNarrationMeta;
 }
 
 export default function GameAnalyzerPage() {
@@ -289,6 +316,7 @@ export default function GameAnalyzerPage() {
   const [singleInsights, setSingleInsights] = useState<SingleGameInsightsResponse | null>(null);
   const [singleInsightsStatus, setSingleInsightsStatus] = useState<"idle" | "ready" | "error">("idle");
   const [activeInsightEventId, setActiveInsightEventId] = useState<string | null>(null);
+  const [showRawInsights, setShowRawInsights] = useState(false);
   
   // Polling for async analysis
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
@@ -442,6 +470,89 @@ export default function GameAnalyzerPage() {
     []
   );
 
+  const narrationFallbackReason = useMemo(() => {
+    const reason = singleInsights?.narration_meta?.reason;
+    if (!reason) return "";
+    if (reason === "missing_api_key") return "Gemini API key is missing in backend environment.";
+    if (reason.startsWith("http_")) return `Gemini API returned ${reason.replace("http_", "HTTP ")}.`;
+    if (reason === "network_error") return "Backend could not reach Gemini.";
+    if (reason === "rate_limited") return "Gemini rate limit was hit.";
+    if (reason === "empty_response") return "Gemini returned an empty response.";
+    if (reason === "invalid_json_or_schema") return "Gemini output could not be validated.";
+    return "Gemini narration is temporarily unavailable.";
+  }, [singleInsights?.narration_meta?.reason]);
+
+  const getNarrationSectionBadge = useCallback((heading: string) => {
+    const key = heading.toLowerCase();
+    if (key.includes("turning")) return "⚠";
+    if (key.includes("well")) return "🛡";
+    if (key.includes("improve")) return "⚡";
+    if (key.includes("focus")) return "🎯";
+    return "📋";
+  }, []);
+
+  const getNarrationSectionTone = useCallback((heading: string) => {
+    const key = heading.toLowerCase();
+    if (key.includes("turning")) {
+      return {
+        cardBorder: "border-amber-300/30",
+        badgeBorder: "border-amber-300/40",
+        badgeText: "text-amber-200/90",
+        headingText: "text-amber-200/80",
+      };
+    }
+    if (key.includes("well")) {
+      return {
+        cardBorder: "border-emerald-300/25",
+        badgeBorder: "border-emerald-300/35",
+        badgeText: "text-emerald-200/90",
+        headingText: "text-emerald-200/80",
+      };
+    }
+    if (key.includes("improve")) {
+      return {
+        cardBorder: "border-rose-300/30",
+        badgeBorder: "border-rose-300/40",
+        badgeText: "text-rose-200/90",
+        headingText: "text-rose-200/80",
+      };
+    }
+    if (key.includes("focus")) {
+      return {
+        cardBorder: "border-sky-300/25",
+        badgeBorder: "border-sky-300/35",
+        badgeText: "text-sky-200/90",
+        headingText: "text-sky-200/80",
+      };
+    }
+    return {
+      cardBorder: "border-[color:var(--zen-accent)]/35",
+      badgeBorder: "border-[color:var(--zen-border)]",
+      badgeText: "text-[color:var(--zen-accent)]",
+      headingText: "text-[color:var(--zen-muted)]",
+    };
+  }, []);
+
+  const getNarrationBulletIcon = useCallback((heading: string, bullet: string) => {
+    const key = heading.toLowerCase();
+    const text = bullet.toLowerCase();
+
+    if (key.includes("turning")) {
+      if (text.includes("decisive") || text.includes("collapse") || text.includes("sealed")) return "💥";
+      if (text.includes("improved") || text.includes("stabil")) return "🛡";
+      return "⚔";
+    }
+    if (key.includes("well")) return "✅";
+    if (key.includes("improve")) {
+      if (text.includes("blunder") || text.includes("mistake") || text.includes("oversight")) return "🚨";
+      return "⚠";
+    }
+    if (key.includes("focus")) return "🎯";
+    if (text.includes("loss") || text.includes("failed")) return "⚠";
+    if (text.includes("advantage") || text.includes("critical")) return "📌";
+    return "•";
+  }, []);
+
   const jumpToInsightEvent = useCallback(
     (event: InsightEvent) => {
       const ply = event.anchor?.ply ?? event.ply;
@@ -559,6 +670,7 @@ export default function GameAnalyzerPage() {
       setAnalysisStatus("idle");
       setSingleInsights(null);
       setSingleInsightsStatus("idle");
+      setShowRawInsights(false);
 
       try {
         if (!session?.idToken) {
@@ -690,6 +802,7 @@ export default function GameAnalyzerPage() {
     setSuccessMessage(null);
     setSingleInsights(null);
     setSingleInsightsStatus("idle");
+    setShowRawInsights(false);
     analysisStartTime.current = Date.now();
 
     console.log(`[Analysis] Starting analysis for game ${gameId} (depth=${depth}, multipv=${multiPv})`);
@@ -927,6 +1040,7 @@ export default function GameAnalyzerPage() {
                 />
               </div>
             </div>
+
           </div>
 
           {/* Right: Analysis panels */}
@@ -1003,7 +1117,7 @@ export default function GameAnalyzerPage() {
             {/* Current move info */}
             {currentNode && currentNode.san && (
               <div className="zen-surface p-4">
-                <div className="flex items-center justify-between mb-2">
+                {/* <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-[color:var(--zen-muted)]">Current Move</span>
                   {currentNode.classification && (
                     <span
@@ -1024,7 +1138,7 @@ export default function GameAnalyzerPage() {
                         currentNode.classification.slice(1)}
                     </span>
                   )}
-                </div>
+                </div> */}
                 <div className="text-2xl font-mono font-semibold text-[color:var(--zen-text)]">
                   {currentNode.san}
                 </div>
@@ -1041,8 +1155,17 @@ export default function GameAnalyzerPage() {
               </div>
             )}
 
-            {/* Deterministic single-game insights */}
-            {analysisStatus === "completed" && (
+            {/* Error display */}
+            {error && (
+              <div className="zen-surface-flat p-4 border border-[color:var(--zen-danger)]/30">
+                <p className="text-sm text-[color:var(--zen-danger)]">{error}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Deterministic single-game insights */}
+          {analysisStatus === "completed" && (
+            <div className="lg:col-span-12">
               <div className="zen-surface p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-[color:var(--zen-text)]">Game Insights</h3>
@@ -1066,202 +1189,314 @@ export default function GameAnalyzerPage() {
 
                 {singleInsightsStatus === "ready" && singleInsights && (
                   <div className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div className="zen-surface-flat p-3">
-                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
-                          Result Cause
-                        </p>
-                        <p className="text-sm font-medium text-[color:var(--zen-text)] mt-1">
-                          {singleInsights.result_cause?.primary_label || "—"}
-                        </p>
-                        <p className="text-xs text-[color:var(--zen-muted)] mt-1">
-                          Secondary: {singleInsights.result_cause?.secondary_label || "—"}
-                        </p>
-                      </div>
-                      <div className="zen-surface-flat p-3">
-                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
-                          Character
-                        </p>
-                        <p className="text-sm font-medium text-[color:var(--zen-text)] mt-1">
-                          {singleInsights.game_character?.label || "—"}
-                        </p>
-                        {singleInsights.game_character?.sublabel && (
-                          <p className="text-xs text-[color:var(--zen-muted)] mt-1">
-                            {singleInsights.game_character.sublabel}
+                    {singleInsights.narration && (
+                      <div className="space-y-3">
+                        <div
+                          className="zen-surface-flat p-4 md:p-5 space-y-4 border border-[color:var(--zen-accent)]/45"
+                          style={{
+                            background:
+                              "linear-gradient(145deg, rgba(24,30,44,0.92), rgba(20,26,38,0.9) 52%, rgba(17,23,34,0.9))",
+                            boxShadow:
+                              "inset 0 0 0 1px rgba(120,132,160,0.2), inset 0 0 0 2px rgba(84,98,132,0.16), 0 10px 24px rgba(0,0,0,0.24)",
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--zen-muted)] mb-1">
+                                Mission Brief
+                              </p>
+                              <p className="text-lg font-semibold text-[color:var(--zen-text)]">
+                                {singleInsights.narration.title}
+                              </p>
+                            </div>
+                            <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] whitespace-nowrap bg-white/5">
+                              {Math.round((singleInsights.confidence || 0) * 100)}% confidence
+                            </span>
+                          </div>
+
+                          <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
+                            {singleInsights.narration.one_liner}
+                          </p>
+                          <p className="text-sm leading-6 text-[color:var(--zen-muted)]">
+                            {singleInsights.narration.confidence_note}
+                          </p>
+
+                          <div className="flex flex-wrap gap-2">
+                            <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
+                              Decisive phase: {singleInsights.narration.labels.decisive_phase}
+                            </span>
+                            <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
+                              Style: {singleInsights.narration.labels.player_style}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                          {singleInsights.narration.sections.map((section) => {
+                            const sectionKey = section.heading.toLowerCase();
+                            const isWideSection =
+                              sectionKey.includes("result") ||
+                              sectionKey.includes("turning") ||
+                              sectionKey.includes("next");
+                            const tone = getNarrationSectionTone(section.heading);
+                            return (
+                              <div
+                                key={section.heading}
+                                className={`zen-surface-flat p-3.5 md:p-4 border ${tone.cardBorder} ${
+                                  isWideSection ? "md:col-span-2" : ""
+                                }`}
+                                style={{
+                                  background:
+                                    "linear-gradient(140deg, rgba(22,28,40,0.9), rgba(18,24,36,0.9) 60%, rgba(15,20,30,0.92))",
+                                  boxShadow:
+                                    "inset 0 0 0 1px rgba(124,136,164,0.2), inset 0 0 0 2px rgba(84,96,126,0.14)",
+                                }}
+                              >
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span
+                                    className={`inline-flex h-5 w-5 items-center justify-center text-[11px] font-semibold border ${tone.badgeBorder} ${tone.badgeText}`}
+                                  >
+                                    {getNarrationSectionBadge(section.heading)}
+                                  </span>
+                                  <p className={`text-[11px] uppercase tracking-[0.12em] ${tone.headingText}`}>
+                                    {section.heading}
+                                  </p>
+                                </div>
+                                <ul className="space-y-2.5 text-[15px] leading-7 text-[color:var(--zen-text)]">
+                                  {section.bullets.map((bullet, idx) => (
+                                    <li key={`${section.heading}-${idx}`} className="flex gap-2">
+                                      <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
+                                        {getNarrationBulletIcon(section.heading, bullet)}
+                                      </span>
+                                      <span>{bullet}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {singleInsights.narration_meta?.source === "fallback" && (
+                          <p className="text-xs text-[color:var(--zen-muted)]">
+                            <span className="mr-1.5">⚠</span>
+                            AI narration unavailable right now. Showing deterministic fallback summary.
+                            {narrationFallbackReason ? ` ${narrationFallbackReason}` : ""}
                           </p>
                         )}
                       </div>
+                    )}
+
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                        {singleInsights.narration ? "Detailed Raw Insights" : "Insights Details"}
+                      </p>
+                      {singleInsights.narration && (
+                        <button
+                          type="button"
+                          onClick={() => setShowRawInsights((value) => !value)}
+                          className="zen-pill px-3 py-1.5 text-xs text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
+                        >
+                          {showRawInsights ? "Hide raw insights" : "Show raw insights"}
+                        </button>
+                      )}
                     </div>
 
-                    <div className="zen-surface-flat p-3">
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
-                          Turning Points (Top 3)
-                        </p>
-                        <p className="text-xs text-[color:var(--zen-muted)]">
-                          Decisive phase: {singleInsights.decisive_phase?.decisive_phase || "mixed"}
-                        </p>
-                      </div>
-                      <div className="space-y-2">
-                        {(singleInsights.turning_points?.events || []).slice(0, 3).map((event) => (
-                          <button
-                            key={event.event_id}
-                            type="button"
-                            onClick={() => jumpToInsightEvent(event)}
-                            className={`w-full text-left border px-2 py-2 transition ${
-                              activeInsightEventId === event.event_id
-                                ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
-                                : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-sm text-[color:var(--zen-text)]">
-                                Ply {event.ply}: {formatCp(event.pre_eval_cp)} → {formatCp(event.post_eval_cp)}
-                              </span>
-                              <span className="text-xs text-[color:var(--zen-muted)]">
-                                Severity {Math.round(event.severity_score || 0)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2 mt-1">
-                              <span className="text-xs text-[color:var(--zen-muted)]">
-                                {event.actor === "user" ? "You" : "Opponent"} • {event.phase}
-                              </span>
-                              {event.is_decisive && (
-                                <span className="text-[10px] px-1.5 py-0.5 border border-[color:var(--zen-accent)] text-[color:var(--zen-accent)]">
-                                  Decisive Turning Point
-                                </span>
+                    {(showRawInsights || !singleInsights.narration) && (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div className="zen-surface-flat p-3">
+                            <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                              Result Cause
+                            </p>
+                            <p className="text-sm font-medium text-[color:var(--zen-text)] mt-1">
+                              {singleInsights.result_cause?.primary_label || "—"}
+                            </p>
+                            <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                              Secondary: {singleInsights.result_cause?.secondary_label || "—"}
+                            </p>
+                          </div>
+                          <div className="zen-surface-flat p-3">
+                            <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                              Character
+                            </p>
+                            <p className="text-sm font-medium text-[color:var(--zen-text)] mt-1">
+                              {singleInsights.game_character?.label || "—"}
+                            </p>
+                            {singleInsights.game_character?.sublabel && (
+                              <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                                {singleInsights.game_character.sublabel}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="zen-surface-flat p-3">
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                              Turning Points (Top 3)
+                            </p>
+                            <p className="text-xs text-[color:var(--zen-muted)]">
+                              Decisive phase: {singleInsights.decisive_phase?.decisive_phase || "mixed"}
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            {(singleInsights.turning_points?.events || []).slice(0, 3).map((event) => (
+                              <button
+                                key={event.event_id}
+                                type="button"
+                                onClick={() => jumpToInsightEvent(event)}
+                                className={`w-full text-left border px-2 py-2 transition ${
+                                  activeInsightEventId === event.event_id
+                                    ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
+                                    : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-sm text-[color:var(--zen-text)]">
+                                    Ply {event.ply}: {formatCp(event.pre_eval_cp)} → {formatCp(event.post_eval_cp)}
+                                  </span>
+                                  <span className="text-xs text-[color:var(--zen-muted)]">
+                                    Severity {Math.round(event.severity_score || 0)}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <span className="text-xs text-[color:var(--zen-muted)]">
+                                    {event.actor === "user" ? "You" : "Opponent"} • {event.phase}
+                                  </span>
+                                  {event.is_decisive && (
+                                    <span className="text-[10px] px-1.5 py-0.5 border border-[color:var(--zen-accent)] text-[color:var(--zen-accent)]">
+                                      Decisive Turning Point
+                                    </span>
+                                  )}
+                                </div>
+                              </button>
+                            ))}
+                            {(!singleInsights.turning_points?.events ||
+                              singleInsights.turning_points.events.length === 0) && (
+                              <p className="text-xs text-[color:var(--zen-muted)]">No major turning points detected.</p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div className="zen-surface-flat p-3">
+                            <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                              Missed Winning Chances
+                            </p>
+                            <div className="space-y-2">
+                              {(singleInsights.missed_winning_chances?.events || []).slice(0, 3).map((event) => (
+                                <button
+                                  key={event.event_id}
+                                  type="button"
+                                  onClick={() => jumpToInsightEvent(event)}
+                                  className={`w-full text-left border px-2 py-1.5 transition ${
+                                    activeInsightEventId === event.event_id
+                                      ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
+                                      : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
+                                  }`}
+                                >
+                                  <p className="text-sm text-[color:var(--zen-text)]">
+                                    Ply {event.ply} • {event.label}
+                                  </p>
+                                  <p className="text-xs text-[color:var(--zen-muted)]">
+                                    Severity {Math.round(event.severity_score || 0)}
+                                  </p>
+                                </button>
+                              ))}
+                              {(!singleInsights.missed_winning_chances?.events ||
+                                singleInsights.missed_winning_chances.events.length === 0) && (
+                                <p className="text-xs text-[color:var(--zen-muted)]">
+                                  No missed winning chances detected.
+                                </p>
                               )}
                             </div>
-                          </button>
-                        ))}
-                        {(!singleInsights.turning_points?.events ||
-                          singleInsights.turning_points.events.length === 0) && (
-                          <p className="text-xs text-[color:var(--zen-muted)]">No major turning points detected.</p>
-                        )}
-                      </div>
-                    </div>
+                          </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div className="zen-surface-flat p-3">
-                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
-                          Missed Winning Chances
-                        </p>
-                        <div className="space-y-2">
-                          {(singleInsights.missed_winning_chances?.events || []).slice(0, 3).map((event) => (
-                            <button
-                              key={event.event_id}
-                              type="button"
-                              onClick={() => jumpToInsightEvent(event)}
-                              className={`w-full text-left border px-2 py-1.5 transition ${
-                                activeInsightEventId === event.event_id
-                                  ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
-                                  : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
-                              }`}
-                            >
-                              <p className="text-sm text-[color:var(--zen-text)]">
-                                Ply {event.ply} • {event.label}
-                              </p>
-                              <p className="text-xs text-[color:var(--zen-muted)]">
-                                Severity {Math.round(event.severity_score || 0)}
-                              </p>
-                            </button>
-                          ))}
-                          {(!singleInsights.missed_winning_chances?.events ||
-                            singleInsights.missed_winning_chances.events.length === 0) && (
-                            <p className="text-xs text-[color:var(--zen-muted)]">No missed winning chances detected.</p>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="zen-surface-flat p-3">
-                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
-                          Got Away With It
-                        </p>
-                        <div className="space-y-2">
-                          {(singleInsights.got_away_with_it?.events || []).slice(0, 3).map((event) => (
-                            <button
-                              key={event.event_id}
-                              type="button"
-                              onClick={() => jumpToInsightEvent(event)}
-                              className={`w-full text-left border px-2 py-1.5 transition ${
-                                activeInsightEventId === event.event_id
-                                  ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
-                                  : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
-                              }`}
-                            >
-                              <p className="text-sm text-[color:var(--zen-text)]">
-                                Ply {event.ply} • {event.label}
-                              </p>
-                              <p className="text-xs text-[color:var(--zen-muted)]">
-                                Severity {Math.round(event.severity_score || 0)}
-                              </p>
-                            </button>
-                          ))}
-                          {(!singleInsights.got_away_with_it?.events ||
-                            singleInsights.got_away_with_it.events.length === 0) && (
-                            <p className="text-xs text-[color:var(--zen-muted)]">No escape moments detected.</p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div className="zen-surface-flat p-3">
-                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
-                          Phase Grades
-                        </p>
-                        <div className="space-y-1.5 text-sm">
-                          <p className="text-[color:var(--zen-text)]">
-                            Opening: {formatPhaseState(singleInsights.phase_grades?.opening)}
-                          </p>
-                          <p className="text-[color:var(--zen-text)]">
-                            Middlegame: {formatPhaseState(singleInsights.phase_grades?.middlegame)}
-                          </p>
-                          <p className="text-[color:var(--zen-text)]">
-                            Endgame: {formatPhaseState(singleInsights.phase_grades?.endgame)}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="zen-surface-flat p-3">
-                        <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
-                          Time Pressure
-                        </p>
-                        <p className="text-sm text-[color:var(--zen-text)]">
-                          {singleInsights.time_pressure_collapse?.status === "detected"
-                            ? "Collapse detected"
-                            : singleInsights.time_pressure_collapse?.status === "not_detected"
-                            ? "No collapse detected"
-                            : singleInsights.time_pressure_collapse?.status === "insufficient_data"
-                            ? "Insufficient data"
-                            : "Unavailable"}
-                        </p>
-                        <p className="text-xs text-[color:var(--zen-muted)] mt-1">
-                          Clock samples: {singleInsights.time_pressure_collapse?.data_quality.clock_moves ?? 0}/
-                          {singleInsights.time_pressure_collapse?.data_quality.user_moves ?? 0}
-                        </p>
-                        {singleInsights.time_pressure_collapse?.avg_cp_low !== null &&
-                          singleInsights.time_pressure_collapse?.avg_cp_normal !== null && (
-                            <p className="text-xs text-[color:var(--zen-muted)] mt-1">
-                              ACPL low vs normal:{" "}
-                              {Math.round(singleInsights.time_pressure_collapse?.avg_cp_low || 0)} /{" "}
-                              {Math.round(singleInsights.time_pressure_collapse?.avg_cp_normal || 0)}
+                          <div className="zen-surface-flat p-3">
+                            <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                              Got Away With It
                             </p>
-                          )}
+                            <div className="space-y-2">
+                              {(singleInsights.got_away_with_it?.events || []).slice(0, 3).map((event) => (
+                                <button
+                                  key={event.event_id}
+                                  type="button"
+                                  onClick={() => jumpToInsightEvent(event)}
+                                  className={`w-full text-left border px-2 py-1.5 transition ${
+                                    activeInsightEventId === event.event_id
+                                      ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent)]/15"
+                                      : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/50"
+                                  }`}
+                                >
+                                  <p className="text-sm text-[color:var(--zen-text)]">
+                                    Ply {event.ply} • {event.label}
+                                  </p>
+                                  <p className="text-xs text-[color:var(--zen-muted)]">
+                                    Severity {Math.round(event.severity_score || 0)}
+                                  </p>
+                                </button>
+                              ))}
+                              {(!singleInsights.got_away_with_it?.events ||
+                                singleInsights.got_away_with_it.events.length === 0) && (
+                                <p className="text-xs text-[color:var(--zen-muted)]">No escape moments detected.</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div className="zen-surface-flat p-3">
+                            <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                              Phase Grades
+                            </p>
+                            <div className="space-y-1.5 text-sm">
+                              <p className="text-[color:var(--zen-text)]">
+                                Opening: {formatPhaseState(singleInsights.phase_grades?.opening)}
+                              </p>
+                              <p className="text-[color:var(--zen-text)]">
+                                Middlegame: {formatPhaseState(singleInsights.phase_grades?.middlegame)}
+                              </p>
+                              <p className="text-[color:var(--zen-text)]">
+                                Endgame: {formatPhaseState(singleInsights.phase_grades?.endgame)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="zen-surface-flat p-3">
+                            <p className="text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)] mb-2">
+                              Time Pressure
+                            </p>
+                            <p className="text-sm text-[color:var(--zen-text)]">
+                              {singleInsights.time_pressure_collapse?.status === "detected"
+                                ? "Collapse detected"
+                                : singleInsights.time_pressure_collapse?.status === "not_detected"
+                                ? "No collapse detected"
+                                : singleInsights.time_pressure_collapse?.status === "insufficient_data"
+                                ? "Insufficient data"
+                                : "Unavailable"}
+                            </p>
+                            <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                              Clock samples: {singleInsights.time_pressure_collapse?.data_quality.clock_moves ?? 0}/
+                              {singleInsights.time_pressure_collapse?.data_quality.user_moves ?? 0}
+                            </p>
+                            {singleInsights.time_pressure_collapse?.avg_cp_low !== null &&
+                              singleInsights.time_pressure_collapse?.avg_cp_normal !== null && (
+                                <p className="text-xs text-[color:var(--zen-muted)] mt-1">
+                                  ACPL low vs normal:{" "}
+                                  {Math.round(singleInsights.time_pressure_collapse?.avg_cp_low || 0)} /{" "}
+                                  {Math.round(singleInsights.time_pressure_collapse?.avg_cp_normal || 0)}
+                                </p>
+                              )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-
-            {/* Error display */}
-            {error && (
-              <div className="zen-surface-flat p-4 border border-[color:var(--zen-danger)]/30">
-                <p className="text-sm text-[color:var(--zen-danger)]">{error}</p>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </main>

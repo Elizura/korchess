@@ -21,6 +21,7 @@ from db import (
 )
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis
+from game_insights_narration import ensure_narration
 from single_game_insights import compute_single_game_insights
 
 from schemas import AnalysisResponse, FullAnalysisResponse, SingleGameInsightsResponse
@@ -84,7 +85,7 @@ async def run_analysis_background(
             try:
                 game_meta = get_game_by_id(conn, user_id, username, game_id, site)
                 if game_meta:
-                    insights_payload = compute_single_game_insights(
+                    raw_insights = compute_single_game_insights(
                         site=site,
                         game_id=game_id,
                         username=username,
@@ -93,6 +94,18 @@ async def run_analysis_background(
                         full_analysis=full_analysis,
                         game_meta=game_meta,
                     )
+                    try:
+                        insights_payload = await asyncio.to_thread(
+                            ensure_narration,
+                            raw_insights,
+                            game_id,
+                            game_meta,
+                        )
+                    except Exception as narration_err:
+                        print(
+                            f"[Analysis] Narration generation failed for game {game_id} on {site}: {narration_err}"
+                        )
+                        insights_payload = raw_insights
             except Exception as insights_err:
                 print(f"[Analysis] Insights generation failed for game {game_id} on {site}: {insights_err}")
 
@@ -336,6 +349,7 @@ async def run_full_analysis_endpoint(
     if cached:
         full_analysis = _build_full_analysis_payload(cached)
         insights_payload = _load_cached_insights(cached)
+        insights_updated = False
         if not insights_payload:
             try:
                 game = get_game_by_id(conn, current_user["id"], username, game_id, site)
@@ -349,21 +363,49 @@ async def run_full_analysis_endpoint(
                         full_analysis=full_analysis,
                         game_meta=game,
                     )
-                    save_full_analysis_insights(
-                        conn,
-                        current_user["id"],
-                        username,
-                        game_id,
-                        depth,
-                        multipv,
-                        site,
-                        json.dumps(insights_payload),
-                    )
-                    conn.commit()
+                    insights_updated = True
             except Exception as insights_err:
                 print(
                     f"[Analysis] Unable to hydrate missing insights for cached analysis "
                     f"{game_id} on {site}: {insights_err}"
+                )
+
+        if insights_payload:
+            game_meta_for_narration = get_game_by_id(conn, current_user["id"], username, game_id, site)
+            try:
+                narrated_payload = await asyncio.to_thread(
+                    ensure_narration,
+                    insights_payload,
+                    game_id,
+                    game_meta_for_narration,
+                    True,
+                )
+                if narrated_payload != insights_payload:
+                    insights_payload = narrated_payload
+                    insights_updated = True
+            except Exception as narration_err:
+                print(
+                    f"[Analysis] Unable to hydrate narration for cached analysis "
+                    f"{game_id} on {site}: {narration_err}"
+                )
+
+        if insights_updated and insights_payload:
+            try:
+                save_full_analysis_insights(
+                    conn,
+                    current_user["id"],
+                    username,
+                    game_id,
+                    depth,
+                    multipv,
+                    site,
+                    json.dumps(insights_payload),
+                )
+                conn.commit()
+            except Exception as persist_err:
+                print(
+                    f"[Analysis] Failed to persist hydrated insights for cached analysis "
+                    f"{game_id} on {site}: {persist_err}"
                 )
 
         return FullAnalysisResponse(
