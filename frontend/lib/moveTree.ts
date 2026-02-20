@@ -18,6 +18,36 @@ export interface EvalData {
   }>;
 }
 
+export interface TacticalMaterialOutcome {
+  cp_net_for_mover: number;
+  text: string;
+  captured: string[];
+  lost: string[];
+}
+
+export interface TacticalMateOutcome {
+  is_mate_sequence: boolean;
+  mate_in: number | null;
+  side_delivering_mate: "white" | "black" | null;
+  subtype: string | null;
+}
+
+export interface TacticalAnnotation {
+  tactic_detected: boolean;
+  tactic_type?: "HANGING_PIECE" | "FORK" | "DOUBLE_ATTACK" | "FORCED_MATE" | null;
+  tactic_types?: string[];
+  missed_move_uci?: string | null;
+  missed_move_san?: string | null;
+  line_source?: "best_line" | "played_line" | null;
+  material_outcome?: TacticalMaterialOutcome | null;
+  mate_outcome?: TacticalMateOutcome | null;
+  is_forced?: boolean;
+  pv_uci?: string[];
+  severity_score?: number;
+  confidence?: number;
+  evidence?: string[];
+}
+
 export type MoveClassification = 
   | 'best' 
   | 'excellent' 
@@ -39,6 +69,7 @@ export interface MoveNode {
   // Classification
   classification?: MoveClassification;
   cpLoss?: number;                   // Centipawn loss vs best move
+  tactical?: TacticalAnnotation;
   
   // Best move suggestion
   bestMove?: {
@@ -106,7 +137,8 @@ export function addMove(
   evalData?: EvalData,
   classification?: MoveClassification,
   cpLoss?: number,
-  bestMove?: { uci: string; san: string }
+  bestMove?: { uci: string; san: string },
+  tactical?: TacticalAnnotation
 ): MoveTree {
   const currentNode = tree.nodes.get(tree.currentId);
   if (!currentNode) return tree;
@@ -136,6 +168,7 @@ export function addMove(
     eval: evalData,
     classification,
     cpLoss,
+    tactical,
     bestMove,
     parent: tree.currentId,
     children: [],
@@ -391,6 +424,7 @@ export function buildTreeFromAnalysis(
     classification?: string | null;
     cp_loss?: number | null;
     multi_pv?: Array<{ cp?: number; mate?: number; depth?: number; pv: string[] }>;
+    tactical?: TacticalAnnotation | null;
   }>,
   startFen?: string
 ): MoveTree {
@@ -441,7 +475,8 @@ export function buildTreeFromAnalysis(
       evalData,
       move.classification as MoveClassification | undefined,
       move.cp_loss ?? undefined,
-      bestMove
+      bestMove,
+      move.tactical ?? undefined
     );
   }
   

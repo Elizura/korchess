@@ -144,6 +144,7 @@ class MoveEvaluation(BaseModel):
     clock_seconds: int | None = None
     time_spent_seconds: int | None = None
     time_source: str | None = None
+    tactical: dict | None = None
 
 
 class FullAnalysisSummary(BaseModel):

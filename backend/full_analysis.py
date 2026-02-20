@@ -10,6 +10,8 @@ import time
 from typing import Optional
 from dataclasses import dataclass, asdict
 
+from tactical_detection import detect_tactical_annotation
+
 STOCKFISH_PATH = "/usr/games/stockfish"
 DEFAULT_DEPTH = 18
 DEFAULT_TIME_MS = 1000  # ~0.2s per position
@@ -41,6 +43,7 @@ class MoveEvaluation:
     pv: list[str] = None  # Principal variation
     classification: Optional[str] = None  # best/excellent/good/inaccuracy/mistake/blunder
     cp_loss: Optional[int] = None  # Centipawn loss vs best move
+    tactical: Optional[dict] = None
     clock_seconds: Optional[int] = None
     time_spent_seconds: Optional[int] = None
     time_source: Optional[str] = None  # clock|elapsed|inferred|missing
@@ -277,6 +280,7 @@ def run_full_analysis(
             # Extract best move and eval before
             best_move = main_info.get("pv", [None])[0] if main_info else None
             pv_moves = main_info.get("pv", []) if main_info else []
+            pv_before_uci = [m.uci() for m in pv_moves[:8]]
             score_before = main_info.get("score") if main_info else None
             
             if score_before:
@@ -310,6 +314,8 @@ def run_full_analysis(
             
             if isinstance(info_after, list):
                 info_after = info_after[0] if info_after else {}
+            pv_after_moves = info_after.get("pv", []) if info_after else []
+            pv_after_uci = [m.uci() for m in pv_after_moves[:8]]
             
             score_after = info_after.get("score") if info_after else None
             
@@ -341,6 +347,20 @@ def run_full_analysis(
                 cp_loss = None
             
             classification = classify_move(cp_loss)
+
+            tactical = detect_tactical_annotation(
+                fen_before=fen_before,
+                fen_after=fen_after,
+                played_uci=move_uci,
+                best_move_uci=best_move_uci,
+                pv_before_uci=pv_before_uci,
+                pv_after_uci=pv_after_uci,
+                classification=classification,
+                cp_loss=cp_loss,
+                eval_before=eval_before_dict,
+                eval_after=eval_after_dict,
+                multi_pv=multi_pv_data,
+            )
             
             # Track for accuracy calculation
             if cp_loss is not None:
@@ -360,12 +380,13 @@ def run_full_analysis(
                 "eval_after": eval_after_dict,
                 "best_move_uci": best_move_uci,
                 "best_move_san": best_move_san,
-                "pv": [m.uci() for m in pv_moves[:8]],
+                "pv": pv_before_uci,
                 "classification": classification,
                 "cp_loss": cp_loss,
                 "clock_seconds": clock_seconds,
                 "time_spent_seconds": time_spent_seconds,
                 "time_source": time_source,
+                "tactical": tactical,
             }
             
             # Add multipv data if available
