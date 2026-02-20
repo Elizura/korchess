@@ -1,6 +1,6 @@
 "use client";
 
-import { SessionProvider, useSession } from "next-auth/react";
+import { SessionProvider, signOut, useSession } from "next-auth/react";
 import { useEffect } from "react";
 
 const API_BASE_URL =
@@ -10,6 +10,12 @@ function RegisterOnLogin() {
   const { data: session } = useSession();
 
   useEffect(() => {
+    const authError = (session as any)?.authError as string | undefined;
+    if (authError === "RefreshAccessTokenError") {
+      signOut({ callbackUrl: "/signup" });
+      return;
+    }
+
     const userId = (session as any)?.userId as string | undefined;
     const idToken = (session as any)?.idToken as string | undefined;
     if (!userId || !idToken) {
@@ -42,7 +48,7 @@ function RegisterOnLogin() {
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <SessionProvider>
+    <SessionProvider refetchInterval={5 * 60} refetchOnWindowFocus={true}>
       <RegisterOnLogin />
       {children}
     </SessionProvider>

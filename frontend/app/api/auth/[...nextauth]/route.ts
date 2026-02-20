@@ -1,11 +1,83 @@
 import NextAuth from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import type { JWT } from "next-auth/jwt";
+
+type ExtendedToken = JWT & {
+  idToken?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  accessTokenExpiresAt?: number;
+  authError?: "RefreshAccessTokenError";
+};
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+
+async function refreshGoogleTokens(token: ExtendedToken): Promise<ExtendedToken> {
+  if (!token.refreshToken) {
+    return { ...token, authError: "RefreshAccessTokenError" };
+  }
+
+  try {
+    const body = new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: token.refreshToken,
+    });
+
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Refresh failed with status ${response.status}`);
+    }
+
+    const refreshed = (await response.json()) as {
+      access_token?: string;
+      expires_in?: number;
+      id_token?: string;
+      refresh_token?: string;
+    };
+
+    const expiresInMs =
+      typeof refreshed.expires_in === "number" && refreshed.expires_in > 0
+        ? refreshed.expires_in * 1000
+        : 60 * 60 * 1000;
+
+    return {
+      ...token,
+      accessToken: refreshed.access_token ?? token.accessToken,
+      accessTokenExpiresAt: Date.now() + expiresInMs - 60_000,
+      idToken: refreshed.id_token ?? token.idToken,
+      refreshToken: refreshed.refresh_token ?? token.refreshToken,
+      authError: undefined,
+    };
+  } catch {
+    return {
+      ...token,
+      authError: "RefreshAccessTokenError",
+    };
+  }
+}
 
 const handler = NextAuth({
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID || "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+      clientId: GOOGLE_CLIENT_ID,
+      clientSecret: GOOGLE_CLIENT_SECRET,
+      authorization: {
+        params: {
+          access_type: "offline",
+          prompt: "consent",
+          response_type: "code",
+        },
+      },
     }),
   ],
   session: {
@@ -13,17 +85,52 @@ const handler = NextAuth({
   },
   callbacks: {
     async jwt({ token, account }) {
-      if (account?.id_token) {
-        token.idToken = account.id_token;
+      const nextToken = token as ExtendedToken;
+
+      if (account) {
+        const accountExpiresAtMs =
+          typeof account.expires_at === "number"
+            ? account.expires_at * 1000
+            : Date.now() + 55 * 60 * 1000;
+
+        return {
+          ...nextToken,
+          idToken: account.id_token ?? nextToken.idToken,
+          accessToken: account.access_token ?? nextToken.accessToken,
+          refreshToken: account.refresh_token ?? nextToken.refreshToken,
+          accessTokenExpiresAt: accountExpiresAtMs,
+          authError: undefined,
+        };
       }
-      return token;
+
+      if (
+        typeof nextToken.accessTokenExpiresAt === "number" &&
+        Date.now() < nextToken.accessTokenExpiresAt
+      ) {
+        return nextToken;
+      }
+
+      return refreshGoogleTokens(nextToken);
     },
     async session({ session, token }) {
-      if (token?.idToken) {
-        (session as any).idToken = token.idToken;
+      const jwtToken = token as ExtendedToken;
+      if (jwtToken?.idToken) {
+        (session as any).idToken = jwtToken.idToken;
       }
-      if (token?.sub) {
-        (session as any).userId = token.sub;
+      if (jwtToken?.accessToken) {
+        (session as any).accessToken = jwtToken.accessToken;
+      }
+      if (jwtToken?.refreshToken) {
+        (session as any).refreshToken = jwtToken.refreshToken;
+      }
+      if (typeof jwtToken?.accessTokenExpiresAt === "number") {
+        (session as any).accessTokenExpiresAt = jwtToken.accessTokenExpiresAt;
+      }
+      if (jwtToken?.sub) {
+        (session as any).userId = jwtToken.sub;
+      }
+      if (jwtToken?.authError) {
+        (session as any).authError = jwtToken.authError;
       }
       return session;
     },
