@@ -11,6 +11,7 @@ import EvalBar from "@/components/analysis/EvalBar";
 import MoveList from "@/components/analysis/MoveList";
 import EngineLines from "@/components/analysis/EngineLines";
 import BoardControls from "@/components/analysis/BoardControls";
+import { useLocalEngine } from "@/hooks/useLocalEngine";
 import {
   MoveTree,
   MoveNode,
@@ -26,6 +27,8 @@ import {
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+const LOCAL_ENGINE_DEPTH = 32;
+const LOCAL_ENGINE_MULTIPV = 1;
 
 interface GameData {
   username: string;
@@ -83,6 +86,7 @@ interface FullAnalysisResponse {
       positions_analyzed: number;
     };
   } | null;
+  insights?: SingleGameInsightsResponse | null;
   created_at: string | null;
 }
 
@@ -259,24 +263,6 @@ interface SingleGameInsightsResponse {
   confidence?: number;
 }
 
-interface EvalResponse {
-  eval: {
-    cp?: number;
-    mate?: number;
-    depth: number;
-    pv_uci: string[];
-    pv_san: string[];
-  } | null;
-  multipv: Array<{
-    cp?: number;
-    mate?: number;
-    depth: number;
-    pv_uci: string[];
-    pv_san: string[];
-  }> | null;
-  fen: string;
-}
-
 export default function GameAnalyzerPage() {
   const params = useParams();
   const site = params.site as string;
@@ -298,12 +284,10 @@ export default function GameAnalyzerPage() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [analysisStatus, setAnalysisStatus] = useState<"completed" | "missing" | "processing" | "loading">("loading");
+  const [analysisStatus, setAnalysisStatus] = useState<"idle" | "completed" | "missing" | "processing">("idle");
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [singleInsights, setSingleInsights] = useState<SingleGameInsightsResponse | null>(null);
-  const [singleInsightsStatus, setSingleInsightsStatus] = useState<
-    "idle" | "loading" | "ready" | "analysis_missing" | "analysis_processing" | "error"
-  >("idle");
+  const [singleInsightsStatus, setSingleInsightsStatus] = useState<"idle" | "ready" | "error">("idle");
   const [activeInsightEventId, setActiveInsightEventId] = useState<string | null>(null);
   
   // Polling for async analysis
@@ -317,13 +301,13 @@ export default function GameAnalyzerPage() {
   const [showArrows, setShowArrows] = useState(true);
   const [multiPv, setMultiPv] = useState(3);
   const [depth, setDepth] = useState(18);
-  
-  // Engine lines for current position
-  const [engineLines, setEngineLines] = useState<EvalResponse["multipv"] | null>(null);
-  const [isEvaluating, setIsEvaluating] = useState(false);
 
-  // Track if auto-analysis was already triggered to prevent duplicates
-  const autoAnalysisTriggered = useRef(false);
+  const {
+    currentResult: localEngineResult,
+    evaluateFen,
+    isEvaluating: isLocalEvaluating,
+    error: localEngineError,
+  } = useLocalEngine();
 
   // Get current node from tree
   const currentNode = useMemo(() => {
@@ -337,17 +321,32 @@ export default function GameAnalyzerPage() {
 
   // Get current eval
   const currentEval = useMemo(() => {
-    if (!currentNode?.eval) return null;
+    if (currentNode?.eval) {
+      return {
+        cp: currentNode.eval.cp,
+        mate: currentNode.eval.mate,
+      };
+    }
+
+    if (!localEngineResult?.eval || localEngineResult.fen !== currentFen) {
+      return null;
+    }
+
     return {
-      cp: currentNode.eval.cp,
-      mate: currentNode.eval.mate,
+      cp: localEngineResult.eval.cp,
+      mate: localEngineResult.eval.mate,
     };
-  }, [currentNode]);
+  }, [currentNode, localEngineResult, currentFen]);
 
   // Get best move for current position
   const bestMove = useMemo(() => {
-    if (!currentNode?.bestMove) return null;
-    const uci = currentNode.bestMove.uci;
+    const uci =
+      currentNode?.bestMove?.uci ||
+      (localEngineResult?.fen === currentFen
+        ? localEngineResult.multipv?.[0]?.pv_uci?.[0]
+        : undefined);
+
+    if (!uci) return null;
     if (uci.length >= 4) {
       return {
         from: uci.slice(0, 2),
@@ -355,7 +354,7 @@ export default function GameAnalyzerPage() {
       };
     }
     return null;
-  }, [currentNode]);
+  }, [currentNode, localEngineResult, currentFen]);
 
   // Get last move
   const lastMove = useMemo(() => {
@@ -369,6 +368,45 @@ export default function GameAnalyzerPage() {
     }
     return null;
   }, [currentNode]);
+
+  const displayEngineLines = useMemo(() => {
+    if (currentNode?.eval?.multiPv && currentNode.eval.multiPv.length > 0) {
+      return currentNode.eval.multiPv.map((line) => ({
+        cp: line.cp,
+        mate: line.mate,
+        depth: currentNode.eval?.depth,
+        pv: line.pv,
+      }));
+    }
+
+    if (currentNode?.eval) {
+      return [
+        {
+          cp: currentNode.eval.cp,
+          mate: currentNode.eval.mate,
+          depth: currentNode.eval.depth,
+          pv: currentNode.eval.pv || [],
+          pvSan: currentNode.eval.pvSan || [],
+        },
+      ];
+    }
+
+    if (localEngineResult?.fen === currentFen) {
+      return localEngineResult.multipv;
+    }
+
+    return null;
+  }, [currentNode, localEngineResult, currentFen]);
+
+  const displayEngineDepth = useMemo(() => {
+    if (currentNode?.eval?.depth) {
+      return currentNode.eval.depth;
+    }
+    if (localEngineResult?.fen === currentFen) {
+      return localEngineResult.depth;
+    }
+    return undefined;
+  }, [currentNode, localEngineResult, currentFen]);
 
   // User accuracy (based on their color)
   const userAccuracy = useMemo(() => {
@@ -459,9 +497,6 @@ export default function GameAnalyzerPage() {
           addMove(tree, move.san, move.lan, chess.fen())
         );
 
-        // Evaluate the new position
-        evaluatePosition(chess.fen());
-
         return true;
       } catch {
         return false;
@@ -469,31 +504,6 @@ export default function GameAnalyzerPage() {
     },
     [currentFen]
   );
-
-  // Evaluate a position with the engine
-  const evaluatePosition = async (fen: string) => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
-      return;
-    }
-    setIsEvaluating(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/eval`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders } as Record<string, string>,
-        body: JSON.stringify({ fen, depth, multipv: multiPv }),
-      });
-
-      if (res.ok) {
-        const data: EvalResponse = await res.json();
-        setEngineLines(data.multipv || (data.eval ? [data.eval] : null));
-      }
-    } catch (err) {
-      console.error("Evaluation failed:", err);
-    } finally {
-      setIsEvaluating(false);
-    }
-  };
 
   // Keyboard navigation
   useEffect(() => {
@@ -530,11 +540,25 @@ export default function GameAnalyzerPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleGoBack, handleGoForward, handleGoToStart, handleGoToEnd]);
 
+  // Lightweight local analysis for the current position (no backend calls)
+  useEffect(() => {
+    if (!game) return;
+    evaluateFen(currentFen, {
+      depth: LOCAL_ENGINE_DEPTH,
+      multiPv: LOCAL_ENGINE_MULTIPV,
+    });
+  }, [game, currentFen, evaluateFen]);
+
   // Fetch game data on mount
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
       setError(null);
+      setAnalyzing(false);
+      setAnalysisData(null);
+      setAnalysisStatus("idle");
+      setSingleInsights(null);
+      setSingleInsightsStatus("idle");
 
       try {
         if (!session?.idToken) {
@@ -574,34 +598,6 @@ export default function GameAnalyzerPage() {
             console.error("Failed to parse PGN:", e);
           }
         }
-
-        // Fetch full analysis status
-        const analysisRes = await fetch(
-          `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-          { headers: authHeaders }
-        );
-        if (analysisRes.ok) {
-          const data: FullAnalysisResponse = await analysisRes.json();
-          if (data.status === "completed" && data.analysis) {
-            setAnalysisData(data.analysis);
-            setAnalysisStatus("completed");
-
-            // Rebuild tree with analysis data
-            const tree = buildTreeFromAnalysis(data.analysis.moves);
-            setMoveTree(tree);
-          } else if (data.status === "processing") {
-            // Analysis is running - set state, polling will be started by separate effect
-            setAnalysisStatus("processing");
-            setAnalyzing(true);
-            if (!analysisStartTime.current) {
-              analysisStartTime.current = Date.now();
-            }
-          } else {
-            setAnalysisStatus("missing");
-          }
-        } else {
-          setAnalysisStatus("missing");
-        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "An error occurred");
       } finally {
@@ -612,7 +608,7 @@ export default function GameAnalyzerPage() {
     if (username && gameId) {
       fetchData();
     }
-  }, [username, gameId, depth, multiPv, session?.idToken, authHeaders]);
+  }, [username, gameId, session?.idToken, authHeaders]);
 
   // Stop polling
   const stopPolling = useCallback(() => {
@@ -627,6 +623,8 @@ export default function GameAnalyzerPage() {
     if (data.analysis) {
       setAnalysisData(data.analysis);
       setAnalysisStatus("completed");
+      setSingleInsights(data.insights || null);
+      setSingleInsightsStatus(data.insights ? "ready" : "idle");
 
       // Rebuild tree with analysis data
       const tree = buildTreeFromAnalysis(data.analysis.moves);
@@ -690,6 +688,8 @@ export default function GameAnalyzerPage() {
     setAnalyzing(true);
     setError(null);
     setSuccessMessage(null);
+    setSingleInsights(null);
+    setSingleInsightsStatus("idle");
     analysisStartTime.current = Date.now();
 
     console.log(`[Analysis] Starting analysis for game ${gameId} (depth=${depth}, multipv=${multiPv})`);
@@ -705,6 +705,7 @@ export default function GameAnalyzerPage() {
         const data = await res.json().catch(() => ({}));
         setError(data.detail || "Server is busy (max 2 analyses at once). Please try again shortly.");
         setAnalyzing(false);
+        setAnalysisStatus("missing");
         analysisStartTime.current = null;
         return;
       }
@@ -723,38 +724,20 @@ export default function GameAnalyzerPage() {
         // Analysis started - set state, polling will be started by separate effect
         setAnalysisStatus("processing");
         // analysisStatus change + analyzing=true will trigger polling effect
+      } else {
+        setAnalyzing(false);
+        setAnalysisStatus("missing");
+        analysisStartTime.current = null;
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Analysis failed";
       console.error(`[Analysis] Failed:`, err);
       setError(errorMessage);
       setAnalyzing(false);
+      setAnalysisStatus("missing");
       analysisStartTime.current = null;
     }
   }, [username, gameId, depth, multiPv, handleAnalysisReady, session?.idToken, authHeaders]);
-
-  const fetchSingleInsights = useCallback(async () => {
-    if (!session?.idToken) return;
-    setSingleInsightsStatus("loading");
-    try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(
-          username
-        )}/${gameId}/single-insights?depth=${depth}&multipv=${multiPv}`,
-        { headers: authHeaders }
-      );
-      if (!res.ok) {
-        setSingleInsightsStatus("error");
-        return;
-      }
-      const data: SingleGameInsightsResponse = await res.json();
-      setSingleInsights(data);
-      setSingleInsightsStatus(data.status === "ready" ? "ready" : data.status);
-    } catch (insightsErr) {
-      console.error("Failed to fetch single-game insights:", insightsErr);
-      setSingleInsightsStatus("error");
-    }
-  }, [site, username, gameId, depth, multiPv, session?.idToken, authHeaders]);
 
   // Start/stop polling based on status
   useEffect(() => {
@@ -779,25 +762,6 @@ export default function GameAnalyzerPage() {
       }
     };
   }, [stopPolling]);
-
-  // Auto-start analysis if missing (only once per page load)
-  useEffect(() => {
-    if (analysisStatus === "missing" && !analyzing && game && !autoAnalysisTriggered.current) {
-      autoAnalysisTriggered.current = true;
-      console.log("[Analysis] Auto-starting analysis for missing game");
-      runAnalysis();
-    }
-  }, [analysisStatus, analyzing, game, runAnalysis]);
-
-  // Fetch deterministic single-game insights once full analysis is ready
-  useEffect(() => {
-    if (analysisStatus === "completed" && analysisData) {
-      fetchSingleInsights();
-    } else {
-      setSingleInsights(null);
-      setSingleInsightsStatus("idle");
-    }
-  }, [analysisStatus, analysisData, fetchSingleInsights]);
 
   // Format date
   const formatDate = (dateStr: string | null) => {
@@ -953,7 +917,7 @@ export default function GameAnalyzerPage() {
                   depth={depth}
                   onDepthChange={setDepth}
                   isAnalyzing={analyzing}
-                  onRunAnalysis={analysisStatus === "missing" ? runAnalysis : undefined}
+                  onRunAnalysis={undefined}
                   lichessUrl={game?.lichess_url || (
                     site === "lichess" 
                       ? `https://lichess.org/${gameId}`
@@ -971,23 +935,27 @@ export default function GameAnalyzerPage() {
             <div className="zen-surface p-4">
               <h3 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">
                 Engine Analysis
-                {analysisData?.meta.depth && (
+                {analysisStatus === "completed" && analysisData?.meta.depth ? (
                   <span className="font-normal text-[color:var(--zen-muted)] ml-2">
                     Depth {analysisData.meta.depth}
+                  </span>
+                ) : (
+                  <span className="font-normal text-[color:var(--zen-muted)] ml-2">
+                    Local depth {LOCAL_ENGINE_DEPTH}
                   </span>
                 )}
               </h3>
 
-              {analysisStatus === "missing" && !analyzing && (
+              {analysisStatus !== "completed" && !analyzing && (
                 <div className="text-center py-6">
                   <button
                     onClick={runAnalysis}
                     className="zen-pill px-6 py-3 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition"
                   >
-                    Run Full Analysis
+                    Request in-depth analysis
                   </button>
                   <p className="text-xs text-[color:var(--zen-muted)] mt-2">
-                    Analyzes every move (~20-40 seconds)
+                    Runs backend deep analysis with accuracy + insights.
                   </p>
                 </div>
               )}
@@ -1006,25 +974,18 @@ export default function GameAnalyzerPage() {
                 </div>
               )}
 
-              {!analyzing && currentNode && (
+              {currentNode && (
                 <EngineLines
-                  lines={
-                    currentNode.eval?.multiPv ||
-                    engineLines ||
-                    (currentNode.eval
-                      ? [
-                          {
-                            cp: currentNode.eval.cp,
-                            mate: currentNode.eval.mate,
-                            depth: currentNode.eval.depth,
-                            pv: currentNode.eval.pv || [],
-                          },
-                        ]
-                      : null)
-                  }
-                  depth={currentNode.eval?.depth || analysisData?.meta.depth}
-                  isLoading={isEvaluating}
+                  lines={displayEngineLines}
+                  depth={displayEngineDepth}
+                  isLoading={!currentNode.eval && isLocalEvaluating}
                 />
+              )}
+
+              {localEngineError && (
+                <p className="text-xs text-[color:var(--zen-muted)] mt-3">
+                  Local engine: {localEngineError}
+                </p>
               )}
             </div>
 
@@ -1092,22 +1053,14 @@ export default function GameAnalyzerPage() {
                   )}
                 </div>
 
-                {singleInsightsStatus === "loading" && (
-                  <p className="text-sm text-[color:var(--zen-muted)]">Computing deterministic insights…</p>
-                )}
-                {singleInsightsStatus === "analysis_processing" && (
-                  <p className="text-sm text-[color:var(--zen-muted)]">
-                    Insights will be available when full analysis finishes.
-                  </p>
-                )}
-                {singleInsightsStatus === "analysis_missing" && (
-                  <p className="text-sm text-[color:var(--zen-muted)]">
-                    Run full analysis to unlock game insights.
-                  </p>
-                )}
                 {singleInsightsStatus === "error" && (
                   <p className="text-sm text-[color:var(--zen-danger)]">
                     Unable to load game insights right now.
+                  </p>
+                )}
+                {singleInsightsStatus === "idle" && (
+                  <p className="text-sm text-[color:var(--zen-muted)]">
+                    Insights were not available for this deep analysis result.
                   </p>
                 )}
 

@@ -14,6 +14,7 @@ from db import (
     get_game_by_id,
     get_full_analysis,
     save_full_analysis,
+    save_full_analysis_insights,
     create_analysis_job,
     get_analysis_job,
     delete_analysis_job,
@@ -31,6 +32,25 @@ router = APIRouter(tags=["analysis"])
 MAX_CONCURRENT_ANALYSES = 2
 active_analysis_count = 0
 active_analysis_lock = asyncio.Lock()
+
+
+def _build_full_analysis_payload(cached: dict) -> dict:
+    return {
+        "moves": json.loads(cached["moves_json"]),
+        "summary": json.loads(cached["summary_json"]),
+        "meta": json.loads(cached["meta_json"]),
+    }
+
+
+def _load_cached_insights(cached: dict) -> dict | None:
+    raw = cached.get("insights_json")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 async def run_analysis_background(
@@ -52,16 +72,38 @@ async def run_analysis_background(
             None,
             lambda: run_full_analysis(pgn, depth, multipv)
         )
+        full_analysis = {
+            "moves": result["moves"],
+            "summary": result["summary"],
+            "meta": result["meta"],
+        }
 
         conn = get_connection()
         try:
+            insights_payload: dict | None = None
+            try:
+                game_meta = get_game_by_id(conn, user_id, username, game_id, site)
+                if game_meta:
+                    insights_payload = compute_single_game_insights(
+                        site=site,
+                        game_id=game_id,
+                        username=username,
+                        depth=depth,
+                        multipv=multipv,
+                        full_analysis=full_analysis,
+                        game_meta=game_meta,
+                    )
+            except Exception as insights_err:
+                print(f"[Analysis] Insights generation failed for game {game_id} on {site}: {insights_err}")
+
             save_full_analysis(
                 conn, user_id, username, game_id,
                 depth=depth,
                 multipv=multipv,
-                moves_json=json.dumps(result["moves"]),
-                summary_json=json.dumps(result["summary"]),
-                meta_json=json.dumps(result["meta"]),
+                moves_json=json.dumps(full_analysis["moves"]),
+                summary_json=json.dumps(full_analysis["summary"]),
+                meta_json=json.dumps(full_analysis["meta"]),
+                insights_json=json.dumps(insights_payload) if insights_payload else None,
                 site=site
             )
             delete_analysis_job(conn, job_id)
@@ -199,15 +241,15 @@ async def get_single_game_insights_endpoint(
             version="single_game_rules_v2",
         )
 
+    cached_insights = _load_cached_insights(cached)
+    if cached_insights:
+        return SingleGameInsightsResponse(**cached_insights)
+
     game = get_game_by_id(conn, current_user["id"], username, game_id, site)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    full_analysis = {
-        "moves": json.loads(cached["moves_json"]),
-        "summary": json.loads(cached["summary_json"]),
-        "meta": json.loads(cached["meta_json"]),
-    }
+    full_analysis = _build_full_analysis_payload(cached)
 
     insights_payload = compute_single_game_insights(
         site=site,
@@ -218,6 +260,21 @@ async def get_single_game_insights_endpoint(
         full_analysis=full_analysis,
         game_meta=game,
     )
+
+    try:
+        save_full_analysis_insights(
+            conn,
+            current_user["id"],
+            username,
+            game_id,
+            depth,
+            multipv,
+            site,
+            json.dumps(insights_payload),
+        )
+        conn.commit()
+    except Exception as persist_err:
+        print(f"[Analysis] Failed to persist computed insights for game {game_id} on {site}: {persist_err}")
 
     return SingleGameInsightsResponse(**insights_payload)
 
@@ -241,13 +298,11 @@ async def get_full_analysis_endpoint(
 
     cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
     if cached:
+        full_analysis = _build_full_analysis_payload(cached)
         return FullAnalysisResponse(
             status="completed",
-            analysis={
-                "moves": json.loads(cached["moves_json"]),
-                "summary": json.loads(cached["summary_json"]),
-                "meta": json.loads(cached["meta_json"])
-            },
+            analysis=full_analysis,
+            insights=_load_cached_insights(cached),
             created_at=cached["created_at"]
         )
 
@@ -279,13 +334,42 @@ async def run_full_analysis_endpoint(
 
     cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
     if cached:
+        full_analysis = _build_full_analysis_payload(cached)
+        insights_payload = _load_cached_insights(cached)
+        if not insights_payload:
+            try:
+                game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+                if game:
+                    insights_payload = compute_single_game_insights(
+                        site=site,
+                        game_id=game_id,
+                        username=username,
+                        depth=depth,
+                        multipv=multipv,
+                        full_analysis=full_analysis,
+                        game_meta=game,
+                    )
+                    save_full_analysis_insights(
+                        conn,
+                        current_user["id"],
+                        username,
+                        game_id,
+                        depth,
+                        multipv,
+                        site,
+                        json.dumps(insights_payload),
+                    )
+                    conn.commit()
+            except Exception as insights_err:
+                print(
+                    f"[Analysis] Unable to hydrate missing insights for cached analysis "
+                    f"{game_id} on {site}: {insights_err}"
+                )
+
         return FullAnalysisResponse(
             status="completed",
-            analysis={
-                "moves": json.loads(cached["moves_json"]),
-                "summary": json.loads(cached["summary_json"]),
-                "meta": json.loads(cached["meta_json"])
-            },
+            analysis=full_analysis,
+            insights=insights_payload,
             created_at=cached["created_at"]
         )
 

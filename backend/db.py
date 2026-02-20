@@ -163,12 +163,22 @@ def init_db() -> None:
             moves_json TEXT NOT NULL,
             summary_json TEXT NOT NULL,
             meta_json TEXT NOT NULL,
+            insights_json TEXT,
             created_at TEXT NOT NULL,
             UNIQUE(user_id, site, site_game_id, depth, multipv),
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
     )
+
+    cursor.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'full_analysis' AND column_name = 'insights_json'
+        """
+    )
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE full_analysis ADD COLUMN insights_json TEXT")
 
     cursor.execute(
         """
@@ -988,7 +998,7 @@ def get_full_analysis(
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT moves_json, summary_json, meta_json, created_at
+        SELECT moves_json, summary_json, meta_json, insights_json, created_at
         FROM full_analysis
         WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s 
         AND depth = %s AND multipv = %s AND site = %s
@@ -1011,6 +1021,7 @@ def save_full_analysis(
     moves_json: str,
     summary_json: str,
     meta_json: str,
+    insights_json: str | None,
     site: str,
 ) -> None:
     """Save full analysis result to cache."""
@@ -1022,13 +1033,14 @@ def save_full_analysis(
         """
         INSERT INTO full_analysis 
         (user_id, site, site_game_id, username, depth, multipv, 
-         moves_json, summary_json, meta_json, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         moves_json, summary_json, meta_json, insights_json, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (user_id, site, site_game_id, depth, multipv)
         DO UPDATE SET
             moves_json = EXCLUDED.moves_json,
             summary_json = EXCLUDED.summary_json,
             meta_json = EXCLUDED.meta_json,
+            insights_json = COALESCE(EXCLUDED.insights_json, full_analysis.insights_json),
             created_at = EXCLUDED.created_at
         """,
         (
@@ -1041,7 +1053,43 @@ def save_full_analysis(
             moves_json,
             summary_json,
             meta_json,
+            insights_json,
             created_at,
+        ),
+    )
+
+
+def save_full_analysis_insights(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int,
+    site: str,
+    insights_json: str,
+) -> None:
+    """Persist deterministic single-game insights for an existing full analysis."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE full_analysis
+        SET insights_json = %s
+        WHERE user_id = %s
+          AND LOWER(username) = %s
+          AND site_game_id = %s
+          AND depth = %s
+          AND multipv = %s
+          AND site = %s
+        """,
+        (
+            insights_json,
+            user_id,
+            username.strip().lower(),
+            site_game_id,
+            depth,
+            multipv,
+            site,
         ),
     )
 

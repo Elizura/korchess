@@ -178,6 +178,7 @@ class FullAnalysisResponse(BaseModel):
     """Response for full analysis endpoint."""
     status: str  # "completed" | "missing" | "processing"
     analysis: FullAnalysisResult | None = None
+    insights: dict | None = None
     created_at: str | None = None
 
 
