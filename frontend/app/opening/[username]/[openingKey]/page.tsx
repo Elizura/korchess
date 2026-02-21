@@ -6,6 +6,13 @@ import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
 import { useCountUp } from "@/hooks/useCountUp";
 import { useSession } from "next-auth/react";
+import {
+  PAGE_DATA_CACHE_TTL_MS,
+  buildOpeningCacheKey,
+  getCached,
+  isFresh,
+  setCached,
+} from "@/lib/pageDataCache";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -33,6 +40,14 @@ interface OpeningSummary {
 interface OpeningGamesResponse {
   summary: OpeningSummary;
   games: GameDetail[];
+}
+
+interface OpeningPageCacheData {
+  games: GameDetail[];
+  summary: OpeningSummary | null;
+  openingName: string;
+  offset: number;
+  hasMore: boolean;
 }
 
 type ColorFilter = "all" | "white" | "black";
@@ -77,6 +92,12 @@ export default function OpeningDetailPage() {
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
+  const authUserId = useMemo(
+    () => (session?.user?.email || session?.user?.name || "anonymous").toLowerCase(),
+    [session?.user?.email, session?.user?.name],
+  );
 
   const statsVisible = !!summary && !loading;
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
@@ -88,15 +109,52 @@ export default function OpeningDetailPage() {
     return { Authorization: `Bearer ${session.idToken}` };
   }, [session?.idToken]);
 
-  const fetchGames = async (resetOffset: boolean = false) => {
+  const openingCacheKey = (targetOffset: number): string =>
+    buildOpeningCacheKey(
+      username,
+      openingKey,
+      "_",
+      colorFilter,
+      timeClassFilter,
+      resultFilter,
+      targetOffset,
+      authUserId,
+    );
+
+  const fetchGames = async (resetOffset: boolean = false, options?: { force?: boolean }) => {
     if (!session?.idToken) {
       setError("Please sign in with Google to continue.");
       return;
     }
+    const force = Boolean(options?.force);
     const currentOffset = resetOffset ? 0 : offset;
-    setLoading(resetOffset);
-    setLoadingMore(!resetOffset);
+    let hasCached = false;
+
+    if (resetOffset) {
+      const cached = force ? null : getCached<OpeningPageCacheData>(openingCacheKey(0));
+      if (cached) {
+        hasCached = true;
+        setGames(cached.data.games || []);
+        setSummary(cached.data.summary || null);
+        setOpeningName(cached.data.openingName || openingKey);
+        setOffset(cached.data.offset || 0);
+        setHasMore(Boolean(cached.data.hasMore));
+        setLoading(false);
+        setError(null);
+        setRefreshNotice(null);
+        if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
+          return;
+        }
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+    } else {
+      setLoadingMore(true);
+    }
+
     setError(null);
+    setRefreshNotice(null);
 
     try {
       const params = new URLSearchParams({
@@ -120,40 +178,52 @@ export default function OpeningDetailPage() {
       }
 
       const data: OpeningGamesResponse = await response.json();
-      
-      if (resetOffset) {
-        setGames(data.games);
-        setOffset(data.games.length);
-      } else {
-        setGames((prev) => [...(prev || []), ...data.games]);
-        setOffset((prev) => prev + data.games.length);
-      }
-      
+      const baseGames = resetOffset ? [] : games || [];
+      const nextGames = resetOffset ? data.games : [...baseGames, ...data.games];
+      const nextOffset = nextGames.length;
+
+      setGames(nextGames);
+      setOffset(nextOffset);
       setSummary(data.summary);
       setHasMore(data.games.length === 15);
-      
+
+      let nextOpeningName = openingKey;
       if (data.summary?.opening_label) {
-        setOpeningName(data.summary.opening_label);
+        nextOpeningName = data.summary.opening_label;
       } else if (data.games.length > 0) {
-        setOpeningName(data.games[0].opening_name);
-      } else {
-        setOpeningName(openingKey);
+        nextOpeningName = data.games[0].opening_name;
       }
+      setOpeningName(nextOpeningName);
+
+      const cachePayload: OpeningPageCacheData = {
+        games: nextGames,
+        summary: data.summary,
+        openingName: nextOpeningName,
+        offset: nextOffset,
+        hasMore: data.games.length === 15,
+      };
+      setCached<OpeningPageCacheData>(openingCacheKey(nextOffset), cachePayload);
+      setCached<OpeningPageCacheData>(openingCacheKey(0), cachePayload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
+      if (hasCached) {
+        setRefreshNotice("Showing cached data; background refresh failed.");
+      } else {
+        setError(err instanceof Error ? err.message : "An error occurred");
+      }
     } finally {
       setLoading(false);
       setLoadingMore(false);
+      setRefreshing(false);
     }
   };
 
   useEffect(() => {
     if (username && openingKey && session?.idToken) {
-      fetchGames(true);
+      void fetchGames(true);
     } else if (username && openingKey && !session?.idToken) {
       setError("Please sign in with Google to continue.");
     }
-  }, [username, openingKey, colorFilter, timeClassFilter, resultFilter, site, session?.idToken]);
+  }, [username, openingKey, colorFilter, timeClassFilter, resultFilter, site, session?.idToken, authUserId]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";
@@ -186,7 +256,7 @@ export default function OpeningDetailPage() {
     <main className="opening-detail-page opening-detail-frame max-w-5xl mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
         <Link
-          href={`/?user=${encodeURIComponent(username)}`}
+          href={`/dashboard?user=${encodeURIComponent(username)}`}
           className="detail-back inline-flex items-center gap-2 text-sm zen-pill px-3 py-2 text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition"
         >
           ← Back to openings
@@ -314,6 +384,14 @@ export default function OpeningDetailPage() {
             <option value="classical">Classical</option>
           </select>
         </div>
+      )}
+
+      {refreshing && games && (
+        <p className="mb-3 text-xs text-[color:var(--zen-muted)]">Refreshing cached data...</p>
+      )}
+
+      {refreshNotice && games && (
+        <p className="mb-3 text-xs text-[color:var(--zen-muted)]">{refreshNotice}</p>
       )}
 
       {/* Loading */}
