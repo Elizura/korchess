@@ -7,6 +7,17 @@ export const dynamic = "force-dynamic";
 import { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
+import {
+  PAGE_DATA_CACHE_TTL_MS,
+  buildDashboardCacheKey,
+  buildDashboardInsightsCacheKey,
+  buildDashboardVariationCacheKey,
+  clearAllCache,
+  clearCacheByPrefix,
+  getCached,
+  isFresh,
+  setCached,
+} from "@/lib/pageDataCache";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
@@ -115,6 +126,21 @@ interface InsightsProfile {
 type ColorFilter = "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 
+type DashboardReportCacheData = {
+  report: OpeningStats[] | null;
+  importStatus: ImportStatus | null;
+};
+
+type DashboardImportHistoryCacheData = {
+  history: ImportHistoryItem[];
+};
+
+const INSIGHTS_ACTIVE_STATUSES = new Set<InsightsProfile["lifecycle_status"]>([
+  "queued",
+  "baseline_ready",
+  "enriching",
+]);
+
 // Helper to parse opening name
 const parseOpeningName = (fullName: string) => {
   const separators = [': ', ' – ', ', '];
@@ -131,6 +157,11 @@ export default function DashboardPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { data: session, status } = useSession();
+  const userFromUrl = useMemo(() => searchParams.get("user") || "", [searchParams]);
+  const authUserId = useMemo(
+    () => (session?.user?.email || session?.user?.name || "anonymous").toLowerCase(),
+    [session?.user?.email, session?.user?.name],
+  );
 
   const authHeaders = useMemo((): Record<string, string> => {
     if (!session?.idToken) {
@@ -167,6 +198,8 @@ export default function DashboardPage() {
   const [insights, setInsights] = useState<InsightsProfile | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsRefreshing, setInsightsRefreshing] = useState(false);
+  const [reportRefreshing, setReportRefreshing] = useState(false);
+  const [reportRefreshNotice, setReportRefreshNotice] = useState<string | null>(null);
 
   // Redirect unauthenticated users to signup
   useEffect(() => {
@@ -209,7 +242,7 @@ export default function DashboardPage() {
     if (status === "authenticated" && session?.idToken) {
       fetchImportHistory();
     }
-  }, [status, session?.idToken]);
+  }, [status, session?.idToken, authUserId]);
 
   useEffect(() => {
     if (status !== "authenticated" || !session?.idToken || !currentUsername) {
@@ -220,21 +253,45 @@ export default function DashboardPage() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const loadInsights = async () => {
-      if (!cancelled) {
+    const cacheKey = getDashboardInsightsCacheKey(currentUsername);
+
+    const loadInsights = async (force = false) => {
+      const cached = force ? null : getCached<InsightsProfile | null>(cacheKey);
+      const hasCached = Boolean(cached);
+      const cachedData = cached?.data || null;
+      const cachedLifecycleStatus = cachedData?.lifecycle_status;
+      const shouldPollCached =
+        cachedLifecycleStatus !== undefined &&
+        INSIGHTS_ACTIVE_STATUSES.has(cachedLifecycleStatus);
+      const shouldFetch =
+        force ||
+        !cached ||
+        !isFresh(cached, PAGE_DATA_CACHE_TTL_MS) ||
+        shouldPollCached;
+
+      if (!cancelled && cached) {
+        setInsights(cachedData);
+        setInsightsLoading(false);
+      }
+
+      if (!shouldFetch) {
+        return;
+      }
+
+      if (!cancelled && !hasCached) {
         setInsightsLoading(true);
       }
+
       try {
         const data = await fetchInsights(currentUsername);
         if (cancelled) return;
         setInsights(data);
+        setCached<InsightsProfile | null>(cacheKey, data);
         const lifecycleStatus = data?.lifecycle_status;
-        if (
-          lifecycleStatus === "queued" ||
-          lifecycleStatus === "baseline_ready" ||
-          lifecycleStatus === "enriching"
-        ) {
-          timer = setTimeout(loadInsights, 8000);
+        if (lifecycleStatus && INSIGHTS_ACTIVE_STATUSES.has(lifecycleStatus)) {
+          timer = setTimeout(() => {
+            void loadInsights();
+          }, 8000);
         }
       } finally {
         if (!cancelled) {
@@ -243,7 +300,7 @@ export default function DashboardPage() {
       }
     };
 
-    loadInsights();
+    void loadInsights();
 
     return () => {
       cancelled = true;
@@ -251,7 +308,7 @@ export default function DashboardPage() {
         clearTimeout(timer);
       }
     };
-  }, [status, session?.idToken, currentUsername, authHeaders]);
+  }, [status, session?.idToken, currentUsername, authHeaders, authUserId]);
 
   // Fetch combined report across all sites
   const fetchReport = async (
@@ -292,13 +349,23 @@ export default function DashboardPage() {
 
   const fetchImportHistory = async () => {
     if (!session?.idToken) return;
+    const cacheKey = `dashboard:history:${authUserId}`;
+    const cached = getCached<DashboardImportHistoryCacheData>(cacheKey);
+    if (cached) {
+      setImportHistory(cached.data.history || []);
+      if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
+        return;
+      }
+    }
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/import/history`, {
         headers: authHeaders,
       });
       if (response.ok) {
         const data = await response.json();
-        setImportHistory(data.history || []);
+        const nextHistory = data.history || [];
+        setImportHistory(nextHistory);
+        setCached<DashboardImportHistoryCacheData>(cacheKey, { history: nextHistory });
       }
     } catch {
       // Silently ignore - not critical
@@ -367,9 +434,77 @@ export default function DashboardPage() {
     return response.json();
   };
 
+  const getDashboardBundleCacheKey = (
+    user: string,
+    color: ColorFilter,
+    timeClass: TimeClassFilter,
+  ): string => buildDashboardCacheKey(user, color, timeClass, authUserId);
+
+  const getDashboardVariationsCacheKey = (user: string, openingKey: string): string =>
+    buildDashboardVariationCacheKey(user, openingKey, colorFilter, timeClassFilter, authUserId);
+
+  const getDashboardInsightsCacheKey = (user: string): string =>
+    buildDashboardInsightsCacheKey(user, authUserId);
+
+  const loadDashboardBundle = async (
+    user: string,
+    color: ColorFilter,
+    timeClass: TimeClassFilter,
+    options?: { force?: boolean },
+  ) => {
+    const force = Boolean(options?.force);
+    const cacheKey = getDashboardBundleCacheKey(user, color, timeClass);
+    const cached = getCached<DashboardReportCacheData>(cacheKey);
+    const hasCached = Boolean(cached);
+    const shouldFetch = force || !cached || !isFresh(cached, PAGE_DATA_CACHE_TTL_MS);
+
+    if (cached) {
+      setReport(cached.data.report || null);
+      setImportStatus(cached.data.importStatus || null);
+      setLoading(false);
+      setError(null);
+      setReportRefreshNotice(null);
+    } else if (!force) {
+      setLoading(true);
+    }
+
+    if (!shouldFetch) {
+      return;
+    }
+
+    if (hasCached) {
+      setReportRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+
+    try {
+      const [reportData, statusData] = await Promise.all([
+        fetchReport(user, color, timeClass),
+        fetchImportStatus(user),
+      ]);
+      setReport(reportData);
+      setImportStatus(statusData);
+      setCached<DashboardReportCacheData>(cacheKey, {
+        report: reportData,
+        importStatus: statusData,
+      });
+      setError(null);
+      setReportRefreshNotice(null);
+    } catch (err) {
+      if (hasCached) {
+        setReportRefreshNotice("Showing cached data; background refresh failed.");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to load data");
+      }
+    } finally {
+      setLoading(false);
+      setReportRefreshing(false);
+    }
+  };
+
   // Restore state from URL on mount and when session becomes available
   useEffect(() => {
-    const userFromUrl = searchParams.get("user");
     if (!userFromUrl) return;
 
     if (!initialized) {
@@ -385,26 +520,8 @@ export default function DashboardPage() {
     }
 
     setError(null);
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        const [reportData, statusData] = await Promise.all([
-          fetchReport(userFromUrl, colorFilter, timeClassFilter),
-          fetchImportStatus(userFromUrl)
-        ]);
-        setReport(reportData);
-        if (statusData) {
-          setImportStatus(statusData);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load data");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, [searchParams, initialized, colorFilter, timeClassFilter, router, session?.idToken]);
+    void loadDashboardBundle(userFromUrl, colorFilter, timeClassFilter);
+  }, [userFromUrl, initialized, colorFilter, timeClassFilter, session?.idToken, authUserId]);
 
   // Update URL and persist last selected user
   const updateUrl = (user: string | null) => {
@@ -451,6 +568,11 @@ export default function DashboardPage() {
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
       updateUrl(trimmedUsername);
+      setReportRefreshNotice(null);
+      clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
 
       const reportData = await fetchReport(
         trimmedUsername,
@@ -458,14 +580,29 @@ export default function DashboardPage() {
         timeClassFilter
       );
       setReport(reportData);
+      setCached<DashboardReportCacheData>(
+        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
+        {
+          report: reportData,
+          importStatus: null,
+        },
+      );
 
       const status = await fetchImportStatus(trimmedUsername);
       if (status) {
         setImportStatus(status);
+        setCached<DashboardReportCacheData>(
+          getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
+          {
+            report: reportData,
+            importStatus: status,
+          },
+        );
       }
       fetchImportHistory();
       const insightsData = await fetchInsights(trimmedUsername);
       setInsights(insightsData);
+      setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -510,6 +647,11 @@ export default function DashboardPage() {
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
       updateUrl(trimmedUsername);
+      setReportRefreshNotice(null);
+      clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
 
       const reportData = await fetchReport(
         trimmedUsername,
@@ -517,14 +659,29 @@ export default function DashboardPage() {
         timeClassFilter
       );
       setReport(reportData);
+      setCached<DashboardReportCacheData>(
+        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
+        {
+          report: reportData,
+          importStatus: null,
+        },
+      );
 
       const status = await fetchImportStatus(trimmedUsername);
       if (status) {
         setImportStatus(status);
+        setCached<DashboardReportCacheData>(
+          getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
+          {
+            report: reportData,
+            importStatus: status,
+          },
+        );
       }
       fetchImportHistory();
       const insightsData = await fetchInsights(trimmedUsername);
       setInsights(insightsData);
+      setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -533,77 +690,33 @@ export default function DashboardPage() {
   };
 
   const handleHistoryItemClick = (item: ImportHistoryItem) => {
+    setUsername(item.username);
     setCurrentUsername(item.username);
+    setExpandedOpenings({});
+    setVariationsByOpening({});
     updateUrl(item.username);
-    setReport(null);
-    setInsights(null);
-    setLoading(true);
-    setInsightsLoading(true);
+    setReportRefreshNotice(null);
     setError(null);
-
-    // Openings flow: report + import status (clears loading when done)
-    Promise.all([
-      fetchReport(item.username, colorFilter, timeClassFilter),
-      fetchImportStatus(item.username),
-    ])
-      .then(([reportData, statusData]) => {
-        setReport(reportData);
-        if (statusData) {
-          setImportStatus(statusData);
-        }
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Failed to load data");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-
-    // Insights flow: run in parallel (clears insightsLoading when done)
-    fetchInsights(item.username)
-      .then((insightsData) => {
-        setInsights(insightsData);
-      })
-      .catch(() => {
-        setInsights(null);
-      })
-      .finally(() => {
-        setInsightsLoading(false);
-      });
+    void loadDashboardBundle(item.username, colorFilter, timeClassFilter);
   };
 
   const handleRefresh = () => {
     if (!currentUsername) return;
 
-    setLoading(true);
-    setInsightsLoading(true);
+    setReportRefreshNotice(null);
     setError(null);
-
-    // Openings flow: report + import status
-    Promise.all([
-      fetchReport(currentUsername, colorFilter, timeClassFilter),
-      fetchImportStatus(currentUsername),
-    ])
-      .then(([reportData, statusData]) => {
-        setReport(reportData);
-        if (statusData) {
-          setImportStatus(statusData);
-        }
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "An error occurred");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-
-    // Insights flow: run in parallel
-    fetchInsights(currentUsername)
+    void loadDashboardBundle(currentUsername, colorFilter, timeClassFilter, { force: true });
+    setInsightsLoading(true);
+    void fetchInsights(currentUsername)
       .then((insightsData) => {
         setInsights(insightsData);
+        setCached<InsightsProfile | null>(
+          getDashboardInsightsCacheKey(currentUsername),
+          insightsData,
+        );
       })
       .catch(() => {
-        setInsights(null);
+        // keep existing insights when refresh fails
       })
       .finally(() => {
         setInsightsLoading(false);
@@ -617,6 +730,10 @@ export default function DashboardPage() {
       const refreshed = await requestInsightsRefresh(currentUsername, true);
       if (refreshed) {
         setInsights(refreshed);
+        setCached<InsightsProfile | null>(
+          getDashboardInsightsCacheKey(currentUsername),
+          refreshed,
+        );
       }
     } finally {
       setInsightsRefreshing(false);
@@ -629,28 +746,13 @@ export default function DashboardPage() {
   ) => {
     setColorFilter(newColor);
     setTimeClassFilter(newTimeClass);
+    setExpandedOpenings({});
+    setVariationsByOpening({});
+    setReportRefreshNotice(null);
 
     if (currentUsername) {
-      setLoading(true);
       setError(null);
-      try {
-        const reportData = await fetchReport(
-          currentUsername,
-          newColor,
-          newTimeClass
-        );
-        setReport(reportData);
-        
-        // Also fetch status
-        const status = await fetchImportStatus(currentUsername);
-        if (status) {
-          setImportStatus(status);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "An error occurred");
-      } finally {
-        setLoading(false);
-      }
+      await loadDashboardBundle(currentUsername, newColor, newTimeClass);
     }
   };
 
@@ -661,10 +763,24 @@ export default function DashboardPage() {
     }));
 
     if (!variationsByOpening[openingKey] && currentUsername) {
+      const cacheKey = getDashboardVariationsCacheKey(currentUsername, openingKey);
+      const cached = getCached<VariationStats[]>(cacheKey);
+
+      if (cached) {
+        setVariationsByOpening((prev) => ({ ...prev, [openingKey]: cached.data || [] }));
+        if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
+          return;
+        }
+      }
+
       setVariationsLoading((prev) => ({ ...prev, [openingKey]: true }));
-      const variations = await fetchVariations(currentUsername, openingKey);
-      setVariationsByOpening((prev) => ({ ...prev, [openingKey]: variations }));
-      setVariationsLoading((prev) => ({ ...prev, [openingKey]: false }));
+      try {
+        const variations = await fetchVariations(currentUsername, openingKey);
+        setVariationsByOpening((prev) => ({ ...prev, [openingKey]: variations }));
+        setCached<VariationStats[]>(cacheKey, variations);
+      } finally {
+        setVariationsLoading((prev) => ({ ...prev, [openingKey]: false }));
+      }
     }
   };
 
@@ -674,6 +790,11 @@ export default function DashboardPage() {
       direction = "asc";
     }
     setSortConfig({ key, direction });
+  };
+
+  const handleSignOut = () => {
+    clearAllCache();
+    void signOut();
   };
 
   // Process report: filter -> sort (backend already returns top 10 by games)
@@ -699,7 +820,7 @@ export default function DashboardPage() {
   // When no user in URL but we have history: auto-load last selected or most recent user
   useEffect(() => {
     if (status !== "authenticated" || !session?.idToken) return;
-    if (searchParams.get("user")) {
+    if (userFromUrl) {
       hasAutoLoadedFromHistory.current = false;
       return;
     }
@@ -726,7 +847,7 @@ export default function DashboardPage() {
   }, [
     status,
     session?.idToken,
-    searchParams,
+    userFromUrl,
     uniqueHistoryByUser,
     // handleHistoryItemClick intentionally omitted to avoid re-running on every render
   ]);
@@ -815,7 +936,7 @@ export default function DashboardPage() {
             </span>
           </button>
           <button
-            onClick={() => signOut()}
+            onClick={handleSignOut}
             className="bg-primary text-white font-display text-[9px] uppercase tracking-wider px-5 py-2.5 rounded-lg border-2 border-[#7d8fd4] shadow-[0_4px_0_0_#3b4887] hover:bg-primary/90 active:translate-y-1 active:shadow-[0_2px_0_0_#3b4887] transition-all"
           >
             SIGN OUT
@@ -1219,12 +1340,24 @@ export default function DashboardPage() {
 
             <button
               onClick={handleRefresh}
-              disabled={loading}
+              disabled={loading || reportRefreshing}
               className="zen-pill px-4 py-2.5 text-sm font-medium text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Refresh
+              {reportRefreshing ? "Refreshing..." : "Refresh"}
             </button>
           </div>
+        )}
+
+        {reportRefreshing && report && (
+          <p className="mb-3 text-xs text-[color:var(--zen-muted)]">
+            Refreshing cached data...
+          </p>
+        )}
+
+        {reportRefreshNotice && report && (
+          <p className="mb-3 text-xs text-[color:var(--zen-muted)]">
+            {reportRefreshNotice}
+          </p>
         )}
 
         {/* Loading State - below filters when loading */}
