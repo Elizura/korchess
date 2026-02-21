@@ -220,6 +220,28 @@ def init_db() -> None:
 
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS full_analysis_requests (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            depth INTEGER NOT NULL,
+            multipv INTEGER NOT NULL,
+            requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_full_analysis_requests_user_day
+        ON full_analysis_requests(user_id, requested_at)
+        """
+    )
+
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS openings (
             id SERIAL PRIMARY KEY,
             eco TEXT NOT NULL,
@@ -1101,22 +1123,61 @@ def count_user_full_analysis_completed_utc_day(
     day_start_utc: datetime,
     day_end_utc: datetime,
 ) -> int:
-    """Count completed full analyses for a user within a UTC day window."""
+    """Count deep-analysis requests for a user within a UTC day window."""
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT COUNT(*) AS total
-        FROM full_analysis
-        WHERE user_id = %s
-          AND created_at::timestamptz >= %s
-          AND created_at::timestamptz < %s
+        SELECT GREATEST(
+            (
+                SELECT COUNT(*)
+                FROM full_analysis_requests
+                WHERE user_id = %s
+                  AND requested_at >= %s
+                  AND requested_at < %s
+            ),
+            (
+                SELECT COUNT(*)
+                FROM full_analysis
+                WHERE user_id = %s
+                  AND created_at::timestamptz >= %s
+                  AND created_at::timestamptz < %s
+            )
+        ) AS total
         """,
-        (user_id, day_start_utc, day_end_utc),
+        (user_id, day_start_utc, day_end_utc, user_id, day_start_utc, day_end_utc),
     )
     row = cursor.fetchone()
     if not row:
         return 0
     return int(row.get("total") or 0)
+
+
+def log_full_analysis_request(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int,
+    site: str,
+) -> None:
+    """Record a deep-analysis request for quota accounting."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO full_analysis_requests
+        (user_id, site, site_game_id, username, depth, multipv, requested_at)
+        VALUES (%s, %s, %s, %s, %s, %s, now())
+        """,
+        (
+            user_id,
+            site,
+            site_game_id,
+            username.strip().lower(),
+            depth,
+            multipv,
+        ),
+    )
 
 
 def create_analysis_job(
