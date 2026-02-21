@@ -13,6 +13,7 @@ type ExtendedToken = JWT & {
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const IS_PROD = process.env.NODE_ENV === "production";
+const IS_PROD_BUILD = process.env.NEXT_PHASE === "phase-production-build";
 
 // Ensure NextAuth has stable runtime config even if env vars are missing in local dev.
 const NEXTAUTH_URL =
@@ -22,7 +23,7 @@ const NEXTAUTH_URL =
 const NEXTAUTH_SECRET =
   process.env.NEXTAUTH_SECRET ||
   process.env.AUTH_SECRET ||
-  (IS_PROD ? "" : "local-dev-nextauth-secret-change-me");
+  (IS_PROD_BUILD ? "build-time-nextauth-secret-placeholder" : IS_PROD ? "" : "local-dev-nextauth-secret-change-me");
 
 if (NEXTAUTH_URL && !process.env.NEXTAUTH_URL) {
   process.env.NEXTAUTH_URL = NEXTAUTH_URL;
@@ -31,7 +32,7 @@ if (NEXTAUTH_SECRET && !process.env.NEXTAUTH_SECRET) {
   process.env.NEXTAUTH_SECRET = NEXTAUTH_SECRET;
 }
 
-if (IS_PROD && !NEXTAUTH_SECRET) {
+if (IS_PROD && !IS_PROD_BUILD && !process.env.NEXTAUTH_SECRET && !process.env.AUTH_SECRET) {
   throw new Error("NEXTAUTH_SECRET is required in production.");
 }
 
