@@ -557,16 +557,20 @@ export default function GameAnalyzerPage() {
 
   const getTacticalIcon = useCallback((tactic?: string | null) => {
     if (tactic === "FORCED_MATE") return "☠";
+    if (tactic === "MISSED_FORCED_MATE") return "♛";
     if (tactic === "HANGING_PIECE") return "🚨";
     if (tactic === "FORK") return "♞";
+    if (tactic === "SKEWER") return "➤";
     if (tactic === "DOUBLE_ATTACK") return "⚔";
     return "🎯";
   }, []);
 
   const getTacticalLabel = useCallback((tactic?: string | null) => {
     if (tactic === "FORCED_MATE") return "Forced Mate";
+    if (tactic === "MISSED_FORCED_MATE") return "Missed Forced Mate";
     if (tactic === "HANGING_PIECE") return "Hanging Piece";
     if (tactic === "FORK") return "Fork";
+    if (tactic === "SKEWER") return "Skewer";
     if (tactic === "DOUBLE_ATTACK") return "Double Attack";
     return "Tactical";
   }, []);
@@ -582,6 +586,12 @@ export default function GameAnalyzerPage() {
       return {
         border: "border-orange-300/35",
         badge: "border-orange-300/45 text-orange-200",
+      };
+    }
+    if (tactic === "MISSED_FORCED_MATE" || tactic === "SKEWER") {
+      return {
+        border: "border-red-300/35",
+        badge: "border-red-300/45 text-red-200",
       };
     }
     return {
@@ -609,10 +619,41 @@ export default function GameAnalyzerPage() {
           : "Allowed a forced mating sequence.";
       }
 
+      if (tacticType === "MISSED_FORCED_MATE") {
+        const mateIn = tactical.mate_outcome?.mate_in;
+        if (mateIn) {
+          return missed
+            ? `Missed ${missed}, which forced mate in ${mateIn}.`
+            : `Missed a forcing line with mate in ${mateIn}.`;
+        }
+        return missed
+          ? `Missed ${missed}, a forcing mating line.`
+          : "Missed a forcing mating line.";
+      }
+
       if (tacticType === "HANGING_PIECE") {
+        const hangingPiece = tactical.hanging_piece_name?.toLowerCase();
+        if (hangingPiece) {
+          return materialText
+            ? `Hung a ${hangingPiece} (${materialText}); opponent had a concrete capture sequence.`
+            : `Hung a ${hangingPiece}; opponent had a concrete capture sequence.`;
+        }
         return materialText
           ? `Hung material (${materialText}); opponent had an immediate capture.`
           : "Hung a piece; opponent had an immediate capture.";
+      }
+
+      if (tacticType === "SKEWER") {
+        const front = tactical.skewer_front_piece?.toLowerCase();
+        const rear = tactical.skewer_rear_piece?.toLowerCase();
+        if (front && rear) {
+          return missed
+            ? `Missed ${missed}, a skewer on the ${front} with a ${rear} behind it.`
+            : `Missed a skewer on the ${front} with a ${rear} behind it.`;
+        }
+        return missed
+          ? `Missed ${missed}, a skewer tactic with concrete follow-up gain.`
+          : "Missed a skewer tactic with concrete follow-up gain.";
       }
 
       if (tacticType === "FORK" || tacticType === "DOUBLE_ATTACK") {

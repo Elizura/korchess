@@ -18,7 +18,7 @@ LOGGER = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GAME_INSIGHTS_GEMINI_MODEL", "gemini-2.5-flash").strip()
-GEMINI_TIMEOUT_S = max(3, int(os.environ.get("GAME_INSIGHTS_GEMINI_TIMEOUT_S", "8")))
+GEMINI_TIMEOUT_S = max(3, int(os.environ.get("GAME_INSIGHTS_GEMINI_TIMEOUT_S", "30")))
 GEMINI_MIN_INTERVAL_MS = max(0, int(os.environ.get("GAME_INSIGHTS_GEMINI_MIN_INTERVAL_MS", "1200")))
 NARRATION_SCHEMA_VERSION = os.environ.get("GAME_INSIGHTS_NARRATION_SCHEMA_VERSION", "2").strip() or "2"
 FALLBACK_RETRY_SECONDS = max(0, int(os.environ.get("GAME_INSIGHTS_FALLBACK_RETRY_S", "0")))
@@ -286,6 +286,15 @@ def _compact_events(events: Any, limit: int = 3) -> list[dict[str, Any]]:
                 "post_eval_cp": event.get("post_eval_cp"),
                 "severity_score": event.get("severity_score"),
                 "is_decisive": event.get("is_decisive"),
+                "tactical": (
+                    {
+                        "type": event.get("tactical", {}).get("type"),
+                        "reason_text": event.get("tactical", {}).get("reason_text"),
+                        "line_source": event.get("tactical", {}).get("line_source"),
+                    }
+                    if isinstance(event.get("tactical"), dict)
+                    else None
+                ),
             }
         )
     return compact
@@ -379,6 +388,7 @@ def _build_prompt_payload(raw_insights: dict[str, Any], game_context: dict[str, 
             "Target each bullet to be about 16-28 words, coaching-style and actionable.",
             "Use concise causal reasoning where relevant (because, which led to, therefore).",
             "Turning points must reference ply numbers and what changed.",
+            "When a turning point includes tactical.reason_text, mention that tactic explicitly.",
             "If a phase was not reached, explicitly state not reached.",
             "If time-pressure data is insufficient, state that and do not speculate.",
             "Do not invent moves, stats, or phases.",
@@ -483,10 +493,17 @@ def _build_fallback_narration(insights_payload: dict[str, Any], game_context: di
             continue
         before = _score_to_text(event.get("pre_eval_cp"))
         after = _score_to_text(event.get("post_eval_cp"))
-        actor = "you" if event.get("actor") == "user" else "opponent"
-        turning_bullets.append(
-            f"Ply {ply}: eval shifted from {before} to {after}, which signaled a major momentum transfer because {actor} made the move that triggered the swing."
-        )
+        actor_subject = "you" if event.get("actor") == "user" else "your opponent"
+        tactical = event.get("tactical") if isinstance(event.get("tactical"), dict) else {}
+        tactical_reason = _safe_text(tactical.get("reason_text"), "")
+        if tactical_reason:
+            turning_bullets.append(
+                f"Ply {ply}: eval shifted from {before} to {after} when {actor_subject} {tactical_reason}, which directly triggered the momentum swing."
+            )
+        else:
+            turning_bullets.append(
+                f"Ply {ply}: eval shifted from {before} to {after}, which signaled a major momentum transfer because {actor_subject} made the move that triggered the swing."
+            )
     if not turning_bullets:
         turning_bullets.append(
             "No major turning point met the current detection threshold, which suggests the result likely came from cumulative medium mistakes instead of one decisive tactic."
