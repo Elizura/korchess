@@ -126,6 +126,20 @@ def _piece_symbol(piece_type: int | None) -> str | None:
     return None
 
 
+def _piece_name_from_symbol(symbol: str | None) -> str | None:
+    if not isinstance(symbol, str):
+        return None
+    return _PIECE_LABEL.get(symbol.lower())
+
+
+def _piece_name_from_type(piece_type: int | None) -> str | None:
+    return _piece_name_from_symbol(_piece_symbol(piece_type))
+
+
+def _normalize_line_uci(line_uci: list[str] | None, max_plies: int) -> list[str]:
+    return [uci for uci in (line_uci or []) if isinstance(uci, str)][:max_plies]
+
+
 def _cp_for_mover(cp_white: int | None, mover_is_white: bool) -> int | None:
     if cp_white is None:
         return None
@@ -141,6 +155,40 @@ def _mate_against_mover(eval_payload: dict[str, Any] | None, mover_is_white: boo
     if mover_is_white:
         return abs(mate_raw) if mate_raw < 0 else None
     return abs(mate_raw) if mate_raw > 0 else None
+
+
+def _mate_for_mover(eval_payload: dict[str, Any] | None, mover_is_white: bool) -> int | None:
+    if not isinstance(eval_payload, dict):
+        return None
+    mate_raw = eval_payload.get("mate")
+    if not isinstance(mate_raw, int) or mate_raw == 0:
+        return None
+    if mover_is_white:
+        return abs(mate_raw) if mate_raw > 0 else None
+    return abs(mate_raw) if mate_raw < 0 else None
+
+
+def _best_line_mate_for_mover(
+    multi_pv: list[dict[str, Any]] | None, mover_is_white: bool
+) -> tuple[int, list[str]]:
+    if not isinstance(multi_pv, list) or not multi_pv:
+        return (0, [])
+
+    first = multi_pv[0] if isinstance(multi_pv[0], dict) else None
+    if not isinstance(first, dict):
+        return (0, [])
+
+    mate_raw = first.get("mate")
+    if not isinstance(mate_raw, int) or mate_raw == 0:
+        return (0, [])
+
+    if mover_is_white and mate_raw <= 0:
+        return (0, [])
+    if (not mover_is_white) and mate_raw >= 0:
+        return (0, [])
+
+    pv_uci = [uci for uci in (first.get("pv") or []) if isinstance(uci, str)]
+    return (abs(mate_raw), pv_uci)
 
 
 def _force_score_from_multipv(multi_pv: list[dict[str, Any]] | None, mover_is_white: bool) -> bool:
@@ -254,10 +302,14 @@ def _should_analyze(
     cp_loss: int | None,
     eval_after: dict[str, Any] | None,
     mover_is_white: bool,
+    multi_pv: list[dict[str, Any]] | None,
     cfg: TacticalConfig,
 ) -> bool:
     mate_against = _mate_against_mover(eval_after, mover_is_white)
     if mate_against is not None and mate_against <= cfg.forced_mate_plies:
+        return True
+    best_line_mate, _ = _best_line_mate_for_mover(multi_pv, mover_is_white)
+    if best_line_mate > 0 and best_line_mate <= cfg.forced_mate_plies:
         return True
 
     if not classification:
@@ -331,7 +383,7 @@ def _forced_mate_detector(
     if mate_against is None or mate_against > cfg.forced_mate_plies:
         return None
 
-    pv_line = [uci for uci in (pv_after_uci or []) if isinstance(uci, str)][: cfg.max_pv_plies]
+    pv_line = _normalize_line_uci(pv_after_uci, cfg.max_pv_plies)
     evidence = ["forced_mate_after_move"]
     if pv_line:
         evidence.append("mate_line_confirmed_in_pv_after")
@@ -364,6 +416,59 @@ def _forced_mate_detector(
     }
 
 
+def _missed_forced_mate_detector(
+    *,
+    board_before: chess.Board,
+    best_move_uci: str | None,
+    played_uci: str | None,
+    pv_before_uci: list[str] | None,
+    mover_color: chess.Color,
+    mover_is_white: bool,
+    cp_loss: int | None,
+    multi_pv: list[dict[str, Any]] | None,
+    cfg: TacticalConfig,
+) -> dict[str, Any] | None:
+    if not best_move_uci or (played_uci and best_move_uci == played_uci):
+        return None
+
+    mate_in, best_line_pv = _best_line_mate_for_mover(multi_pv, mover_is_white)
+    if mate_in <= 0 or mate_in > cfg.forced_mate_plies:
+        return None
+
+    best_move = _parse_uci_move(board_before, best_move_uci)
+    if best_move is None:
+        return None
+
+    try:
+        best_move_san = board_before.san(best_move)
+    except Exception:
+        best_move_san = None
+
+    pv_line = _normalize_line_uci(best_line_pv or pv_before_uci, cfg.max_pv_plies)
+    material_outcome = _material_from_line(board_before, pv_line, mover_color, cfg.max_pv_plies)
+
+    return {
+        "tactic_detected": True,
+        "tactic_type": "MISSED_FORCED_MATE",
+        "tactic_types": ["MISSED_FORCED_MATE", "FORCED_MATE"],
+        "missed_move_uci": best_move_uci,
+        "missed_move_san": best_move_san,
+        "line_source": "best_line",
+        "material_outcome": material_outcome,
+        "mate_outcome": {
+            "is_mate_sequence": True,
+            "mate_in": mate_in,
+            "side_delivering_mate": "white" if mover_color == chess.WHITE else "black",
+            "subtype": "missed_forcing_mate",
+        },
+        "is_forced": _force_score_from_multipv(multi_pv, mover_is_white),
+        "pv_uci": pv_line,
+        "severity_score": round(_severity_score(cp_loss, None), 3),
+        "confidence": 0.93,
+        "evidence": ["missed_forced_mate_in_best_line", "mate_line_present_in_multipv"],
+    }
+
+
 def _hanging_piece_detector(
     *,
     board_before: chess.Board,
@@ -374,43 +479,80 @@ def _hanging_piece_detector(
     cp_loss: int | None,
     cfg: TacticalConfig,
 ) -> dict[str, Any] | None:
-    if not isinstance(pv_after_uci, list) or not pv_after_uci:
+    pv_line = _normalize_line_uci(pv_after_uci, cfg.max_pv_plies)
+    if not pv_line:
         return None
 
-    first_move = _parse_uci_move(board_after, pv_after_uci[0] if isinstance(pv_after_uci[0], str) else None)
-    if first_move is None or not board_after.is_capture(first_move):
+    work = board_after.copy()
+    candidate: dict[str, Any] | None = None
+    for idx, uci in enumerate(pv_line):
+        move = _parse_uci_move(work, uci)
+        if move is None:
+            break
+
+        is_opponent_turn = work.turn != mover_color
+        if is_opponent_turn and work.is_capture(move):
+            capture_square = _capture_square(work, move)
+            captured_piece = work.piece_at(capture_square)
+            if (
+                captured_piece
+                and captured_piece.color == mover_color
+                and captured_piece.piece_type != chess.KING
+            ):
+                captured_value = _PIECE_CP.get(captured_piece.piece_type, 0)
+                if captured_value >= cfg.min_material_cp:
+                    attacked_before_capture = work.is_attacked_by(not mover_color, capture_square)
+                    defended_before_capture = work.is_attacked_by(mover_color, capture_square)
+                    if attacked_before_capture and (not defended_before_capture or idx <= 2):
+                        candidate = {
+                            "pv_idx": idx,
+                            "capture_square": capture_square,
+                            "captured_piece": captured_piece,
+                            "captured_value": captured_value,
+                            "attacked_before_capture": attacked_before_capture,
+                            "defended_before_capture": defended_before_capture,
+                        }
+                        break
+
+        work.push(move)
+
+    if not candidate:
         return None
 
-    capture_square = _capture_square(board_after, first_move)
-    captured_piece = board_after.piece_at(capture_square)
-    if captured_piece is None or captured_piece.color != mover_color or captured_piece.piece_type == chess.KING:
-        return None
-
-    captured_value = _PIECE_CP.get(captured_piece.piece_type, 0)
-    if captured_value < cfg.min_material_cp:
-        return None
+    capture_square = int(candidate["capture_square"])
+    captured_piece = candidate["captured_piece"]
+    captured_value = int(candidate["captured_value"])
+    defended_after = bool(candidate["defended_before_capture"])
+    pv_idx = int(candidate["pv_idx"])
 
     opponent_color = not mover_color
-    attacked_after = board_after.is_attacked_by(opponent_color, capture_square)
-    defended_after = board_after.is_attacked_by(mover_color, capture_square)
-    if not attacked_after or defended_after:
-        return None
-
     piece_before = board_before.piece_at(capture_square)
     attacked_before = board_before.is_attacked_by(opponent_color, capture_square)
     defended_before = board_before.is_attacked_by(mover_color, capture_square)
     hanging_before = bool(piece_before and piece_before.color == mover_color and attacked_before and not defended_before)
-    if hanging_before:
+    played_move = _parse_uci_move(board_before, played_uci)
+    moved_into_square = bool(played_move and played_move.to_square == capture_square)
+    defender_removed = bool(
+        piece_before and piece_before.color == mover_color and defended_before and not defended_after
+    )
+    if hanging_before and not moved_into_square and not defender_removed:
         return None
 
-    evidence = ["attacked_undefended_piece", "immediate_capture_in_pv"]
-    played_move = _parse_uci_move(board_before, played_uci)
-    if played_move and played_move.to_square == capture_square:
+    evidence = ["attacked_undefended_piece"]
+    if pv_idx == 0:
+        evidence.append("immediate_capture_in_pv")
+    else:
+        evidence.append("delayed_capture_in_pv")
+
+    if moved_into_square:
         evidence.append("moved_piece_into_hanging_square")
-    elif piece_before and piece_before.color == mover_color and defended_before and not defended_after:
+    elif defender_removed:
         evidence.append("defender_removed_by_played_move")
 
-    material_outcome = _material_from_line(board_after, pv_after_uci, mover_color, cfg.max_pv_plies)
+    material_outcome = _material_from_line(board_after, pv_line, mover_color, cfg.max_pv_plies)
+    if material_outcome.get("cp_net_for_mover", 0) > -cfg.min_material_cp:
+        return None
+
     return {
         "tactic_detected": True,
         "tactic_type": "HANGING_PIECE",
@@ -418,6 +560,9 @@ def _hanging_piece_detector(
         "missed_move_uci": None,
         "missed_move_san": None,
         "line_source": "played_line",
+        "hanging_piece_symbol": _piece_symbol(captured_piece.piece_type),
+        "hanging_piece_name": _piece_name_from_type(captured_piece.piece_type),
+        "hanging_piece_value_cp": captured_value,
         "material_outcome": material_outcome,
         "mate_outcome": {
             "is_mate_sequence": False,
@@ -426,11 +571,51 @@ def _hanging_piece_detector(
             "subtype": None,
         },
         "is_forced": False,
-        "pv_uci": [uci for uci in pv_after_uci if isinstance(uci, str)][: cfg.max_pv_plies],
+        "pv_uci": pv_line,
         "severity_score": round(_severity_score(cp_loss, None), 3),
         "confidence": 0.9,
         "evidence": evidence,
     }
+
+
+def _signed_step(value: int) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
+
+
+def _line_direction(from_sq: int, to_sq: int) -> tuple[int, int] | None:
+    from_file = chess.square_file(from_sq)
+    from_rank = chess.square_rank(from_sq)
+    to_file = chess.square_file(to_sq)
+    to_rank = chess.square_rank(to_sq)
+    df = to_file - from_file
+    dr = to_rank - from_rank
+
+    if df == 0 and dr != 0:
+        return (0, _signed_step(dr))
+    if dr == 0 and df != 0:
+        return (_signed_step(df), 0)
+    if abs(df) == abs(dr) and df != 0:
+        return (_signed_step(df), _signed_step(dr))
+    return None
+
+
+def _first_piece_behind_target(
+    board: chess.Board, front_square: int, direction: tuple[int, int]
+) -> chess.Piece | None:
+    file_idx = chess.square_file(front_square) + direction[0]
+    rank_idx = chess.square_rank(front_square) + direction[1]
+    while 0 <= file_idx <= 7 and 0 <= rank_idx <= 7:
+        sq = chess.square(file_idx, rank_idx)
+        piece = board.piece_at(sq)
+        if piece:
+            return piece
+        file_idx += direction[0]
+        rank_idx += direction[1]
+    return None
 
 
 def _fork_or_double_attack_detector(
@@ -517,6 +702,102 @@ def _fork_or_double_attack_detector(
     }
 
 
+def _skewer_detector(
+    *,
+    board_before: chess.Board,
+    best_move_uci: str | None,
+    played_uci: str | None,
+    pv_before_uci: list[str] | None,
+    mover_color: chess.Color,
+    mover_is_white: bool,
+    cp_loss: int | None,
+    multi_pv: list[dict[str, Any]] | None,
+    cfg: TacticalConfig,
+) -> dict[str, Any] | None:
+    best_move = _parse_uci_move(board_before, best_move_uci)
+    if best_move is None:
+        return None
+    if played_uci and best_move_uci == played_uci:
+        return None
+
+    board_best = board_before.copy()
+    try:
+        best_move_san = board_best.san(best_move)
+        board_best.push(best_move)
+    except Exception:
+        return None
+
+    moved_piece = board_best.piece_at(best_move.to_square)
+    if moved_piece is None or moved_piece.color != mover_color:
+        return None
+    if moved_piece.piece_type not in {chess.BISHOP, chess.ROOK, chess.QUEEN}:
+        return None
+
+    opponent_color = not mover_color
+    skewer_front: chess.Piece | None = None
+    skewer_back: chess.Piece | None = None
+
+    for attacked_square in board_best.attacks(best_move.to_square):
+        front_piece = board_best.piece_at(attacked_square)
+        if not front_piece or front_piece.color != opponent_color:
+            continue
+        if front_piece.piece_type not in {chess.KING, chess.QUEEN, chess.ROOK}:
+            continue
+
+        direction = _line_direction(best_move.to_square, attacked_square)
+        if not direction:
+            continue
+
+        rear_piece = _first_piece_behind_target(board_best, attacked_square, direction)
+        if not rear_piece or rear_piece.color != opponent_color or rear_piece.piece_type == chess.KING:
+            continue
+
+        front_value = _PIECE_CP.get(front_piece.piece_type, 0)
+        rear_value = _PIECE_CP.get(rear_piece.piece_type, 0)
+        if front_piece.piece_type != chess.KING and rear_value >= front_value:
+            continue
+        if rear_value < cfg.min_material_cp:
+            continue
+
+        skewer_front = front_piece
+        skewer_back = rear_piece
+        break
+
+    if not skewer_front or not skewer_back:
+        return None
+
+    material_outcome = _material_from_line(board_before, pv_before_uci, mover_color, cfg.max_pv_plies)
+    if material_outcome["cp_net_for_mover"] < cfg.min_material_cp:
+        return None
+
+    evidence = ["line_attack_with_piece_behind_target", "tactical_gain_realized_in_pv"]
+    if skewer_front.piece_type == chess.KING:
+        evidence.append("king_forced_to_move_reveals_piece")
+
+    return {
+        "tactic_detected": True,
+        "tactic_type": "SKEWER",
+        "tactic_types": ["SKEWER", "LINE_TACTIC"],
+        "missed_move_uci": best_move_uci,
+        "missed_move_san": best_move_san,
+        "line_source": "best_line",
+        "skewer_front_piece": _piece_name_from_type(skewer_front.piece_type),
+        "skewer_rear_piece": _piece_name_from_type(skewer_back.piece_type),
+        "material_outcome": material_outcome,
+        "mate_outcome": {
+            "is_mate_sequence": False,
+            "mate_in": None,
+            "side_delivering_mate": None,
+            "subtype": None,
+        },
+        "is_forced": _force_score_from_multipv(multi_pv, mover_is_white),
+        "pv_uci": _normalize_line_uci(pv_before_uci, cfg.max_pv_plies),
+        "severity_score": round(_severity_score(cp_loss, None), 3),
+        "confidence": 0.84,
+        "evidence": evidence,
+    }
+
+
 def detect_tactical_annotation(
     *,
     fen_before: str,
@@ -544,7 +825,7 @@ def detect_tactical_annotation(
         return {"tactic_detected": False}
     mover_is_white = mover_color == chess.WHITE
 
-    if not _should_analyze(classification, cp_loss, eval_after, mover_is_white, cfg):
+    if not _should_analyze(classification, cp_loss, eval_after, mover_is_white, multi_pv, cfg):
         return {"tactic_detected": False}
 
     try:
@@ -566,6 +847,20 @@ def detect_tactical_annotation(
     if forced:
         return forced
 
+    missed_mate = _missed_forced_mate_detector(
+        board_before=board_before,
+        best_move_uci=best_move_uci,
+        played_uci=played_uci,
+        pv_before_uci=pv_before_uci,
+        mover_color=mover_color,
+        mover_is_white=mover_is_white,
+        cp_loss=cp_loss,
+        multi_pv=multi_pv,
+        cfg=cfg,
+    )
+    if missed_mate:
+        return missed_mate
+
     hanging = _hanging_piece_detector(
         board_before=board_before,
         board_after=board_after,
@@ -577,6 +872,20 @@ def detect_tactical_annotation(
     )
     if hanging:
         return hanging
+
+    skewer = _skewer_detector(
+        board_before=board_before,
+        best_move_uci=best_move_uci,
+        played_uci=played_uci,
+        pv_before_uci=pv_before_uci,
+        mover_color=mover_color,
+        mover_is_white=mover_is_white,
+        cp_loss=cp_loss,
+        multi_pv=multi_pv,
+        cfg=cfg,
+    )
+    if skewer:
+        return skewer
 
     fork_or_double = _fork_or_double_attack_detector(
         board_before=board_before,
@@ -593,4 +902,3 @@ def detect_tactical_annotation(
         return fork_or_double
 
     return {"tactic_detected": False}
-
