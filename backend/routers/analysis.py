@@ -21,6 +21,7 @@ from db import (
     get_analysis_job,
     delete_analysis_job,
     count_user_full_analysis_completed_utc_day,
+    log_full_analysis_request,
 )
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis
@@ -502,6 +503,15 @@ async def run_full_analysis_endpoint(
         raise HTTPException(status_code=400, detail="Game has no PGN")
 
     job_id = str(uuid.uuid4())
+    log_full_analysis_request(
+        conn,
+        current_user["id"],
+        username,
+        game_id,
+        depth,
+        multipv,
+        site,
+    )
     create_analysis_job(conn, job_id, current_user["id"], username, game_id, depth, multipv, site)
     conn.commit()
 
