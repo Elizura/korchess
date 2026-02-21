@@ -34,11 +34,23 @@ export interface TacticalMateOutcome {
 
 export interface TacticalAnnotation {
   tactic_detected: boolean;
-  tactic_type?: "HANGING_PIECE" | "FORK" | "DOUBLE_ATTACK" | "FORCED_MATE" | null;
+  tactic_type?:
+    | "HANGING_PIECE"
+    | "FORK"
+    | "DOUBLE_ATTACK"
+    | "FORCED_MATE"
+    | "MISSED_FORCED_MATE"
+    | "SKEWER"
+    | null;
   tactic_types?: string[];
   missed_move_uci?: string | null;
   missed_move_san?: string | null;
   line_source?: "best_line" | "played_line" | null;
+  hanging_piece_symbol?: string | null;
+  hanging_piece_name?: string | null;
+  hanging_piece_value_cp?: number | null;
+  skewer_front_piece?: string | null;
+  skewer_rear_piece?: string | null;
   material_outcome?: TacticalMaterialOutcome | null;
   mate_outcome?: TacticalMateOutcome | null;
   is_forced?: boolean;
