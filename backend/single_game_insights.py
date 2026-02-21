@@ -14,6 +14,14 @@ import chess.pgn
 
 _CLOCK_RE = re.compile(r"\[%clk\s+([0-9:.]+)\]")
 _ELAPSED_RE = re.compile(r"\[%emt\s+([0-9:.]+)\]")
+_TACTICAL_PIECE_LABELS = {
+    "p": "pawn",
+    "n": "knight",
+    "b": "bishop",
+    "r": "rook",
+    "q": "queen",
+    "k": "king",
+}
 
 
 @dataclass(frozen=True)
@@ -253,6 +261,119 @@ def _phase_map_from_moves(moves: list[dict[str, Any]]) -> tuple[dict[int, str], 
     }
 
 
+def _normalize_tactical_annotation(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    if not bool(raw.get("tactic_detected")):
+        return None
+
+    tactic_type = str(raw.get("tactic_type") or "").upper()
+    if not tactic_type:
+        return None
+
+    material = raw.get("material_outcome") if isinstance(raw.get("material_outcome"), dict) else {}
+    mate = raw.get("mate_outcome") if isinstance(raw.get("mate_outcome"), dict) else {}
+
+    return {
+        "tactic_type": tactic_type,
+        "tactic_types": [str(t).upper() for t in (raw.get("tactic_types") or []) if isinstance(t, str)],
+        "line_source": str(raw.get("line_source") or ""),
+        "missed_move_san": raw.get("missed_move_san"),
+        "missed_move_uci": raw.get("missed_move_uci"),
+        "hanging_piece_symbol": raw.get("hanging_piece_symbol"),
+        "hanging_piece_name": raw.get("hanging_piece_name"),
+        "hanging_piece_value_cp": raw.get("hanging_piece_value_cp"),
+        "skewer_front_piece": raw.get("skewer_front_piece"),
+        "skewer_rear_piece": raw.get("skewer_rear_piece"),
+        "material_text": material.get("text"),
+        "material_cp_net_for_mover": material.get("cp_net_for_mover"),
+        "mate_in": mate.get("mate_in"),
+        "mate_subtype": mate.get("subtype"),
+    }
+
+
+def _article(word: str) -> str:
+    return "an" if word and word[0].lower() in {"a", "e", "i", "o", "u"} else "a"
+
+
+def _display_move_text(move_san: Any, move_uci: Any) -> str | None:
+    if isinstance(move_san, str) and move_san.strip():
+        return move_san.strip()
+    if isinstance(move_uci, str) and move_uci.strip():
+        return move_uci.strip()
+    return None
+
+
+def _tactical_turning_reason(tactical: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(tactical, dict):
+        return None
+
+    tactic_type = str(tactical.get("tactic_type") or "").upper()
+    line_source = str(tactical.get("line_source") or "")
+    missed_move = _display_move_text(tactical.get("missed_move_san"), tactical.get("missed_move_uci"))
+
+    if tactic_type == "HANGING_PIECE":
+        piece_name = (
+            str(tactical.get("hanging_piece_name") or "").strip().lower()
+            or _TACTICAL_PIECE_LABELS.get(str(tactical.get("hanging_piece_symbol") or "").lower())
+            or "piece"
+        )
+        return {
+            "type": tactic_type,
+            "line_source": line_source,
+            "reason_text": f"hung {_article(piece_name)} {piece_name}",
+        }
+
+    if tactic_type == "FORCED_MATE" and line_source == "played_line":
+        mate_in = tactical.get("mate_in")
+        if isinstance(mate_in, int) and mate_in > 0:
+            return {
+                "type": tactic_type,
+                "line_source": line_source,
+                "reason_text": f"allowed a forced mate in {mate_in}",
+            }
+        return {
+            "type": tactic_type,
+            "line_source": line_source,
+            "reason_text": "allowed a forced mating sequence",
+        }
+
+    if tactic_type == "MISSED_FORCED_MATE":
+        mate_in = tactical.get("mate_in")
+        suffix = f" with {missed_move}" if missed_move else ""
+        if isinstance(mate_in, int) and mate_in > 0:
+            return {
+                "type": tactic_type,
+                "line_source": line_source,
+                "reason_text": f"missed a forced mate in {mate_in}{suffix}",
+            }
+        return {
+            "type": tactic_type,
+            "line_source": line_source,
+            "reason_text": f"missed a forced mating line{suffix}",
+        }
+
+    if tactic_type in {"FORK", "DOUBLE_ATTACK", "SKEWER"} and line_source == "best_line":
+        tactic_name = tactic_type.lower().replace("_", " ")
+        suffix = f" with {missed_move}" if missed_move else ""
+        if tactic_type == "SKEWER":
+            front = str(tactical.get("skewer_front_piece") or "").lower()
+            rear = str(tactical.get("skewer_rear_piece") or "").lower()
+            if front and rear:
+                return {
+                    "type": tactic_type,
+                    "line_source": line_source,
+                    "reason_text": f"missed a skewer ({front} to {rear}){suffix}",
+                }
+        return {
+            "type": tactic_type,
+            "line_source": line_source,
+            "reason_text": f"missed a {tactic_name}{suffix}",
+        }
+
+    return None
+
+
 def _preprocess_rows(
     moves: list[dict[str, Any]],
     user_color: str,
@@ -337,6 +458,7 @@ def _preprocess_rows(
                 "clock_seconds": clock_seconds,
                 "time_spent_seconds": time_spent_seconds,
                 "time_source": time_source,
+                "tactical": _normalize_tactical_annotation(move.get("tactical")),
             }
         )
 
@@ -410,7 +532,11 @@ def _crosses_advantage_boundary(before_cp: int, after_cp: int) -> bool:
 
 def _dedupe_local_max(candidates: list[dict[str, Any]], window: int = 2) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
-    for event in sorted(candidates, key=lambda e: e["swing_abs"], reverse=True):
+    for event in sorted(
+        candidates,
+        key=lambda e: (float(e.get("priority", 0.0)), int(e.get("swing_abs", 0))),
+        reverse=True,
+    ):
         if any(abs(event["ply"] - keep["ply"]) <= window for keep in selected):
             continue
         selected.append(event)
@@ -423,20 +549,42 @@ def _detect_turning_points(rows: list[dict[str, Any]]) -> dict[str, Any]:
         bucket_before = _bucket(int(row["eval_before"]))
         bucket_after = _bucket(int(row["eval_after"]))
         crossed_bucket = bucket_before != bucket_after
+        tactical_reason = _tactical_turning_reason(row.get("tactical"))
+        tactical_swing_floor = max(80, int(round(CFG.major_swing_cp * 0.6)))
 
         is_candidate = (
             (abs(int(row["delta"])) >= CFG.major_swing_cp and crossed_bucket)
             or abs(int(row["delta"])) >= CFG.critical_swing_cp
             or _is_blunder(row)
+            or (
+                tactical_reason is not None
+                and (
+                    abs(int(row["delta"])) >= tactical_swing_floor
+                    or _is_mistake_or_worse(row)
+                )
+            )
         )
         if not is_candidate:
             continue
 
         severity = _severity_score(row, crossed_bucket)
+        if tactical_reason:
+            severity = min(100.0, severity + 6.0)
+        label = "Turning Point"
+        if tactical_reason:
+            if tactical_reason["type"] == "HANGING_PIECE":
+                label = "Hanging Piece Turning Point"
+            elif tactical_reason["type"] in {"FORCED_MATE", "MISSED_FORCED_MATE"}:
+                label = "Mate Turning Point"
+            elif tactical_reason["type"] == "SKEWER":
+                label = "Skewer Turning Point"
+            elif tactical_reason["type"] in {"FORK", "DOUBLE_ATTACK"}:
+                label = "Tactical Turning Point"
+
         event = {
             "event_id": f"tp-{row['ply']}",
             "label_enum": "turning_point",
-            "label": "Turning Point",
+            "label": label,
             "ply": int(row["ply"]),
             "actor": row["actor"],
             "phase": row["phase"],
@@ -455,6 +603,8 @@ def _detect_turning_points(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 int(row["eval_before"]), int(row["eval_after"])
             ),
         }
+        if tactical_reason:
+            event["tactical"] = tactical_reason
         candidates.append(event)
 
     deduped = _dedupe_local_max(candidates, window=2)
