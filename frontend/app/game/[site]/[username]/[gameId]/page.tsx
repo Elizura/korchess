@@ -795,6 +795,20 @@ export default function GameAnalyzerPage() {
     }
   }, []);
 
+  const buildFullAnalysisUrl = useCallback(
+    (force = false) => {
+      const params = new URLSearchParams({
+        depth: String(depth),
+        multipv: String(multiPv),
+      });
+      if (force) {
+        params.set("force", "1");
+      }
+      return `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?${params.toString()}`;
+    },
+    [depth, multiPv, site, username, gameId]
+  );
+
   // Handle analysis completion
   const handleAnalysisReady = useCallback((data: FullAnalysisResponse) => {
     if (data.analysis) {
@@ -827,10 +841,7 @@ export default function GameAnalyzerPage() {
       if (analysisStatus === "completed" || analyzing) return;
 
       try {
-        const res = await fetch(
-          `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-          { headers: authHeaders }
-        );
+        const res = await fetch(buildFullAnalysisUrl(), { headers: authHeaders });
         if (!res.ok) return;
         const data: FullAnalysisResponse = await res.json();
         if (data.status === "completed" && data.analysis) {
@@ -848,12 +859,11 @@ export default function GameAnalyzerPage() {
     site,
     username,
     gameId,
-    depth,
-    multiPv,
     authHeaders,
     analysisStatus,
     analyzing,
     handleAnalysisReady,
+    buildFullAnalysisUrl,
   ]);
 
   // Start polling for analysis status
@@ -867,10 +877,7 @@ export default function GameAnalyzerPage() {
     console.log("[Analysis] Starting polling...");
     pollInterval.current = setInterval(async () => {
       try {
-        const res = await fetch(
-          `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-          { headers: authHeaders }
-        );
+        const res = await fetch(buildFullAnalysisUrl(), { headers: authHeaders });
         const data: FullAnalysisResponse = await res.json();
         
         if (data.status === "completed") {
@@ -881,7 +888,7 @@ export default function GameAnalyzerPage() {
           console.log("[Analysis] Job disappeared (likely failed). User can retry.");
           stopPolling();
           setAnalyzing(false);
-          setAnalysisStatus("missing");
+          setAnalysisStatus(analysisData ? "completed" : "missing");
           analysisStartTime.current = null;
         }
         // If still "processing", continue polling
@@ -890,35 +897,40 @@ export default function GameAnalyzerPage() {
         console.error("[Analysis] Polling error:", err);
       }
     }, 2000); // Poll every 2 seconds
-  }, [username, gameId, depth, multiPv, stopPolling, handleAnalysisReady, authHeaders]);
+  }, [analysisData, stopPolling, handleAnalysisReady, authHeaders, buildFullAnalysisUrl]);
 
   // Run full analysis (starts background job and begins polling)
-  const runAnalysis = useCallback(async () => {
+  const runAnalysis = useCallback(async (force = false) => {
     if (!session?.idToken) {
       setError("Please sign in with Google to continue.");
       return;
     }
+    const preserveCompletedState = force && analysisStatus === "completed";
     setAnalyzing(true);
     setError(null);
     setSuccessMessage(null);
-    setSingleInsights(null);
-    setSingleInsightsStatus("idle");
+    if (!preserveCompletedState) {
+      setSingleInsights(null);
+      setSingleInsightsStatus("idle");
+    }
     analysisStartTime.current = Date.now();
 
-    console.log(`[Analysis] Starting analysis for game ${gameId} (depth=${depth}, multipv=${multiPv})`);
+    console.log(
+      `[Analysis] Starting analysis for game ${gameId} (depth=${depth}, multipv=${multiPv}, force=${force})`
+    );
 
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/full?depth=${depth}&multipv=${multiPv}`,
-        { method: "POST", headers: authHeaders }
-      );
+      const res = await fetch(buildFullAnalysisUrl(force), {
+        method: "POST",
+        headers: authHeaders,
+      });
 
       // Handle 429 Too Many Requests
       if (res.status === 429) {
         const data = await res.json().catch(() => ({}));
         setError(data.detail || "Server is busy (max 2 analyses at once). Please try again shortly.");
         setAnalyzing(false);
-        setAnalysisStatus("missing");
+        setAnalysisStatus(preserveCompletedState ? "completed" : "missing");
         analysisStartTime.current = null;
         return;
       }
@@ -939,7 +951,7 @@ export default function GameAnalyzerPage() {
         // analysisStatus change + analyzing=true will trigger polling effect
       } else {
         setAnalyzing(false);
-        setAnalysisStatus("missing");
+        setAnalysisStatus(preserveCompletedState ? "completed" : "missing");
         analysisStartTime.current = null;
       }
     } catch (err) {
@@ -947,10 +959,19 @@ export default function GameAnalyzerPage() {
       console.error(`[Analysis] Failed:`, err);
       setError(errorMessage);
       setAnalyzing(false);
-      setAnalysisStatus("missing");
+      setAnalysisStatus(preserveCompletedState ? "completed" : "missing");
       analysisStartTime.current = null;
     }
-  }, [username, gameId, depth, multiPv, handleAnalysisReady, session?.idToken, authHeaders]);
+  }, [
+    gameId,
+    depth,
+    multiPv,
+    analysisStatus,
+    handleAnalysisReady,
+    session?.idToken,
+    authHeaders,
+    buildFullAnalysisUrl,
+  ]);
 
   // Start/stop polling based on status
   useEffect(() => {
@@ -1127,7 +1148,7 @@ export default function GameAnalyzerPage() {
                   depth={depth}
                   onDepthChange={setDepth}
                   isAnalyzing={analyzing}
-                  onRunAnalysis={undefined}
+                  onRunAnalysis={() => runAnalysis(analysisStatus === "completed")}
                   lichessUrl={game?.lichess_url || (
                     site === "lichess" 
                       ? `https://lichess.org/${gameId}`
@@ -1157,16 +1178,20 @@ export default function GameAnalyzerPage() {
                 )}
               </h3>
 
-              {analysisStatus !== "completed" && !analyzing && (
+              {!analyzing && (
                 <div className="text-center py-6">
                   <button
-                    onClick={runAnalysis}
+                    onClick={() => runAnalysis(analysisStatus === "completed")}
                     className="zen-pill px-6 py-3 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition"
                   >
-                    Request in-depth analysis
+                    {analysisStatus === "completed"
+                      ? "Re-run in-depth analysis"
+                      : "Request in-depth analysis"}
                   </button>
                   <p className="text-xs text-[color:var(--zen-muted)] mt-2">
-                    Runs backend deep analysis with accuracy + insights.
+                    {analysisStatus === "completed"
+                      ? "Starts a fresh backend deep analysis and replaces this result."
+                      : "Runs backend deep analysis with accuracy + insights."}
                   </p>
                 </div>
               )}

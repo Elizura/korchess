@@ -36,7 +36,7 @@ router = APIRouter(tags=["analysis"])
 MAX_CONCURRENT_ANALYSES = 2
 active_analysis_count = 0
 active_analysis_lock = asyncio.Lock()
-DEEP_ANALYSIS_DAILY_LIMIT = max(0, int(os.environ.get("DEEP_ANALYSIS_DAILY_LIMIT", "3")))
+DEEP_ANALYSIS_DAILY_LIMIT = max(0, int(os.environ.get("DEEP_ANALYSIS_DAILY_LIMIT", "2")))
 DEEP_ANALYSIS_LIMIT_FORCE = os.environ.get("DEEP_ANALYSIS_LIMIT_FORCE", "").strip().lower() in {
     "1",
     "true",
@@ -372,6 +372,7 @@ async def run_full_analysis_endpoint(
     game_id: str,
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5),
+    force: bool = Query(default=False),
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict = Depends(get_registered_user),
 ):
@@ -384,75 +385,76 @@ async def run_full_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
-    if cached:
-        full_analysis = _build_full_analysis_payload(cached)
-        insights_payload = _load_cached_insights(cached)
-        insights_updated = False
-        if not insights_payload:
-            try:
-                game = get_game_by_id(conn, current_user["id"], username, game_id, site)
-                if game:
-                    insights_payload = compute_single_game_insights(
-                        site=site,
-                        game_id=game_id,
-                        username=username,
-                        depth=depth,
-                        multipv=multipv,
-                        full_analysis=full_analysis,
-                        game_meta=game,
+    if not force:
+        cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
+        if cached:
+            full_analysis = _build_full_analysis_payload(cached)
+            insights_payload = _load_cached_insights(cached)
+            insights_updated = False
+            if not insights_payload:
+                try:
+                    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+                    if game:
+                        insights_payload = compute_single_game_insights(
+                            site=site,
+                            game_id=game_id,
+                            username=username,
+                            depth=depth,
+                            multipv=multipv,
+                            full_analysis=full_analysis,
+                            game_meta=game,
+                        )
+                        insights_updated = True
+                except Exception as insights_err:
+                    print(
+                        f"[Analysis] Unable to hydrate missing insights for cached analysis "
+                        f"{game_id} on {site}: {insights_err}"
                     )
-                    insights_updated = True
-            except Exception as insights_err:
-                print(
-                    f"[Analysis] Unable to hydrate missing insights for cached analysis "
-                    f"{game_id} on {site}: {insights_err}"
-                )
 
-        if insights_payload:
-            game_meta_for_narration = get_game_by_id(conn, current_user["id"], username, game_id, site)
-            try:
-                narrated_payload = await asyncio.to_thread(
-                    ensure_narration,
-                    insights_payload,
-                    game_id,
-                    game_meta_for_narration,
-                    True,
-                )
-                if narrated_payload != insights_payload:
-                    insights_payload = narrated_payload
-                    insights_updated = True
-            except Exception as narration_err:
-                print(
-                    f"[Analysis] Unable to hydrate narration for cached analysis "
-                    f"{game_id} on {site}: {narration_err}"
-                )
+            if insights_payload:
+                game_meta_for_narration = get_game_by_id(conn, current_user["id"], username, game_id, site)
+                try:
+                    narrated_payload = await asyncio.to_thread(
+                        ensure_narration,
+                        insights_payload,
+                        game_id,
+                        game_meta_for_narration,
+                        True,
+                    )
+                    if narrated_payload != insights_payload:
+                        insights_payload = narrated_payload
+                        insights_updated = True
+                except Exception as narration_err:
+                    print(
+                        f"[Analysis] Unable to hydrate narration for cached analysis "
+                        f"{game_id} on {site}: {narration_err}"
+                    )
 
-        if insights_updated and insights_payload:
-            try:
-                save_full_analysis_insights(
-                    conn,
-                    current_user["id"],
-                    username,
-                    game_id,
-                    depth,
-                    multipv,
-                    site,
-                    json.dumps(insights_payload),
-                )
-                conn.commit()
-            except Exception as persist_err:
-                print(
-                    f"[Analysis] Failed to persist hydrated insights for cached analysis "
-                    f"{game_id} on {site}: {persist_err}"
-                )
+            if insights_updated and insights_payload:
+                try:
+                    save_full_analysis_insights(
+                        conn,
+                        current_user["id"],
+                        username,
+                        game_id,
+                        depth,
+                        multipv,
+                        site,
+                        json.dumps(insights_payload),
+                    )
+                    conn.commit()
+                except Exception as persist_err:
+                    print(
+                        f"[Analysis] Failed to persist hydrated insights for cached analysis "
+                        f"{game_id} on {site}: {persist_err}"
+                    )
 
-        return FullAnalysisResponse(
-            status="completed",
-            analysis=full_analysis,
-            insights=insights_payload,
-            created_at=cached["created_at"]
-        )
+            return FullAnalysisResponse(
+                status="completed",
+                analysis=full_analysis,
+                insights=insights_payload,
+                created_at=cached["created_at"]
+            )
 
     existing_job = get_analysis_job(conn, current_user["id"], username, game_id, depth, multipv, site)
     if existing_job:

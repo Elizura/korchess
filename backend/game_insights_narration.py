@@ -17,7 +17,7 @@ import httpx
 LOGGER = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GAME_INSIGHTS_GEMINI_MODEL", "gemini-2.0-flash").strip()
+GEMINI_MODEL = os.environ.get("GAME_INSIGHTS_GEMINI_MODEL", "gemini-2.5-flash").strip()
 GEMINI_TIMEOUT_S = max(3, int(os.environ.get("GAME_INSIGHTS_GEMINI_TIMEOUT_S", "8")))
 GEMINI_MIN_INTERVAL_MS = max(0, int(os.environ.get("GAME_INSIGHTS_GEMINI_MIN_INTERVAL_MS", "1200")))
 NARRATION_SCHEMA_VERSION = os.environ.get("GAME_INSIGHTS_NARRATION_SCHEMA_VERSION", "2").strip() or "2"
@@ -425,13 +425,13 @@ def _gemini_request(system_prompt: str, user_prompt: str, game_id: str) -> tuple
                     return None, "empty_response"
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response is not None else None
-        LOGGER.warning("Gemini HTTP error for game %s (status=%s)", game_id, status)
+        LOGGER.warning("Gemini HTTP error for game %s (status=%s): %s", game_id, status, exc)
         return None, f"http_{status}" if status else "http_error"
     except httpx.RequestError as exc:
-        LOGGER.warning("Gemini network error for game %s (%s)", game_id, exc.__class__.__name__)
+        LOGGER.warning("Gemini network error for game %s (%s): %s", game_id, exc.__class__.__name__, exc)
         return None, "network_error"
     except Exception as exc:
-        LOGGER.warning("Gemini request failed for game %s (%s)", game_id, exc.__class__.__name__)
+        LOGGER.warning("Gemini request failed for game %s (%s): %s", game_id, exc.__class__.__name__, exc)
         return None, "request_error"
 
     LOGGER.warning("Gemini request exhausted retries for game %s", game_id)

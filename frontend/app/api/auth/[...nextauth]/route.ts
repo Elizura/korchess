@@ -12,6 +12,28 @@ type ExtendedToken = JWT & {
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const IS_PROD = process.env.NODE_ENV === "production";
+
+// Ensure NextAuth has stable runtime config even if env vars are missing in local dev.
+const NEXTAUTH_URL =
+  process.env.NEXTAUTH_URL ||
+  process.env.AUTH_URL ||
+  (IS_PROD ? "" : "http://localhost:3000");
+const NEXTAUTH_SECRET =
+  process.env.NEXTAUTH_SECRET ||
+  process.env.AUTH_SECRET ||
+  (IS_PROD ? "" : "local-dev-nextauth-secret-change-me");
+
+if (NEXTAUTH_URL && !process.env.NEXTAUTH_URL) {
+  process.env.NEXTAUTH_URL = NEXTAUTH_URL;
+}
+if (NEXTAUTH_SECRET && !process.env.NEXTAUTH_SECRET) {
+  process.env.NEXTAUTH_SECRET = NEXTAUTH_SECRET;
+}
+
+if (IS_PROD && !NEXTAUTH_SECRET) {
+  throw new Error("NEXTAUTH_SECRET is required in production.");
+}
 
 async function refreshGoogleTokens(token: ExtendedToken): Promise<ExtendedToken> {
   if (!token.refreshToken) {
@@ -67,6 +89,7 @@ async function refreshGoogleTokens(token: ExtendedToken): Promise<ExtendedToken>
 }
 
 const handler = NextAuth({
+  secret: NEXTAUTH_SECRET,
   providers: [
     GoogleProvider({
       clientId: GOOGLE_CLIENT_ID,
