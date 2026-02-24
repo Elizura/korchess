@@ -3,10 +3,10 @@
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
-from db import get_game_by_id
+from db import get_game_by_id, get_public_user_id_for_username
 from schemas import GameResponse
 from dependencies import get_db, validate_site
-from auth import get_registered_user
+from auth import get_optional_user
 
 router = APIRouter(tags=["games"])
 
@@ -17,7 +17,7 @@ async def get_game(
     username: str,
     game_id: str,
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict = Depends(get_registered_user),
+    current_user: dict | None = Depends(get_optional_user),
 ):
     """Get game metadata and PGN."""
     site = validate_site(site)
@@ -26,7 +26,8 @@ async def get_game(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+    user_id = get_public_user_id_for_username(conn, username)
+    game = get_game_by_id(conn, user_id, username, game_id, site)
 
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
