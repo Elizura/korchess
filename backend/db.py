@@ -9,6 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+PUBLIC_USER_ID_PREFIX = "public:"
 
 
 def get_connection() -> psycopg.Connection:
@@ -21,6 +22,39 @@ def get_connection() -> psycopg.Connection:
         row_factory=dict_row,
         connect_timeout=5,
     )
+
+
+def public_user_id_for_username(username: str) -> str:
+    """Build canonical public owner ID for shared username-scoped data."""
+    canonical_username = username.strip().lower()
+    if not canonical_username:
+        raise ValueError("Username is required.")
+    return f"{PUBLIC_USER_ID_PREFIX}{canonical_username}"
+
+
+def get_public_user_id_for_username(conn: psycopg.Connection, username: str) -> str:
+    """Resolve shared public owner ID for username (no writes)."""
+    del conn  # keep backwards-compatible signature for existing call sites
+    return public_user_id_for_username(username)
+
+
+def ensure_public_user_for_username(conn: psycopg.Connection, username: str) -> str:
+    """Ensure the shared public user exists and return its ID."""
+    canonical_username = username.strip().lower()
+    if not canonical_username:
+        raise ValueError("Username is required.")
+
+    public_user_id = public_user_id_for_username(canonical_username)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO users (id, name, username)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (public_user_id, f"Public {canonical_username}", canonical_username),
+    )
+    return public_user_id
 
 
 def init_db() -> None:
