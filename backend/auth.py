@@ -16,17 +16,10 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 security = HTTPBearer(auto_error=False)
 
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> dict[str, Any]:
-    """Verify Google ID token and return user profile."""
+def _verify_google_token(token: str) -> dict[str, Any]:
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID is not set.")
 
-    if credentials is None or not credentials.credentials:
-        raise HTTPException(status_code=401, detail="Missing authorization token.")
-
-    token = credentials.credentials
     try:
         id_info = id_token.verify_oauth2_token(
             token,
@@ -42,6 +35,27 @@ def get_current_user(
         "name": id_info.get("name"),
         "picture": id_info.get("picture"),
     }
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> dict[str, Any]:
+    """Verify Google ID token and return user profile."""
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Missing authorization token.")
+
+    return _verify_google_token(credentials.credentials)
+
+
+def get_optional_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> dict[str, Any] | None:
+    """Return authenticated user if bearer token exists; otherwise None."""
+    if credentials is None:
+        return None
+    if not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Invalid authorization token.")
+    return _verify_google_token(credentials.credentials)
 
 
 def get_registered_user(
