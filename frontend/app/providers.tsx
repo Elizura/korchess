@@ -12,7 +12,11 @@ function RegisterOnLogin() {
   useEffect(() => {
     const authError = (session as any)?.authError as string | undefined;
     if (authError === "RefreshAccessTokenError") {
-      signOut({ callbackUrl: "/signup" });
+      const callbackUrl =
+        typeof window !== "undefined"
+          ? `${window.location.pathname}${window.location.search}`
+          : "/dashboard";
+      signOut({ callbackUrl });
       return;
     }
 

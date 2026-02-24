@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 import { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { signOut, useSession } from "next-auth/react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import {
   PAGE_DATA_CACHE_TTL_MS,
   buildDashboardCacheKey,
@@ -169,6 +169,7 @@ export default function DashboardPage() {
     }
     return { Authorization: `Bearer ${session.idToken}` };
   }, [session?.idToken]);
+  const isAuthenticated = status === "authenticated" && !!session?.idToken;
   
   const [username, setUsername] = useState("");
   const [lichessUsername, setLichessUsername] = useState("");
@@ -201,16 +202,9 @@ export default function DashboardPage() {
   const [reportRefreshing, setReportRefreshing] = useState(false);
   const [reportRefreshNotice, setReportRefreshNotice] = useState<string | null>(null);
 
-  // Redirect unauthenticated users to signup
-  useEffect(() => {
-    if (status === "unauthenticated") {
-      router.replace("/signup");
-    }
-  }, [status, router]);
-
   // Redirect authenticated users who haven't completed onboarding; fetch profile for nav
   useEffect(() => {
-    if (status !== "authenticated" || !session?.idToken) return;
+    if (!isAuthenticated) return;
 
     const checkOnboarding = async () => {
       try {
@@ -218,10 +212,6 @@ export default function DashboardPage() {
           `${API_BASE_URL}/api/v1/auth/profile`,
           { headers: { Authorization: `Bearer ${session.idToken}` } }
         );
-        if (res.status === 401) {
-          router.replace("/signup");
-          return;
-        }
         if (!res.ok) return;
         const profile = await res.json();
         setProfileUsername(profile.username || "");
@@ -235,20 +225,21 @@ export default function DashboardPage() {
     };
 
     checkOnboarding();
-  }, [status, session?.idToken, router]);
+  }, [isAuthenticated, router, session?.idToken]);
 
   // Fetch import history when authenticated
   useEffect(() => {
-    if (status === "authenticated" && session?.idToken) {
+    if (isAuthenticated) {
       fetchImportHistory();
     }
-  }, [status, session?.idToken, authUserId]);
+  }, [isAuthenticated, authUserId]);
 
   useEffect(() => {
-    if (status !== "authenticated" || !session?.idToken || !currentUsername) {
+    if (!currentUsername) {
       setInsights(null);
       return;
     }
+    if (status === "loading") return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -373,9 +364,6 @@ export default function DashboardPage() {
   };
 
   const fetchInsights = async (user: string): Promise<InsightsProfile | null> => {
-    if (!session?.idToken) {
-      return null;
-    }
     const params = new URLSearchParams();
     params.set("username", user);
     params.set("site", "all");
@@ -392,9 +380,6 @@ export default function DashboardPage() {
   };
 
   const requestInsightsRefresh = async (user: string, force = true): Promise<InsightsProfile | null> => {
-    if (!session?.idToken) {
-      return null;
-    }
     const response = await fetch(`${API_BASE_URL}/api/v1/insights/profile`, {
       method: "POST",
       headers: {
@@ -414,9 +399,6 @@ export default function DashboardPage() {
   };
 
   const fetchVariations = async (user: string, openingKey: string) => {
-    if (!session?.idToken) {
-      return [];
-    }
     const params = new URLSearchParams();
     params.set("opening_key", openingKey);
     params.set("color", colorFilter);
@@ -503,9 +485,10 @@ export default function DashboardPage() {
     }
   };
 
-  // Restore state from URL on mount and when session becomes available
+  // Restore state from URL on mount
   useEffect(() => {
     if (!userFromUrl) return;
+    if (status === "loading") return;
 
     if (!initialized) {
       setInitialized(true);
@@ -514,14 +497,9 @@ export default function DashboardPage() {
       persistLastUser(userFromUrl);
     }
 
-    // Wait for session to be ready before loading - don't set error if session is still loading
-    if (!session?.idToken) {
-      return; // Session may still be hydrating; effect will re-run when it's ready
-    }
-
     setError(null);
     void loadDashboardBundle(userFromUrl, colorFilter, timeClassFilter);
-  }, [userFromUrl, initialized, colorFilter, timeClassFilter, session?.idToken, authUserId]);
+  }, [userFromUrl, initialized, colorFilter, timeClassFilter, authUserId, status]);
 
   // Update URL and persist last selected user
   const updateUrl = (user: string | null) => {
@@ -532,10 +510,6 @@ export default function DashboardPage() {
   };
 
   const handleImportLichess = async () => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
-      return;
-    }
     if (!lichessUsername.trim()) {
       setError("Please enter a Lichess username");
       return;
@@ -611,10 +585,6 @@ export default function DashboardPage() {
   };
 
   const handleImportChesscom = async () => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
-      return;
-    }
     if (!chesscomUsername.trim()) {
       setError("Please enter a Chess.com username");
       return;
@@ -819,7 +789,7 @@ export default function DashboardPage() {
 
   // When no user in URL but we have history: auto-load last selected or most recent user
   useEffect(() => {
-    if (status !== "authenticated" || !session?.idToken) return;
+    if (!isAuthenticated) return;
     if (userFromUrl) {
       hasAutoLoadedFromHistory.current = false;
       return;
@@ -845,8 +815,7 @@ export default function DashboardPage() {
 
     handleHistoryItemClick(userToLoad);
   }, [
-    status,
-    session?.idToken,
+    isAuthenticated,
     userFromUrl,
     uniqueHistoryByUser,
     // handleHistoryItemClick intentionally omitted to avoid re-running on every render
@@ -894,7 +863,7 @@ export default function DashboardPage() {
     return "Unavailable";
   }, [insights?.lifecycle_status]);
 
-  if (status === "loading" || status === "unauthenticated") {
+  if (status === "loading") {
     return (
       <div className="opening-page min-h-screen flex items-center justify-center">
         <div className="font-display text-xs uppercase tracking-widest text-[color:var(--zen-muted)]">
@@ -916,36 +885,52 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <button
-            type="button"
-            onClick={() => router.push("/profile/edit")}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)] hover:bg-[color:var(--zen-surface-2)] transition-colors cursor-pointer"
-          >
-            <div className="w-9 h-9 flex items-center justify-center shrink-0">
-              <span
-                className="material-symbols-outlined text-lg text-[color:var(--zen-text)]"
-                style={{
-                  fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 48",
-                }}
+          {isAuthenticated ? (
+            <>
+              <button
+                type="button"
+                onClick={() => router.push("/profile/edit")}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)] hover:bg-[color:var(--zen-surface-2)] transition-colors cursor-pointer"
               >
-                chess_{profileAvatar}
-              </span>
-            </div>
-            <span className="font-display text-[8px] uppercase tracking-wider text-[color:var(--zen-accent)]">
-              {profileUsername || "..."}
-            </span>
-          </button>
-          <button
-            onClick={handleSignOut}
-            className="bg-primary text-white font-display text-[9px] uppercase tracking-wider px-5 py-2.5 rounded-lg border-2 border-[#7d8fd4] shadow-[0_4px_0_0_#3b4887] hover:bg-primary/90 active:translate-y-1 active:shadow-[0_2px_0_0_#3b4887] transition-all"
-          >
-            SIGN OUT
-          </button>
+                <div className="w-9 h-9 flex items-center justify-center shrink-0">
+                  <span
+                    className="material-symbols-outlined text-lg text-[color:var(--zen-text)]"
+                    style={{
+                      fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 48",
+                    }}
+                  >
+                    chess_{profileAvatar}
+                  </span>
+                </div>
+                <span className="font-display text-[8px] uppercase tracking-wider text-[color:var(--zen-accent)]">
+                  {profileUsername || "..."}
+                </span>
+              </button>
+              <button
+                onClick={handleSignOut}
+                className="bg-primary text-white font-display text-[9px] uppercase tracking-wider px-5 py-2.5 rounded-lg border-2 border-[#7d8fd4] shadow-[0_4px_0_0_#3b4887] hover:bg-primary/90 active:translate-y-1 active:shadow-[0_2px_0_0_#3b4887] transition-all"
+              >
+                SIGN OUT
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => signIn("google", { callbackUrl: "/dashboard" })}
+              className="bg-primary text-white font-display text-[9px] uppercase tracking-wider px-5 py-2.5 rounded-lg border-2 border-[#7d8fd4] shadow-[0_4px_0_0_#3b4887] hover:bg-primary/90 active:translate-y-1 active:shadow-[0_2px_0_0_#3b4887] transition-all"
+            >
+              SIGN IN
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-        {/* Recently analyzed - always visible */}
+      <div
+        className={[
+          "grid grid-cols-1 gap-4",
+          isAuthenticated ? "xl:grid-cols-[280px_minmax(0,1fr)]" : "",
+        ].join(" ")}
+      >
+        {isAuthenticated && (
         <div className="zen-surface-flat px-4 py-4 h-fit rounded-xl border border-[color:var(--zen-border)]">
           <div className="flex items-baseline justify-between gap-2 mb-3">
             <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
@@ -984,6 +969,7 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+        )}
 
         <div className="min-w-0 space-y-6">
         <div className="zen-surface opening-frame p-5 sm:p-6">
