@@ -10,18 +10,19 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import (
-    get_connection,
+    count_user_full_analysis_completed_utc_day,
+    create_analysis_job,
+    delete_analysis_job,
     get_analysis,
-    save_analysis,
-    get_game_by_id,
+    get_analysis_job,
+    get_connection,
     get_full_analysis,
+    get_game_by_id,
+    get_public_user_id_for_username,
+    log_full_analysis_request,
+    save_analysis,
     save_full_analysis,
     save_full_analysis_insights,
-    create_analysis_job,
-    get_analysis_job,
-    delete_analysis_job,
-    count_user_full_analysis_completed_utc_day,
-    log_full_analysis_request,
 )
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis
@@ -30,7 +31,7 @@ from single_game_insights import compute_single_game_insights
 
 from schemas import AnalysisResponse, FullAnalysisResponse, SingleGameInsightsResponse
 from dependencies import get_db, validate_site
-from auth import get_registered_user
+from auth import get_optional_user, get_registered_user
 
 router = APIRouter(tags=["analysis"])
 
@@ -94,9 +95,30 @@ def _load_cached_insights(cached: dict) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _resolve_public_user_id(conn: psycopg.Connection, username: str) -> str:
+    return get_public_user_id_for_username(conn, username)
+
+
+def _get_game_for_deep_analysis(
+    conn: psycopg.Connection,
+    signed_user_id: str,
+    username: str,
+    game_id: str,
+    site: str,
+) -> tuple[dict | None, str]:
+    public_user_id = _resolve_public_user_id(conn, username)
+    public_game = get_game_by_id(conn, public_user_id, username, game_id, site)
+    if public_game:
+        return public_game, public_user_id
+
+    private_game = get_game_by_id(conn, signed_user_id, username, game_id, site)
+    return private_game, signed_user_id
+
+
 async def run_analysis_background(
     job_id: str,
     user_id: str,
+    source_user_id: str,
     username: str,
     game_id: str,
     pgn: str,
@@ -123,7 +145,7 @@ async def run_analysis_background(
         try:
             insights_payload: dict | None = None
             try:
-                game_meta = get_game_by_id(conn, user_id, username, game_id, site)
+                game_meta = get_game_by_id(conn, source_user_id, username, game_id, site)
                 if game_meta:
                     raw_insights = compute_single_game_insights(
                         site=site,
@@ -186,7 +208,7 @@ async def get_analysis_endpoint(
     username: str,
     game_id: str,
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict = Depends(get_registered_user),
+    current_user: dict | None = Depends(get_optional_user),
 ):
     """Get cached analysis for a game."""
     site = validate_site(site)
@@ -195,7 +217,8 @@ async def get_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached = get_analysis(conn, current_user["id"], username, game_id, site)
+    user_id = _resolve_public_user_id(conn, username)
+    cached = get_analysis(conn, user_id, username, game_id, site)
 
     if not cached:
         return AnalysisResponse(status="missing")
@@ -213,7 +236,7 @@ async def run_analysis_endpoint(
     username: str,
     game_id: str,
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict = Depends(get_registered_user),
+    current_user: dict | None = Depends(get_optional_user),
 ):
     """Run analysis on a game (or return cached)."""
     site = validate_site(site)
@@ -222,7 +245,8 @@ async def run_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached = get_analysis(conn, current_user["id"], username, game_id, site)
+    user_id = _resolve_public_user_id(conn, username)
+    cached = get_analysis(conn, user_id, username, game_id, site)
     if cached:
         return AnalysisResponse(
             status="ready",
@@ -230,7 +254,7 @@ async def run_analysis_endpoint(
             created_at=cached["created_at"]
         )
 
-    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+    game = get_game_by_id(conn, user_id, username, game_id, site)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
@@ -244,7 +268,7 @@ async def run_analysis_endpoint(
 
     settings = {"time_ms": 150, "checkpoints": [10, 20, 30, 40]}
     save_analysis(
-        conn, current_user["id"], username, game_id, site,
+        conn, user_id, username, game_id, site,
         engine_name="stockfish",
         engine_version="15+",
         settings_json=json.dumps(settings),
@@ -252,7 +276,7 @@ async def run_analysis_endpoint(
     )
     conn.commit()
 
-    saved = get_analysis(conn, current_user["id"], username, game_id, site)
+    saved = get_analysis(conn, user_id, username, game_id, site)
 
     return AnalysisResponse(
         status="ready",
@@ -298,7 +322,9 @@ async def get_single_game_insights_endpoint(
     if cached_insights:
         return SingleGameInsightsResponse(**cached_insights)
 
-    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+    game, _source_user_id = _get_game_for_deep_analysis(
+        conn, current_user["id"], username, game_id, site
+    )
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
@@ -394,7 +420,9 @@ async def run_full_analysis_endpoint(
             insights_updated = False
             if not insights_payload:
                 try:
-                    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+                    game, _source_user_id = _get_game_for_deep_analysis(
+                        conn, current_user["id"], username, game_id, site
+                    )
                     if game:
                         insights_payload = compute_single_game_insights(
                             site=site,
@@ -413,7 +441,9 @@ async def run_full_analysis_endpoint(
                     )
 
             if insights_payload:
-                game_meta_for_narration = get_game_by_id(conn, current_user["id"], username, game_id, site)
+                game_meta_for_narration, _source_user_id = _get_game_for_deep_analysis(
+                    conn, current_user["id"], username, game_id, site
+                )
                 try:
                     narrated_payload = await asyncio.to_thread(
                         ensure_narration,
@@ -491,7 +521,9 @@ async def run_full_analysis_endpoint(
         active_analysis_count += 1
         print(f"[Analysis] Starting new analysis. Active count: {active_analysis_count}")
 
-    game = get_game_by_id(conn, current_user["id"], username, game_id, site)
+    game, source_user_id = _get_game_for_deep_analysis(
+        conn, current_user["id"], username, game_id, site
+    )
     if not game:
         async with active_analysis_lock:
             active_analysis_count -= 1
@@ -515,8 +547,18 @@ async def run_full_analysis_endpoint(
     create_analysis_job(conn, job_id, current_user["id"], username, game_id, depth, multipv, site)
     conn.commit()
 
-    asyncio.create_task(run_analysis_background(
-        job_id, current_user["id"], username, game_id, game["pgn"], depth, multipv, site
-    ))
+    asyncio.create_task(
+        run_analysis_background(
+            job_id,
+            current_user["id"],
+            source_user_id,
+            username,
+            game_id,
+            game["pgn"],
+            depth,
+            multipv,
+            site,
+        )
+    )
 
     return FullAnalysisResponse(status="processing")
