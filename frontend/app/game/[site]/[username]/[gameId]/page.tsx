@@ -305,6 +305,7 @@ export default function GameAnalyzerPage() {
     }
     return { Authorization: `Bearer ${session.idToken}` };
   }, [session?.idToken]);
+  const isAuthenticated = !!session?.idToken;
 
   // State
   const [game, setGame] = useState<GameData | null>(null);
@@ -779,10 +780,6 @@ export default function GameAnalyzerPage() {
       setSingleInsightsStatus("idle");
 
       try {
-        if (!session?.idToken) {
-          setError("Please sign in with Google to continue.");
-          return;
-        }
         // Fetch game data
         const gameRes = await fetch(
           `${API_BASE_URL}/api/v1/game/${site}/${encodeURIComponent(username)}/${gameId}`,
@@ -826,7 +823,7 @@ export default function GameAnalyzerPage() {
     if (username && gameId) {
       fetchData();
     }
-  }, [username, gameId, session?.idToken, authHeaders]);
+  }, [site, username, gameId, authHeaders]);
 
   // Stop polling
   const stopPolling = useCallback(() => {
@@ -878,7 +875,7 @@ export default function GameAnalyzerPage() {
   // Hydrate cached in-depth analysis on page load (does not start a new job)
   useEffect(() => {
     const hydrateCachedAnalysis = async () => {
-      if (!game || !session?.idToken) return;
+      if (!game || !isAuthenticated) return;
       if (analysisStatus === "completed" || analyzing) return;
 
       try {
@@ -896,7 +893,7 @@ export default function GameAnalyzerPage() {
     hydrateCachedAnalysis();
   }, [
     game,
-    session?.idToken,
+    isAuthenticated,
     site,
     username,
     gameId,
@@ -942,8 +939,8 @@ export default function GameAnalyzerPage() {
 
   // Run full analysis (starts background job and begins polling)
   const runAnalysis = useCallback(async (force = false) => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
+    if (!isAuthenticated) {
+      setError("Sign in to request in-depth analysis.");
       return;
     }
     const preserveCompletedState = force && analysisStatus === "completed";
@@ -1009,7 +1006,7 @@ export default function GameAnalyzerPage() {
     multiPv,
     analysisStatus,
     handleAnalysisReady,
-    session?.idToken,
+    isAuthenticated,
     authHeaders,
     buildFullAnalysisUrl,
   ]);
@@ -1225,12 +1222,16 @@ export default function GameAnalyzerPage() {
                     onClick={() => runAnalysis(analysisStatus === "completed")}
                     className="zen-pill px-6 py-3 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition"
                   >
-                    {analysisStatus === "completed"
+                    {!isAuthenticated
+                      ? "Sign in for in-depth analysis"
+                      : analysisStatus === "completed"
                       ? "Re-run in-depth analysis"
                       : "Request in-depth analysis"}
                   </button>
                   <p className="text-xs text-[color:var(--zen-muted)] mt-2">
-                    {analysisStatus === "completed"
+                    {!isAuthenticated
+                      ? "In-depth analysis is available after sign in."
+                      : analysisStatus === "completed"
                       ? "Starts a fresh backend deep analysis and replaces this result."
                       : "Runs backend deep analysis with accuracy + insights."}
                   </p>

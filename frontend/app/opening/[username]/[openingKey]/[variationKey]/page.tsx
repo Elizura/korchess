@@ -124,10 +124,6 @@ export default function OpeningDetailPage() {
     );
 
   const fetchGames = async (resetOffset: boolean = false, options?: { force?: boolean }) => {
-    if (!session?.idToken) {
-      setError("Please sign in with Google to continue.");
-      return;
-    }
     const force = Boolean(options?.force);
     const currentOffset = resetOffset ? 0 : offset;
     let hasCached = false;
@@ -220,12 +216,10 @@ export default function OpeningDetailPage() {
   };
 
   useEffect(() => {
-    if (username && openingKey && session?.idToken) {
+    if (username && openingKey) {
       void fetchGames(true);
-    } else if (username && openingKey && !session?.idToken) {
-      setError("Please sign in with Google to continue.");
     }
-  }, [username, openingKey, variationKey, colorFilter, timeClassFilter, resultFilter, site, session?.idToken, authUserId]);
+  }, [username, openingKey, variationKey, colorFilter, timeClassFilter, resultFilter, site, authUserId]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";

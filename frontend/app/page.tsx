@@ -73,7 +73,7 @@ export default function LandingPage() {
           </p>
           <div className="flex flex-col items-center">
             <Link
-              href={session?.user ? "/dashboard" : "/signup"}
+              href="/dashboard"
               className="bg-primary hover:bg-primary/90 text-white px-8 py-4 font-display text-xs pixel-border-primary flex items-center gap-3 group transition-all transform hover:-translate-y-1 active:translate-y-0"
             >
               <span className="material-symbols-outlined text-base">
