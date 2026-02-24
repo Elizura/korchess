@@ -1,9 +1,11 @@
 """AI insights endpoints."""
 
+import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from auth import get_registered_user
-from dependencies import validate_site
+from auth import get_optional_user
+from db import ensure_public_user_for_username, get_public_user_id_for_username
+from dependencies import get_db, validate_site
 from insights import get_insights_state, schedule_insights_refresh
 from schemas import InsightsProfileResponse, InsightsRequest
 
@@ -42,7 +44,8 @@ def _build_profile_response(state: dict) -> InsightsProfileResponse:
 async def get_insights_profile(
     username: str = Query(..., min_length=1, max_length=50),
     site: str = Query(default="all", pattern="^(all|lichess|chesscom)$"),
-    current_user: dict = Depends(get_registered_user),
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict | None = Depends(get_optional_user),
 ):
     """Get current AI insights snapshot and background status."""
     site = validate_site(site)
@@ -50,14 +53,17 @@ async def get_insights_profile(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    state = get_insights_state(current_user["id"], username, site)
+    public_user_id = get_public_user_id_for_username(conn, username)
+    user_id = current_user["id"] if current_user else public_user_id
+    state = get_insights_state(user_id, username, site)
     return _build_profile_response(state)
 
 
 @router.post("/insights/profile", response_model=InsightsProfileResponse)
 async def refresh_insights_profile(
     request: InsightsRequest,
-    current_user: dict = Depends(get_registered_user),
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict | None = Depends(get_optional_user),
 ):
     """Queue or reuse an AI insights generation job for the user."""
     site = validate_site(request.site)
@@ -65,13 +71,21 @@ async def refresh_insights_profile(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
+    public_user_id = ensure_public_user_for_username(conn, username)
+    user_id = current_user["id"] if current_user else public_user_id
+    allow_deep = bool(current_user)
+    allow_llm = bool(current_user)
+
     schedule_insights_refresh(
-        user_id=current_user["id"],
+        user_id=user_id,
         username=username,
         site=site,
         reason="manual_refresh",
         force=request.force,
+        allow_deep=allow_deep,
+        allow_llm=allow_llm,
+        source_user_id=public_user_id,
     )
 
-    state = get_insights_state(current_user["id"], username, site)
+    state = get_insights_state(user_id, username, site)
     return _build_profile_response(state)
