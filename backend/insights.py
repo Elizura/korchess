@@ -1072,9 +1072,17 @@ def _generate_llm_narrative(
     return _extract_json_from_content(content)
 
 
-def build_narrative(features: dict[str, Any], fact_map: dict[str, Any]) -> dict[str, Any]:
+def build_narrative(
+    features: dict[str, Any],
+    fact_map: dict[str, Any],
+    *,
+    allow_llm: bool = True,
+) -> dict[str, Any]:
     """Generate grounded narrative with verifier + deterministic fallback."""
     fallback = _build_fallback_narrative(features)
+    if not allow_llm:
+        return fallback
+
     llm_output = _generate_llm_narrative(features, fact_map)
     if llm_output and verify_narrative(llm_output, fact_map):
         llm_output["meta"] = {
@@ -1123,9 +1131,13 @@ async def run_insights_pipeline(
     user_id: str,
     username: str,
     site: str = "all",
+    allow_deep: bool = True,
+    allow_llm: bool = True,
+    source_user_id: str | None = None,
 ) -> None:
     """Run tiered insights processing for a user."""
     started_at = _utc_now_iso()
+    source_owner_id = source_user_id or user_id
     async with _INSIGHTS_SEMAPHORE:
         conn = get_connection()
         try:
@@ -1146,7 +1158,7 @@ async def run_insights_pipeline(
             try:
                 games = get_games_for_insights(
                     conn,
-                    user_id=user_id,
+                    user_id=source_owner_id,
                     username=username,
                     site=site,
                     limit=MAX_GAMES_WINDOW,
@@ -1234,7 +1246,7 @@ async def run_insights_pipeline(
                 conn.close()
 
             features, coverage, fact_map = _build_aggregate_features(games, stored_features)
-            narrative = build_narrative(features, fact_map)
+            narrative = build_narrative(features, fact_map, allow_llm=allow_llm)
 
             initial_status = "baseline_ready" if coverage.get("has_enough_games") else "not_enough_data"
             await _save_snapshot(
@@ -1264,7 +1276,9 @@ async def run_insights_pipeline(
                     conn.close()
                 return
 
-            deep_candidates = _select_deep_candidates(games, stored_features, DEEP_ANALYSIS_BUDGET)
+            deep_candidates = []
+            if allow_deep:
+                deep_candidates = _select_deep_candidates(games, stored_features, DEEP_ANALYSIS_BUDGET)
             if deep_candidates:
                 conn = get_connection()
                 try:
@@ -1334,7 +1348,7 @@ async def run_insights_pipeline(
                     conn.close()
 
                 features, coverage, fact_map = _build_aggregate_features(games, stored_features)
-                narrative = build_narrative(features, fact_map)
+                narrative = build_narrative(features, fact_map, allow_llm=allow_llm)
 
             await _save_snapshot(
                 user_id=user_id,
@@ -1382,10 +1396,13 @@ def schedule_insights_refresh(
     site: str = "all",
     reason: str = "manual_refresh",
     force: bool = False,
+    allow_deep: bool = True,
+    allow_llm: bool = True,
+    source_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Create an insights job if none is currently active, then schedule it."""
-    print("is it even being called >>>>>>>>>>>>>>>>>>>>>>")
     canonical_username = username.strip().lower()
+    source_owner_id = source_user_id or user_id
     conn = get_connection()
     try:
         active = get_active_insight_job(conn, user_id, canonical_username, site)
@@ -1407,7 +1424,12 @@ def schedule_insights_refresh(
             stage="queued",
             reason=reason,
             feature_version=FEATURE_VERSION,
-            meta={"window_size": MAX_GAMES_WINDOW},
+            meta={
+                "window_size": MAX_GAMES_WINDOW,
+                "allow_deep": allow_deep,
+                "allow_llm": allow_llm,
+                "source_user_id": source_owner_id,
+            },
         )
         conn.commit()
     finally:
@@ -1415,7 +1437,17 @@ def schedule_insights_refresh(
 
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(run_insights_pipeline(job_id, user_id, canonical_username, site))
+        loop.create_task(
+            run_insights_pipeline(
+                job_id,
+                user_id,
+                canonical_username,
+                site,
+                allow_deep=allow_deep,
+                allow_llm=allow_llm,
+                source_user_id=source_owner_id,
+            )
+        )
     except RuntimeError:
         # No active event loop: job is recorded as queued and can be resumed by API-triggered calls.
         pass
