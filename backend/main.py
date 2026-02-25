@@ -13,6 +13,7 @@ from routers import (
     eval as eval_router,
     auth as auth_router,
     insights as insights_router,
+    analytics as analytics_router,
 )
 
 app = FastAPI(
@@ -50,3 +51,4 @@ app.include_router(games.router, prefix="/api/v1")
 app.include_router(analysis.router, prefix="/api/v1/analysis")
 app.include_router(eval_router.router, prefix="/api/v1")
 app.include_router(insights_router.router, prefix="/api/v1")
+app.include_router(analytics_router.router, prefix="/api/v1")
