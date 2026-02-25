@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { signIn, signOut, useSession } from "next-auth/react";
+import { trackEvent } from "@/lib/analytics/client";
 
 export default function LandingPage() {
   const { data: session } = useSession();
@@ -74,6 +75,14 @@ export default function LandingPage() {
           <div className="flex flex-col items-center">
             <Link
               href="/dashboard"
+              onClick={() =>
+                trackEvent("cta.click", {
+                  properties: {
+                    cta_name: "start_your_quest",
+                    source: "landing_hero",
+                  },
+                })
+              }
               className="bg-primary hover:bg-primary/90 text-white px-8 py-4 font-display text-xs pixel-border-primary flex items-center gap-3 group transition-all transform hover:-translate-y-1 active:translate-y-0"
             >
               <span className="material-symbols-outlined text-base">
@@ -261,7 +270,7 @@ export default function LandingPage() {
           <div className="font-display text-[8px] opacity-40">
             © 2024 KORCHESS // ALL SYSTEMS NOMINAL
           </div>
-          <div className="flex gap-6">
+          <div className="flex gap-6 items-center">
             <a
               className="font-display text-[8px] hover:text-accent-green transition-colors uppercase"
               href="#"
@@ -280,8 +289,17 @@ export default function LandingPage() {
             >
               GitHub
             </a>
+            <Link
+              className="font-display text-[8px] hover:text-accent-green transition-colors uppercase"
+              href="/privacy"
+            >
+              Privacy
+            </Link>
           </div>
         </div>
+        <p className="max-w-5xl mx-auto mt-4 text-[8px] font-display opacity-40 uppercase tracking-wide">
+          We use privacy-safe product analytics to improve core features. No raw IPs or game PGNs are stored in analytics.
+        </p>
       </footer>
     </div>
   );
