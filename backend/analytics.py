@@ -42,6 +42,7 @@ POSTHOG_HOST = os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com").rstrip
 POSTHOG_TIMEOUT_S = max(2, int(os.environ.get("POSTHOG_TIMEOUT_S", "4")))
 IPINFO_TOKEN = os.environ.get("ANALYTICS_IPINFO_TOKEN", "").strip()
 IPINFO_TIMEOUT_S = max(1, int(os.environ.get("ANALYTICS_IPINFO_TIMEOUT_S", "2")))
+ANALYTICS_ENABLED_ENV = os.environ.get("ANALYTICS_ENABLED", "").strip().lower()
 
 _GEO_CACHE_TTL = timedelta(hours=6)
 _GEO_CACHE: dict[str, tuple[datetime, dict[str, str | None]]] = {}
@@ -50,6 +51,39 @@ logger = logging.getLogger(__name__)
 
 class AnalyticsValidationError(ValueError):
     """Raised when incoming analytics payload is invalid."""
+
+
+def _is_production_environment() -> bool:
+    for key in ("ENVIRONMENT", "APP_ENV", "NODE_ENV"):
+        if os.environ.get(key, "").strip().lower() == "production":
+            return True
+    return False
+
+
+def _analytics_env_enabled() -> bool:
+    if ANALYTICS_ENABLED_ENV in {"1", "true", "yes", "on"}:
+        return True
+    if ANALYTICS_ENABLED_ENV in {"0", "false", "no", "off"}:
+        return False
+    return _is_production_environment()
+
+
+def _is_local_hostname(hostname: str) -> bool:
+    value = (hostname or "").strip().lower()
+    if not value:
+        return False
+    if ":" in value:
+        value = value.split(":", 1)[0]
+    return value in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _analytics_enabled_for_request(request: Request | None) -> bool:
+    if not _analytics_env_enabled():
+        return False
+    if request is None:
+        return True
+    host = request.headers.get("host", "")
+    return not _is_local_hostname(host)
 
 
 def _utc_now() -> datetime:
@@ -463,7 +497,7 @@ def build_posthog_batch(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 async def mirror_events_to_posthog(events: list[dict[str, Any]]) -> None:
     """Mirror events asynchronously to PostHog."""
-    if not POSTHOG_API_KEY or not events:
+    if not _analytics_env_enabled() or not POSTHOG_API_KEY or not events:
         return
 
     payload = {
@@ -493,6 +527,9 @@ async def ingest_client_events(
     user_id: str | None,
 ) -> list[dict[str, Any]]:
     """Validate, enrich, and persist a batch of client events."""
+    if not _analytics_enabled_for_request(request):
+        return []
+
     enriched_events: list[dict[str, Any]] = []
     for raw_event in raw_events:
         enriched = await build_enriched_event(raw_event, request=request, user_id=user_id)
@@ -512,6 +549,13 @@ async def track_server_event(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """Persist a server-originated event and mirror it to PostHog."""
+    if not _analytics_enabled_for_request(request):
+        return {
+            "event_name": event_name,
+            "user_id": user_id,
+            "skipped": True,
+        }
+
     anon = anonymous_id or (request.headers.get("x-anonymous-id") if request else None)
     sess = session_id or (request.headers.get("x-session-id") if request else None)
 
@@ -551,4 +595,6 @@ async def track_server_event(
 
 def link_identity(conn, anonymous_id: str, user_id: str) -> None:
     """Link anonymous and authenticated identities in analytics tables."""
+    if not _analytics_env_enabled():
+        return
     link_analytics_identity(conn, anonymous_id=anonymous_id, user_id=user_id)

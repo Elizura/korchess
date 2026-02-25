@@ -16,12 +16,30 @@ const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const FLUSH_INTERVAL_MS = 5000;
 const MAX_BATCH_SIZE = 25;
 const MAX_QUEUE_SIZE = 500;
+const ANALYTICS_ENV_FLAG = (process.env.NEXT_PUBLIC_ENABLE_ANALYTICS || "").toLowerCase();
 
 let queue: AnalyticsEventPayload[] = [];
 let flushIntervalId: number | null = null;
 let initialized = false;
 let inflight = false;
 let authToken: string | null = null;
+
+function envAnalyticsEnabled(): boolean {
+  if (ANALYTICS_ENV_FLAG === "true" || ANALYTICS_ENV_FLAG === "1") return true;
+  if (ANALYTICS_ENV_FLAG === "false" || ANALYTICS_ENV_FLAG === "0") return false;
+  return process.env.NODE_ENV === "production";
+}
+
+function isLocalHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+export function isAnalyticsEnabled(): boolean {
+  if (!envAnalyticsEnabled()) return false;
+  if (typeof window === "undefined") return true;
+  return !isLocalHostname(window.location.hostname);
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -111,7 +129,7 @@ function isFirstTimeVisit(): boolean {
 }
 
 export function getTrackingHeaders(): Record<string, string> {
-  if (typeof window === "undefined") return {};
+  if (typeof window === "undefined" || !isAnalyticsEnabled()) return {};
   return {
     "X-Anonymous-Id": ensureAnonymousId(),
     "X-Session-Id": ensureSessionId(),
@@ -126,10 +144,15 @@ export function withTrackingHeaders(headers: Record<string, string> = {}): Recor
 }
 
 export function setAnalyticsAuthToken(token: string | null): void {
+  if (!isAnalyticsEnabled()) {
+    authToken = null;
+    return;
+  }
   authToken = token;
 }
 
 async function postEvents(batch: AnalyticsEventPayload[], useBeacon = false): Promise<boolean> {
+  if (!isAnalyticsEnabled()) return true;
   if (!batch.length) return true;
 
   const body = JSON.stringify({ events: batch });
@@ -165,6 +188,7 @@ async function postEvents(batch: AnalyticsEventPayload[], useBeacon = false): Pr
 }
 
 export async function flushAnalytics(options?: { useBeacon?: boolean }): Promise<void> {
+  if (!isAnalyticsEnabled()) return;
   if (inflight || queue.length === 0) return;
 
   inflight = true;
@@ -185,7 +209,7 @@ export async function flushAnalytics(options?: { useBeacon?: boolean }): Promise
 }
 
 export function trackEvent(eventName: AnalyticsEventName | string, options: TrackEventOptions = {}): void {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || !isAnalyticsEnabled()) return;
 
   if (!initialized) {
     initAnalytics();
@@ -220,7 +244,7 @@ export function trackEvent(eventName: AnalyticsEventName | string, options: Trac
 }
 
 export async function identifyAnalyticsUser(idToken: string): Promise<boolean> {
-  if (typeof window === "undefined") return false;
+  if (typeof window === "undefined" || !isAnalyticsEnabled()) return false;
 
   const anonymousId = ensureAnonymousId();
   const sessionId = ensureSessionId();
@@ -256,7 +280,7 @@ export async function identifyAnalyticsUser(idToken: string): Promise<boolean> {
 }
 
 export function initAnalytics(): void {
-  if (typeof window === "undefined" || initialized) return;
+  if (typeof window === "undefined" || initialized || !isAnalyticsEnabled()) return;
   initialized = true;
 
   ensureAnonymousId();
