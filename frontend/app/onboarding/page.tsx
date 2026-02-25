@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+import { withTrackingHeaders } from "@/lib/analytics/client";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -37,7 +38,7 @@ export default function OnboardingPage() {
     const checkProfile = async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
-          headers: { Authorization: `Bearer ${session.idToken}` },
+          headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }),
         });
         if (!res.ok) {
           router.replace("/signup");
@@ -73,7 +74,8 @@ export default function OnboardingPage() {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.idToken}`,
-        },
+          ...withTrackingHeaders(),
+        } as Record<string, string>,
         body: JSON.stringify({ avatar, username: username.trim() }),
       });
 

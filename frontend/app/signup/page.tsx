@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { signIn, useSession } from "next-auth/react";
+import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -20,11 +21,11 @@ export default function SignupPage() {
     try {
       await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${session.idToken}` },
+        headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }),
       });
 
       const profileRes = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
-        headers: { Authorization: `Bearer ${session.idToken}` },
+        headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }),
       });
 
       if (!profileRes.ok) {
@@ -92,7 +93,14 @@ export default function SignupPage() {
             <button
               type="button"
               className="w-full bg-electric-blue text-white font-display text-[10px] py-5 px-4 arcade-button flex items-center justify-center gap-4 group hover:bg-[#5a86ff] transition-colors uppercase"
-              onClick={() => signIn("google", { callbackUrl: "/signup" })}
+              onClick={() => {
+                trackEvent("auth.signin.clicked", {
+                  properties: {
+                    source: "signup_page",
+                  },
+                });
+                signIn("google", { callbackUrl: "/signup" });
+              }}
             >
               <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
