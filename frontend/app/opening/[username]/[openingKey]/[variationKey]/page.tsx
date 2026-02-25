@@ -146,7 +146,13 @@ export default function OpeningDetailPage() {
         }
         setRefreshing(true);
       } else {
-        setLoading(true);
+        // Keep existing content visible during filter switches; only full-load on first visit.
+        if (games && games.length > 0) {
+          setRefreshing(true);
+          setLoading(false);
+        } else {
+          setLoading(true);
+        }
       }
     } else {
       setLoadingMore(true);
@@ -266,14 +272,7 @@ export default function OpeningDetailPage() {
   return (
     <main className="opening-detail-page opening-detail-frame max-w-5xl mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6">
-        <Link
-          href={`/dashboard?user=${encodeURIComponent(username)}`}
-          className="detail-back inline-flex items-center gap-2 text-sm zen-pill px-3 py-2 text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition"
-        >
-          ← Back to openings
-        </Link>
-
-        <h1 className="mt-5 text-2xl sm:text-3xl font-semibold tracking-tight text-[color:var(--zen-text)]">
+        <h1 className="mt-0 text-2xl sm:text-3xl font-semibold tracking-tight text-[color:var(--zen-text)]">
           {titleVariation != null ? (
             <>
               {titleMain}
@@ -447,7 +446,7 @@ export default function OpeningDetailPage() {
               }}
               className="opening-detail-card group zen-surface-flat px-4 py-4 sm:px-5 sm:py-4 rounded-lg border border-transparent cursor-pointer transition-all duration-[180ms] ease-out hover:scale-[1.02] hover:-translate-y-0.5 hover:bg-[color:var(--zen-surface-2)] hover:border-[color:var(--zen-accent)] hover:shadow-[var(--zen-shadow-sm)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--zen-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--zen-bg)]"
             >
-              <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-3">
                     <span className="text-base sm:text-lg font-semibold truncate">
@@ -482,21 +481,6 @@ export default function OpeningDetailPage() {
                     </span>
                   </div>
                 </div>
-
-                <a
-                  href={
-                    game.site === "lichess"
-                      ? `https://lichess.org/${game.site_game_id}`
-                      : `https://www.chess.com/game/live/${game.site_game_id}`
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => e.stopPropagation()}
-                  className="detail-action zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
-                >
-                  {game.site === "lichess" ? "Lichess" : "Chess.com"} →
-                </a>
               </div>
             </div>
           ))}
