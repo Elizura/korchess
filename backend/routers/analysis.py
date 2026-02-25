@@ -30,7 +30,7 @@ from db import (
 )
 from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis
-from game_insights_narration import ensure_narration
+from game_insights_narration import ensure_narration, is_current_clean_narration_payload
 from single_game_insights import compute_single_game_insights
 
 from schemas import (
@@ -97,6 +97,12 @@ def _load_ai_cached_insights(cached: dict) -> dict | None:
     except (TypeError, json.JSONDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _is_ai_cached_payload_current_and_clean(payload: dict | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return is_current_clean_narration_payload(payload)
 
 
 def _resolve_public_user_id(conn: psycopg.Connection, username: str) -> str:
@@ -738,7 +744,7 @@ async def get_ai_insights_endpoint(
     )
     if cached_ai:
         payload = _load_ai_cached_insights(cached_ai)
-        if payload:
+        if _is_ai_cached_payload_current_and_clean(payload):
             created_at = cached_ai.get("updated_at") or cached_ai.get("created_at")
             return AIInsightsResponse(
                 status="ready",
@@ -817,9 +823,10 @@ async def request_ai_insights_endpoint(
         multipv,
         site,
     )
+    stale_cache_refresh = False
     if cached_ai and not force:
         payload = _load_ai_cached_insights(cached_ai)
-        if payload:
+        if _is_ai_cached_payload_current_and_clean(payload):
             conn.commit()
             created_at = cached_ai.get("updated_at") or cached_ai.get("created_at")
             return AIInsightsResponse(
@@ -827,6 +834,8 @@ async def request_ai_insights_endpoint(
                 insights=payload,
                 created_at=str(created_at) if created_at is not None else None,
             )
+        if isinstance(payload, dict):
+            stale_cache_refresh = True
 
     deep_cached, _owner_id = _get_full_analysis_with_fallback(
         conn, current_user, username, game_id, depth, multipv, site
@@ -851,7 +860,7 @@ async def request_ai_insights_endpoint(
             detail="Run in-depth analysis before requesting AI insights.",
         )
 
-    if AI_INSIGHTS_DAILY_LIMIT > 0 and not unlimited_ai_quota:
+    if AI_INSIGHTS_DAILY_LIMIT > 0 and not unlimited_ai_quota and not stale_cache_refresh:
         day_start_utc, day_end_utc = _current_utc_day_bounds()
         successful_today = count_user_ai_gemini_success_utc_day(
             conn,
@@ -1009,7 +1018,7 @@ async def request_ai_insights_endpoint(
         depth,
         multipv,
         site,
-        status="gemini_success",
+        status="gemini_refresh_success" if stale_cache_refresh else "gemini_success",
     )
     await track_server_event(
         conn,
