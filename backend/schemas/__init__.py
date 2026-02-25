@@ -1,5 +1,7 @@
 """Pydantic request/response models for the API."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -264,3 +266,35 @@ class InsightsProfileResponse(BaseModel):
     features: dict | None = None
     narrative: dict | None = None
     active_job: InsightsJobStatus | None = None
+
+
+class AnalyticsEventItem(BaseModel):
+    """Single analytics event payload from client."""
+    event_id: str | None = None
+    event_name: str
+    event_version: str | None = None
+    occurred_at: str | None = None
+    anonymous_id: str
+    session_id: str
+    path: str | None = None
+    url: str | None = None
+    referrer: str | None = None
+    user_agent: str | None = None
+    is_first_time: bool = False
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalyticsEventsIngestRequest(BaseModel):
+    """Batch analytics ingest request."""
+    events: list[AnalyticsEventItem] = Field(..., min_length=1, max_length=100)
+
+
+class AnalyticsEventsIngestResponse(BaseModel):
+    """Batch analytics ingest response."""
+    accepted: int
+
+
+class AnalyticsIdentifyRequest(BaseModel):
+    """Authenticated identity stitch request."""
+    anonymous_id: str = Field(..., min_length=1, max_length=128)
+    session_id: str | None = Field(default=None, max_length=128)
