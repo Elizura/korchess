@@ -5,6 +5,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Chess } from "chess.js";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
+import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 
 import AnalysisBoard from "@/components/analysis/AnalysisBoard";
 import EvalBar from "@/components/analysis/EvalBar";
@@ -778,18 +779,33 @@ export default function GameAnalyzerPage() {
       setAnalysisStatus("idle");
       setSingleInsights(null);
       setSingleInsightsStatus("idle");
+      trackEvent("analysis.light.start", {
+        properties: {
+          source: "game_page_load",
+        },
+      });
 
       try {
         // Fetch game data
         const gameRes = await fetch(
           `${API_BASE_URL}/api/v1/game/${site}/${encodeURIComponent(username)}/${gameId}`,
-          { headers: authHeaders }
+          { headers: withTrackingHeaders(authHeaders) }
         );
         if (!gameRes.ok) {
           const data = await gameRes.json().catch(() => ({}));
           throw new Error(data.detail || "Failed to fetch game");
         }
         const gameData: GameData = await gameRes.json();
+        trackEvent("analysis.light.success", {
+          properties: {
+            source: "game_page_load",
+          },
+        });
+        trackEvent("game.view", {
+          properties: {
+            source: "game_page",
+          },
+        });
         setGame(gameData);
         setOrientation(gameData.color === "black" ? "black" : "white");
 
@@ -814,6 +830,12 @@ export default function GameAnalyzerPage() {
           }
         }
       } catch (err) {
+        trackEvent("analysis.light.failed", {
+          properties: {
+            source: "game_page_load",
+            reason: err instanceof Error ? err.message : "An error occurred",
+          },
+        });
         setError(err instanceof Error ? err.message : "An error occurred");
       } finally {
         setLoading(false);
@@ -879,7 +901,7 @@ export default function GameAnalyzerPage() {
       if (analysisStatus === "completed" || analyzing) return;
 
       try {
-        const res = await fetch(buildFullAnalysisUrl(), { headers: authHeaders });
+        const res = await fetch(buildFullAnalysisUrl(), { headers: withTrackingHeaders(authHeaders) });
         if (!res.ok) return;
         const data: FullAnalysisResponse = await res.json();
         if (data.status === "completed" && data.analysis) {
@@ -915,10 +937,15 @@ export default function GameAnalyzerPage() {
     console.log("[Analysis] Starting polling...");
     pollInterval.current = setInterval(async () => {
       try {
-        const res = await fetch(buildFullAnalysisUrl(), { headers: authHeaders });
+        const res = await fetch(buildFullAnalysisUrl(), { headers: withTrackingHeaders(authHeaders) });
         const data: FullAnalysisResponse = await res.json();
         
         if (data.status === "completed") {
+          trackEvent("analysis.deep.completed", {
+            properties: {
+              source: "polling",
+            },
+          });
           stopPolling();
           handleAnalysisReady(data);
         } else if (data.status === "missing") {
@@ -939,7 +966,17 @@ export default function GameAnalyzerPage() {
 
   // Run full analysis (starts background job and begins polling)
   const runAnalysis = useCallback(async (force = false) => {
+    trackEvent("analysis.deep.requested", {
+      properties: {
+        force,
+      },
+    });
     if (!isAuthenticated) {
+      trackEvent("analysis.deep.blocked_signup", {
+        properties: {
+          source: "game_page",
+        },
+      });
       setError("Sign in to request in-depth analysis.");
       return;
     }
@@ -960,12 +997,17 @@ export default function GameAnalyzerPage() {
     try {
       const res = await fetch(buildFullAnalysisUrl(force), {
         method: "POST",
-        headers: authHeaders,
+        headers: withTrackingHeaders(authHeaders),
       });
 
       // Handle 429 Too Many Requests
       if (res.status === 429) {
         const data = await res.json().catch(() => ({}));
+        trackEvent("analysis.deep.failed", {
+          properties: {
+            reason: data.detail || "Rate limited",
+          },
+        });
         setError(data.detail || "Server is busy (max 2 analyses at once). Please try again shortly.");
         setAnalyzing(false);
         setAnalysisStatus(preserveCompletedState ? "completed" : "missing");
@@ -975,6 +1017,11 @@ export default function GameAnalyzerPage() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
+        trackEvent("analysis.deep.failed", {
+          properties: {
+            reason: data.detail || "Analysis failed",
+          },
+        });
         throw new Error(data.detail || "Analysis failed");
       }
 
@@ -982,9 +1029,19 @@ export default function GameAnalyzerPage() {
       
       if (data.status === "completed" && data.analysis) {
         // Already cached, use immediately
+        trackEvent("analysis.deep.completed", {
+          properties: {
+            source: "cached_response",
+          },
+        });
         handleAnalysisReady(data);
       } else if (data.status === "processing") {
         // Analysis started - set state, polling will be started by separate effect
+        trackEvent("analysis.deep.started", {
+          properties: {
+            force,
+          },
+        });
         setAnalysisStatus("processing");
         // analysisStatus change + analyzing=true will trigger polling effect
       } else {
@@ -995,6 +1052,11 @@ export default function GameAnalyzerPage() {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Analysis failed";
       console.error(`[Analysis] Failed:`, err);
+      trackEvent("analysis.deep.failed", {
+        properties: {
+          reason: errorMessage,
+        },
+      });
       setError(errorMessage);
       setAnalyzing(false);
       setAnalysisStatus(preserveCompletedState ? "completed" : "missing");
