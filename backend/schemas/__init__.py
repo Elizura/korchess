@@ -185,6 +185,14 @@ class FullAnalysisResponse(BaseModel):
     created_at: str | None = None
 
 
+class AIInsightsResponse(BaseModel):
+    """Response for AI insights endpoint."""
+    status: str  # "ready" | "analysis_missing" | "quota_exceeded" | "generation_failed"
+    insights: dict | None = None
+    created_at: str | None = None
+    detail: str | None = None
+
+
 class SingleGameInsightsResponse(BaseModel):
     """Response for deterministic single-game rule insights endpoint."""
     status: str  # "ready" | "analysis_missing" | "analysis_processing"
