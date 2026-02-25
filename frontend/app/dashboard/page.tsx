@@ -9,6 +9,11 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 import {
+  loadGuestHistory,
+  mergeHistory,
+  saveGuestHistoryEntry,
+} from "@/lib/guestHistory";
+import {
   PAGE_DATA_CACHE_TTL_MS,
   buildDashboardCacheKey,
   buildDashboardInsightsCacheKey,
@@ -196,12 +201,20 @@ export default function DashboardPage() {
   }>({ key: "games", direction: "desc" });
   const [initialized, setInitialized] = useState(false);
   const hasAutoLoadedFromHistory = useRef(false);
-  const [importHistory, setImportHistory] = useState<ImportHistoryItem[]>([]);
+  const [guestImportHistory, setGuestImportHistory] = useState<ImportHistoryItem[]>([]);
+  const [accountImportHistory, setAccountImportHistory] = useState<ImportHistoryItem[]>([]);
   const [insights, setInsights] = useState<InsightsProfile | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsRefreshing, setInsightsRefreshing] = useState(false);
   const [reportRefreshing, setReportRefreshing] = useState(false);
   const [reportRefreshNotice, setReportRefreshNotice] = useState<string | null>(null);
+
+  const importHistory = useMemo(() => {
+    if (isAuthenticated) {
+      return mergeHistory(guestImportHistory, accountImportHistory);
+    }
+    return guestImportHistory;
+  }, [isAuthenticated, guestImportHistory, accountImportHistory]);
 
   // Redirect authenticated users who haven't completed onboarding; fetch profile for nav
   useEffect(() => {
@@ -228,11 +241,18 @@ export default function DashboardPage() {
     checkOnboarding();
   }, [isAuthenticated, router, session?.idToken]);
 
+  // Always load guest-local "recently analyzed" history.
+  useEffect(() => {
+    setGuestImportHistory(loadGuestHistory());
+  }, []);
+
   // Fetch import history when authenticated
   useEffect(() => {
     if (isAuthenticated) {
-      fetchImportHistory();
+      void fetchImportHistory();
+      return;
     }
+    setAccountImportHistory([]);
   }, [isAuthenticated, authUserId]);
 
   useEffect(() => {
@@ -340,11 +360,14 @@ export default function DashboardPage() {
   };
 
   const fetchImportHistory = async () => {
-    if (!session?.idToken) return;
+    if (!session?.idToken) {
+      setAccountImportHistory([]);
+      return;
+    }
     const cacheKey = `dashboard:history:${authUserId}`;
     const cached = getCached<DashboardImportHistoryCacheData>(cacheKey);
     if (cached) {
-      setImportHistory(cached.data.history || []);
+      setAccountImportHistory(cached.data.history || []);
       if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
         return;
       }
@@ -356,7 +379,7 @@ export default function DashboardPage() {
       if (response.ok) {
         const data = await response.json();
         const nextHistory = data.history || [];
-        setImportHistory(nextHistory);
+        setAccountImportHistory(nextHistory);
         setCached<DashboardImportHistoryCacheData>(cacheKey, { history: nextHistory });
       }
     } catch {
@@ -557,6 +580,13 @@ export default function DashboardPage() {
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
       updateUrl(trimmedUsername);
+      setGuestImportHistory(
+        saveGuestHistoryEntry({
+          username: trimmedUsername,
+          site: "lichess",
+          imported_at: new Date().toISOString(),
+        }),
+      );
       setReportRefreshNotice(null);
       clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
       clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
@@ -588,7 +618,9 @@ export default function DashboardPage() {
           },
         );
       }
-      fetchImportHistory();
+      if (isAuthenticated) {
+        void fetchImportHistory();
+      }
       const insightsData = await fetchInsights(trimmedUsername);
       setInsights(insightsData);
       setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
@@ -652,6 +684,13 @@ export default function DashboardPage() {
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
       updateUrl(trimmedUsername);
+      setGuestImportHistory(
+        saveGuestHistoryEntry({
+          username: trimmedUsername,
+          site: "chesscom",
+          imported_at: new Date().toISOString(),
+        }),
+      );
       setReportRefreshNotice(null);
       clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
       clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
@@ -683,7 +722,9 @@ export default function DashboardPage() {
           },
         );
       }
-      fetchImportHistory();
+      if (isAuthenticated) {
+        void fetchImportHistory();
+      }
       const insightsData = await fetchInsights(trimmedUsername);
       setInsights(insightsData);
       setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
@@ -841,20 +882,8 @@ export default function DashboardPage() {
   };
 
   // Process report: filter -> sort (backend already returns top 10 by games)
-  // Group import history by username (one entry per user, most recent first)
   const uniqueHistoryByUser = useMemo(() => {
-    const byUser = new Map<string, ImportHistoryItem>();
-    for (const item of importHistory) {
-      const key = item.username.toLowerCase();
-      const existing = byUser.get(key);
-      if (
-        !existing ||
-        new Date(item.imported_at).getTime() > new Date(existing.imported_at).getTime()
-      ) {
-        byUser.set(key, item);
-      }
-    }
-    return Array.from(byUser.values()).sort(
+    return [...importHistory].sort(
       (a, b) =>
         new Date(b.imported_at).getTime() - new Date(a.imported_at).getTime()
     );
@@ -862,7 +891,6 @@ export default function DashboardPage() {
 
   // When no user in URL but we have history: auto-load last selected or most recent user
   useEffect(() => {
-    if (!isAuthenticated) return;
     if (userFromUrl) {
       hasAutoLoadedFromHistory.current = false;
       return;
@@ -872,10 +900,14 @@ export default function DashboardPage() {
 
     hasAutoLoadedFromHistory.current = true;
 
-    const lastUser =
-      typeof window !== "undefined"
-        ? localStorage.getItem(DASHBOARD_LAST_USER_KEY)
-        : null;
+    let lastUser: string | null = null;
+    if (typeof window !== "undefined") {
+      try {
+        lastUser = localStorage.getItem(DASHBOARD_LAST_USER_KEY);
+      } catch {
+        lastUser = null;
+      }
+    }
     const userToLoad =
       lastUser &&
       uniqueHistoryByUser.some(
@@ -888,7 +920,6 @@ export default function DashboardPage() {
 
     handleHistoryItemClick(userToLoad);
   }, [
-    isAuthenticated,
     userFromUrl,
     uniqueHistoryByUser,
     // handleHistoryItemClick intentionally omitted to avoid re-running on every render
@@ -1005,19 +1036,15 @@ export default function DashboardPage() {
       </div>
 
       <div
-        className={[
-          "grid grid-cols-1 gap-4",
-          isAuthenticated ? "xl:grid-cols-[280px_minmax(0,1fr)]" : "",
-        ].join(" ")}
+        className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]"
       >
-        {isAuthenticated && (
         <div className="zen-surface-flat px-4 py-4 h-fit rounded-xl border border-[color:var(--zen-border)]">
           <div className="flex items-baseline justify-between gap-2 mb-3">
             <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
               Recently analyzed
             </p>
             <span className="text-[10px] uppercase tracking-wider text-[color:var(--zen-muted)]/80">
-              Last 10
+              {isAuthenticated ? "Account + browser" : "This browser"}
             </span>
           </div>
           <div className="space-y-2">
@@ -1049,7 +1076,6 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
-        )}
 
         <div className="min-w-0 space-y-6">
         <div className="zen-surface opening-frame p-5 sm:p-6">
