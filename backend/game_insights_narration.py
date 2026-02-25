@@ -20,7 +20,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GAME_INSIGHTS_GEMINI_MODEL", "gemini-2.5-flash").strip()
 GEMINI_TIMEOUT_S = max(3, int(os.environ.get("GAME_INSIGHTS_GEMINI_TIMEOUT_S", "30")))
 GEMINI_MIN_INTERVAL_MS = max(0, int(os.environ.get("GAME_INSIGHTS_GEMINI_MIN_INTERVAL_MS", "1200")))
-NARRATION_SCHEMA_VERSION = os.environ.get("GAME_INSIGHTS_NARRATION_SCHEMA_VERSION", "2").strip() or "2"
+NARRATION_SCHEMA_VERSION = os.environ.get("GAME_INSIGHTS_NARRATION_SCHEMA_VERSION", "3").strip() or "3"
 FALLBACK_RETRY_SECONDS = max(0, int(os.environ.get("GAME_INSIGHTS_FALLBACK_RETRY_S", "0")))
 
 EXPECTED_SECTIONS = [
@@ -113,7 +113,7 @@ def _normalize_sections(value: Any) -> list[dict[str, Any]]:
         bullets = [item.strip() for item in section_map.get(heading.casefold(), []) if item.strip()]
         if not bullets:
             bullets = [_default_section_bullet(heading)]
-        normalized.append({"heading": heading, "bullets": bullets[:3]})
+        normalized.append({"heading": heading, "bullets": bullets[:4]})
     return normalized
 
 
@@ -384,8 +384,9 @@ def _build_prompt_payload(raw_insights: dict[str, Any], game_context: dict[str, 
         "rules": [
             "Output JSON only. No markdown, no prose outside JSON.",
             "Use exactly the five section headings in the schema.",
-            "For each section, produce 2-3 bullets.",
-            "Target each bullet to be about 16-28 words, coaching-style and actionable.",
+            "Include only important and relevant points per section.",
+            "Use as many bullets as needed to cover key points (typically 1-4); do not pad.",
+            "Keep language direct, concise, and actionable. Avoid filler, hype, or generic fluff.",
             "Use concise causal reasoning where relevant (because, which led to, therefore).",
             "Turning points must reference ply numbers and what changed.",
             "When a turning point includes tactical.reason_text, mention that tactic explicitly.",
@@ -677,6 +678,7 @@ def ensure_narration(
     system_prompt = (
         "You are a chess coaching assistant. "
         "Return only valid JSON matching the required schema. "
+        "Be direct and concrete. "
         "Do not add markdown or explanations."
     )
     user_prompt = json.dumps(_build_prompt_payload(canonical_input, game_context), ensure_ascii=True)
