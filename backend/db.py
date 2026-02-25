@@ -2,8 +2,8 @@
 
 import json
 import os
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 import psycopg
 from psycopg.rows import dict_row
@@ -388,6 +388,127 @@ def init_db() -> None:
         """
     )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS analytics_identities (
+            anonymous_id TEXT PRIMARY KEY,
+            user_id TEXT,
+            first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            linked_at TIMESTAMPTZ,
+            first_referrer_type TEXT,
+            first_referrer_domain TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS analytics_sessions (
+            session_id TEXT PRIMARY KEY,
+            anonymous_id TEXT NOT NULL,
+            user_id TEXT,
+            started_at TIMESTAMPTZ NOT NULL,
+            last_activity_at TIMESTAMPTZ NOT NULL,
+            ended_at TIMESTAMPTZ,
+            is_bounce BOOLEAN NOT NULL DEFAULT TRUE,
+            page_count INTEGER NOT NULL DEFAULT 0,
+            event_count INTEGER NOT NULL DEFAULT 0,
+            country TEXT,
+            city TEXT,
+            device_type TEXT,
+            browser TEXT,
+            FOREIGN KEY (anonymous_id) REFERENCES analytics_identities(anonymous_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS analytics_events (
+            event_id TEXT PRIMARY KEY,
+            received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            occurred_at TIMESTAMPTZ NOT NULL,
+            event_name TEXT NOT NULL,
+            event_version TEXT NOT NULL,
+            anonymous_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            user_id TEXT,
+            path TEXT,
+            url TEXT,
+            referrer TEXT,
+            referrer_type TEXT,
+            country TEXT,
+            city TEXT,
+            device_type TEXT,
+            browser TEXT,
+            os TEXT,
+            ip_prefix_hash TEXT,
+            is_first_time BOOLEAN,
+            properties_jsonb JSONB NOT NULL DEFAULT '{}'::jsonb,
+            FOREIGN KEY (anonymous_id) REFERENCES analytics_identities(anonymous_id),
+            FOREIGN KEY (session_id) REFERENCES analytics_sessions(session_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_name_time
+        ON analytics_events(event_name, occurred_at)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_user_time
+        ON analytics_events(user_id, occurred_at)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_anon_time
+        ON analytics_events(anonymous_id, occurred_at)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_session_time
+        ON analytics_events(session_id, occurred_at)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_events_referrer_time
+        ON analytics_events(referrer_type, occurred_at)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE OR REPLACE VIEW analytics_daily_active_users AS
+        SELECT
+            date_trunc('day', occurred_at)::date AS activity_date,
+            COUNT(DISTINCT COALESCE(user_id, anonymous_id)) AS active_users
+        FROM analytics_events
+        GROUP BY 1
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE OR REPLACE VIEW analytics_event_counts_daily AS
+        SELECT
+            date_trunc('day', occurred_at)::date AS activity_date,
+            event_name,
+            COUNT(*) AS event_count
+        FROM analytics_events
+        GROUP BY 1, 2
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -421,8 +542,8 @@ def upsert_user(conn: psycopg.Connection, user: dict) -> None:
     )
 
 
-def create_user_if_missing(conn: psycopg.Connection, user: dict) -> None:
-    """Insert a user record if it doesn't exist."""
+def create_user_if_missing(conn: psycopg.Connection, user: dict) -> bool:
+    """Insert a user record if it doesn't exist. Returns True if created."""
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -437,6 +558,7 @@ def create_user_if_missing(conn: psycopg.Connection, user: dict) -> None:
             user.get("picture"),
         ),
     )
+    return cursor.rowcount > 0
 
 
 def get_user_by_id(conn: psycopg.Connection, user_id: str) -> dict | None:
@@ -1617,3 +1739,160 @@ def get_player_insights(
     data["fact_map"] = json.loads(data.get("fact_map_json") or "{}")
     data["narrative"] = json.loads(data.get("narrative_json") or "{}")
     return data
+
+
+def upsert_analytics_identity(
+    conn: psycopg.Connection,
+    anonymous_id: str,
+    user_id: str | None = None,
+    first_referrer_type: str | None = None,
+    first_referrer_domain: str | None = None,
+) -> None:
+    """Create or update an analytics identity actor."""
+    linked_at = datetime.now(timezone.utc) if user_id else None
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO analytics_identities
+        (anonymous_id, user_id, first_seen_at, last_seen_at, linked_at, first_referrer_type, first_referrer_domain)
+        VALUES (%s, %s, now(), now(), %s, %s, %s)
+        ON CONFLICT (anonymous_id)
+        DO UPDATE SET
+            last_seen_at = now(),
+            user_id = COALESCE(EXCLUDED.user_id, analytics_identities.user_id),
+            linked_at = CASE
+                WHEN analytics_identities.user_id IS NULL AND EXCLUDED.user_id IS NOT NULL
+                    THEN now()
+                ELSE analytics_identities.linked_at
+            END,
+            first_referrer_type = COALESCE(analytics_identities.first_referrer_type, EXCLUDED.first_referrer_type),
+            first_referrer_domain = COALESCE(analytics_identities.first_referrer_domain, EXCLUDED.first_referrer_domain)
+        """,
+        (
+            anonymous_id,
+            user_id,
+            linked_at,
+            first_referrer_type,
+            first_referrer_domain,
+        ),
+    )
+
+
+def link_analytics_identity(
+    conn: psycopg.Connection,
+    anonymous_id: str,
+    user_id: str,
+) -> None:
+    """Link an anonymous actor to an authenticated user."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO analytics_identities
+        (anonymous_id, user_id, first_seen_at, last_seen_at, linked_at)
+        VALUES (%s, %s, now(), now(), now())
+        ON CONFLICT (anonymous_id)
+        DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            linked_at = COALESCE(analytics_identities.linked_at, now()),
+            last_seen_at = now()
+        """,
+        (anonymous_id, user_id),
+    )
+
+
+def upsert_analytics_session(
+    conn: psycopg.Connection,
+    session_id: str,
+    anonymous_id: str,
+    user_id: str | None,
+    occurred_at: datetime,
+    page_increment: int = 0,
+    event_increment: int = 1,
+    country: str | None = None,
+    city: str | None = None,
+    device_type: str | None = None,
+    browser: str | None = None,
+) -> None:
+    """Create or update a session aggregate row."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO analytics_sessions
+        (session_id, anonymous_id, user_id, started_at, last_activity_at, is_bounce,
+         page_count, event_count, country, city, device_type, browser)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (session_id)
+        DO UPDATE SET
+            anonymous_id = EXCLUDED.anonymous_id,
+            user_id = COALESCE(EXCLUDED.user_id, analytics_sessions.user_id),
+            last_activity_at = GREATEST(analytics_sessions.last_activity_at, EXCLUDED.last_activity_at),
+            page_count = analytics_sessions.page_count + %s,
+            event_count = analytics_sessions.event_count + %s,
+            is_bounce = CASE
+                WHEN (analytics_sessions.event_count + %s) > 1 OR (analytics_sessions.page_count + %s) > 1
+                    THEN FALSE
+                ELSE analytics_sessions.is_bounce
+            END,
+            country = COALESCE(analytics_sessions.country, EXCLUDED.country),
+            city = COALESCE(analytics_sessions.city, EXCLUDED.city),
+            device_type = COALESCE(analytics_sessions.device_type, EXCLUDED.device_type),
+            browser = COALESCE(analytics_sessions.browser, EXCLUDED.browser)
+        """,
+        (
+            session_id,
+            anonymous_id,
+            user_id,
+            occurred_at,
+            occurred_at,
+            (event_increment + page_increment) <= 1,
+            page_increment,
+            event_increment,
+            country,
+            city,
+            device_type,
+            browser,
+            page_increment,
+            event_increment,
+            event_increment,
+            page_increment,
+        ),
+    )
+
+
+def insert_analytics_event(
+    conn: psycopg.Connection,
+    event: dict[str, Any],
+) -> None:
+    """Insert a single analytics event."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO analytics_events
+        (event_id, occurred_at, event_name, event_version, anonymous_id, session_id, user_id,
+         path, url, referrer, referrer_type, country, city, device_type, browser, os,
+         ip_prefix_hash, is_first_time, properties_jsonb)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        ON CONFLICT (event_id) DO NOTHING
+        """,
+        (
+            event["event_id"],
+            event["occurred_at"],
+            event["event_name"],
+            event["event_version"],
+            event["anonymous_id"],
+            event["session_id"],
+            event.get("user_id"),
+            event.get("path"),
+            event.get("url"),
+            event.get("referrer"),
+            event.get("referrer_type"),
+            event.get("country"),
+            event.get("city"),
+            event.get("device_type"),
+            event.get("browser"),
+            event.get("os"),
+            event.get("ip_prefix_hash"),
+            event.get("is_first_time"),
+            json.dumps(event.get("properties") or {}),
+        ),
+    )
