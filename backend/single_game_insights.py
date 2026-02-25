@@ -106,6 +106,25 @@ def _score_to_grade(score: float) -> str:
     return "E"
 
 
+def _grade_to_rating_5(grade: str | None) -> int | None:
+    if not isinstance(grade, str):
+        return None
+    mapping = {
+        "A": 5,
+        "B": 4,
+        "C": 3,
+        "D": 2,
+        "E": 1,
+    }
+    return mapping.get(grade.strip().upper())
+
+
+def _score_to_rating_5(score: float | None) -> int | None:
+    if score is None:
+        return None
+    return _grade_to_rating_5(_score_to_grade(score))
+
+
 def _eval_to_cp(eval_obj: dict[str, Any] | None) -> int:
     if not isinstance(eval_obj, dict):
         return 0
@@ -608,13 +627,13 @@ def _detect_turning_points(rows: list[dict[str, Any]]) -> dict[str, Any]:
         candidates.append(event)
 
     deduped = _dedupe_local_max(candidates, window=2)
-    ranked = sorted(deduped, key=lambda e: e["priority"], reverse=True)[:3]
+    ranked_by_severity = sorted(deduped, key=lambda e: e["priority"], reverse=True)
 
     decisive_threshold = max(
         CFG.critical_swing_cp, int(round(CFG.decisive_turning_ratio * CFG.decisive_adv_cp))
     )
     decisive_idx: int | None = None
-    for idx, event in enumerate(ranked):
+    for idx, event in enumerate(ranked_by_severity):
         if (
             abs(int(event["swing_cp"])) >= decisive_threshold
             and (event["_crossed_adv_boundary"] or event["severity_score"] >= 85)
@@ -623,21 +642,24 @@ def _detect_turning_points(rows: list[dict[str, Any]]) -> dict[str, Any]:
             break
 
     if decisive_idx is not None:
-        ranked[decisive_idx]["is_decisive"] = True
-        ranked[decisive_idx]["label_enum"] = "decisive_turning_point"
-        ranked[decisive_idx]["label"] = "Decisive Turning Point"
+        ranked_by_severity[decisive_idx]["is_decisive"] = True
+        ranked_by_severity[decisive_idx]["label_enum"] = "decisive_turning_point"
+        ranked_by_severity[decisive_idx]["label"] = "Decisive Turning Point"
 
-    for event in ranked:
+    # Surface turning points in board move order for reliable narration/jump UX.
+    ordered = sorted(ranked_by_severity, key=lambda e: int(e["ply"]))
+
+    for event in ordered:
         event.pop("_crossed_adv_boundary", None)
         event.pop("swing_abs", None)
 
-    support = min(1.0, len(ranked) / 3.0)
+    support = min(1.0, len(ordered) / 3.0)
     confidence = round(_clamp(0.45 + 0.45 * support, 0.0, 1.0), 2)
 
     return {
         "label_enum": "turning_points",
         "confidence": confidence,
-        "events": ranked,
+        "events": ordered,
     }
 
 
@@ -767,6 +789,7 @@ def _score_conversion(rows: list[dict[str, Any]], result: str) -> dict[str, Any]
             "reason": "never_significantly_ahead",
             "score": None,
             "grade": "N/A",
+            "rating_5": None,
             "opportunities": 0,
             "hold_rate": 0.0,
             "drop_to_equal_rate": 0.0,
@@ -828,6 +851,7 @@ def _score_conversion(rows: list[dict[str, Any]], result: str) -> dict[str, Any]
         "available": True,
         "score": score,
         "grade": grade,
+        "rating_5": _score_to_rating_5(score),
         "opportunities": len(opportunities),
         "hold_rate": round(hold_rate, 3),
         "drop_to_equal_rate": round(drop_to_equal_rate, 3),
@@ -868,6 +892,7 @@ def _score_resilience(rows: list[dict[str, Any]], result: str) -> dict[str, Any]
             "reason": "never_significantly_worse",
             "score": None,
             "grade": "N/A",
+            "rating_5": None,
             "defense_opportunities": 0,
             "stabilization_rate": 0.0,
             "recovery_ratio": 0.0,
@@ -916,6 +941,7 @@ def _score_resilience(rows: list[dict[str, Any]], result: str) -> dict[str, Any]
         "available": True,
         "score": score,
         "grade": grade,
+        "rating_5": _score_to_rating_5(score),
         "defense_opportunities": len(opportunities),
         "stabilization_rate": round(stabilization_rate, 3),
         "recovery_ratio": round(recovery_ratio, 3),
@@ -1114,6 +1140,7 @@ def _grade_phases(rows: list[dict[str, Any]]) -> dict[str, Any]:
             result[phase] = {
                 "score": None,
                 "grade": "N/A",
+                "rating_5": None,
                 "evaluation_state": "not_reached",
                 "confidence": 0.0,
             }
@@ -1123,6 +1150,7 @@ def _grade_phases(rows: list[dict[str, Any]]) -> dict[str, Any]:
             result[phase] = {
                 "score": None,
                 "grade": "N/A",
+                "rating_5": None,
                 "evaluation_state": "too_short",
                 "confidence": round(_clamp(0.2 + 0.1 * len(phase_rows), 0, 1), 2),
             }
@@ -1143,6 +1171,7 @@ def _grade_phases(rows: list[dict[str, Any]]) -> dict[str, Any]:
         result[phase] = {
             "score": round(score, 1),
             "grade": _score_to_grade(score),
+            "rating_5": _score_to_rating_5(score),
             "evaluation_state": "scored",
             "confidence": round(_clamp(0.45 + 0.45 * min(1.0, len(phase_rows) / 10.0), 0, 1), 2),
         }
@@ -1613,6 +1642,9 @@ def compute_single_game_insights(
                 "label_enum": "unavailable",
                 "available": False,
                 "reason": "no_moves",
+                "score": None,
+                "grade": "N/A",
+                "rating_5": None,
                 "confidence": 0.0,
                 "evidence": [],
             },
@@ -1620,6 +1652,9 @@ def compute_single_game_insights(
                 "label_enum": "unavailable",
                 "available": False,
                 "reason": "no_moves",
+                "score": None,
+                "grade": "N/A",
+                "rating_5": None,
                 "confidence": 0.0,
                 "evidence": [],
             },
@@ -1635,18 +1670,21 @@ def compute_single_game_insights(
                 "opening": {
                     "score": None,
                     "grade": "N/A",
+                    "rating_5": None,
                     "evaluation_state": "not_reached",
                     "confidence": 0.0,
                 },
                 "middlegame": {
                     "score": None,
                     "grade": "N/A",
+                    "rating_5": None,
                     "evaluation_state": "not_reached",
                     "confidence": 0.0,
                 },
                 "endgame": {
                     "score": None,
                     "grade": "N/A",
+                    "rating_5": None,
                     "evaluation_state": "not_reached",
                     "confidence": 0.0,
                 },
