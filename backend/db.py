@@ -276,6 +276,55 @@ def init_db() -> None:
 
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS ai_game_insights (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            depth INTEGER NOT NULL,
+            multipv INTEGER NOT NULL,
+            insights_json TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE(user_id, site, site_game_id, depth, multipv),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ai_game_insights_lookup
+        ON ai_game_insights(user_id, site, site_game_id, depth, multipv)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_insights_requests (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            depth INTEGER NOT NULL,
+            multipv INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ai_insights_requests_user_day_status
+        ON ai_insights_requests(user_id, requested_at, status)
+        """
+    )
+
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS openings (
             id SERIAL PRIMARY KEY,
             eco TEXT NOT NULL,
@@ -1271,6 +1320,128 @@ def save_full_analysis_insights(
             site,
         ),
     )
+
+
+def get_ai_game_insights(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int,
+    site: str,
+) -> dict | None:
+    """Get cached AI insights for a specific account + game + settings."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT insights_json, source, created_at, updated_at
+        FROM ai_game_insights
+        WHERE user_id = %s
+          AND LOWER(username) = %s
+          AND site_game_id = %s
+          AND depth = %s
+          AND multipv = %s
+          AND site = %s
+        """,
+        (user_id, username.strip().lower(), site_game_id, depth, multipv, site),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def save_ai_game_insights(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int,
+    site: str,
+    insights_json: str,
+    source: str,
+) -> None:
+    """Upsert AI insights cache for a specific account + game + settings."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO ai_game_insights
+        (user_id, site, site_game_id, username, depth, multipv, insights_json, source)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, site, site_game_id, depth, multipv)
+        DO UPDATE SET
+            insights_json = EXCLUDED.insights_json,
+            source = EXCLUDED.source,
+            updated_at = now()
+        """,
+        (
+            user_id,
+            site,
+            site_game_id,
+            username.strip().lower(),
+            depth,
+            multipv,
+            insights_json,
+            source,
+        ),
+    )
+
+
+def log_ai_insights_request(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int,
+    site: str,
+    status: str,
+) -> None:
+    """Record one AI insights request attempt/result for quota accounting."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO ai_insights_requests
+        (user_id, site, site_game_id, username, depth, multipv, status, requested_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+        """,
+        (
+            user_id,
+            site,
+            site_game_id,
+            username.strip().lower(),
+            depth,
+            multipv,
+            status.strip().lower(),
+        ),
+    )
+
+
+def count_user_ai_gemini_success_utc_day(
+    conn: psycopg.Connection,
+    user_id: str,
+    day_start_utc: datetime,
+    day_end_utc: datetime,
+) -> int:
+    """Count Gemini-success AI insights generations for a user in a UTC day."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM ai_insights_requests
+        WHERE user_id = %s
+          AND status = 'gemini_success'
+          AND requested_at >= %s
+          AND requested_at < %s
+        """,
+        (user_id, day_start_utc, day_end_utc),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return 0
+    return int(row.get("total") or 0)
 
 
 def count_user_full_analysis_completed_utc_day(
