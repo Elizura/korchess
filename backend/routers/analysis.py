@@ -7,8 +7,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from analytics import hash_username, track_server_event
 from db import (
     count_user_full_analysis_completed_utc_day,
     create_analysis_job,
@@ -124,7 +125,11 @@ async def run_analysis_background(
     pgn: str,
     depth: int,
     multipv: int,
-    site: str
+    site: str,
+    analytics_user_id: str | None = None,
+    analytics_anonymous_id: str | None = None,
+    analytics_session_id: str | None = None,
+    username_hash: str | None = None,
 ):
     """Background task to run Stockfish analysis."""
     global active_analysis_count
@@ -181,6 +186,21 @@ async def run_analysis_background(
                 insights_json=json.dumps(insights_payload) if insights_payload else None,
                 site=site
             )
+            await track_server_event(
+                conn,
+                event_name="analysis.deep.completed",
+                user_id=analytics_user_id,
+                request=None,
+                anonymous_id=analytics_anonymous_id,
+                session_id=analytics_session_id,
+                properties={
+                    "job_id": job_id,
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "username_hash": username_hash,
+                },
+            )
             delete_analysis_job(conn, job_id)
             conn.commit()
             print(f"[Analysis] Completed for game {game_id} on {site}")
@@ -191,6 +211,22 @@ async def run_analysis_background(
         print(f"[Analysis] Failed for game {game_id} on {site}: {e}")
         conn = get_connection()
         try:
+            await track_server_event(
+                conn,
+                event_name="analysis.deep.failed",
+                user_id=analytics_user_id,
+                request=None,
+                anonymous_id=analytics_anonymous_id,
+                session_id=analytics_session_id,
+                properties={
+                    "job_id": job_id,
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "username_hash": username_hash,
+                    "reason": str(e),
+                },
+            )
             delete_analysis_job(conn, job_id)
             conn.commit()
         finally:
@@ -235,6 +271,7 @@ async def run_analysis_endpoint(
     site: str,
     username: str,
     game_id: str,
+    request: Request,
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict | None = Depends(get_optional_user),
 ):
@@ -245,9 +282,33 @@ async def run_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
+    username_hash = hash_username(username)
+    await track_server_event(
+        conn,
+        event_name="analysis.light.start",
+        user_id=current_user["id"] if current_user else None,
+        request=request,
+        properties={
+            "site": site,
+            "username_hash": username_hash,
+        },
+    )
+
     user_id = _resolve_public_user_id(conn, username)
     cached = get_analysis(conn, user_id, username, game_id, site)
     if cached:
+        await track_server_event(
+            conn,
+            event_name="analysis.light.success",
+            user_id=current_user["id"] if current_user else None,
+            request=request,
+            properties={
+                "site": site,
+                "username_hash": username_hash,
+                "cached": True,
+            },
+        )
+        conn.commit()
         return AnalysisResponse(
             status="ready",
             analysis=json.loads(cached["result_json"]),
@@ -256,14 +317,50 @@ async def run_analysis_endpoint(
 
     game = get_game_by_id(conn, user_id, username, game_id, site)
     if not game:
+        await track_server_event(
+            conn,
+            event_name="analysis.light.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=request,
+            properties={
+                "site": site,
+                "username_hash": username_hash,
+                "reason": "Game not found",
+            },
+        )
+        conn.commit()
         raise HTTPException(status_code=404, detail="Game not found")
 
     if not game.get("pgn"):
+        await track_server_event(
+            conn,
+            event_name="analysis.light.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=request,
+            properties={
+                "site": site,
+                "username_hash": username_hash,
+                "reason": "Game has no PGN",
+            },
+        )
+        conn.commit()
         raise HTTPException(status_code=400, detail="Game has no PGN")
 
     try:
         result = run_lightweight_analysis(game["pgn"], game["color"])
     except Exception as e:
+        await track_server_event(
+            conn,
+            event_name="analysis.light.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=request,
+            properties={
+                "site": site,
+                "username_hash": username_hash,
+                "reason": f"Analysis failed: {str(e)}",
+            },
+        )
+        conn.commit()
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
     settings = {"time_ms": 150, "checkpoints": [10, 20, 30, 40]}
@@ -273,6 +370,17 @@ async def run_analysis_endpoint(
         engine_version="15+",
         settings_json=json.dumps(settings),
         result_json=json.dumps(result)
+    )
+    await track_server_event(
+        conn,
+        event_name="analysis.light.success",
+        user_id=current_user["id"] if current_user else None,
+        request=request,
+        properties={
+            "site": site,
+            "username_hash": username_hash,
+            "cached": False,
+        },
     )
     conn.commit()
 
@@ -397,6 +505,7 @@ async def run_full_analysis_endpoint(
     site: str,
     username: str,
     game_id: str,
+    request: Request,
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5),
     force: bool = Query(default=False),
@@ -411,6 +520,21 @@ async def run_full_analysis_endpoint(
 
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
+
+    username_hash = hash_username(username)
+    await track_server_event(
+        conn,
+        event_name="analysis.deep.requested",
+        user_id=current_user["id"],
+        request=request,
+        properties={
+            "site": site,
+            "depth": depth,
+            "multipv": multipv,
+            "force": force,
+            "username_hash": username_hash,
+        },
+    )
 
     if not force:
         cached = get_full_analysis(conn, current_user["id"], username, game_id, depth, multipv, site)
@@ -480,6 +604,21 @@ async def run_full_analysis_endpoint(
                         f"{game_id} on {site}: {persist_err}"
                     )
 
+            await track_server_event(
+                conn,
+                event_name="analysis.deep.completed",
+                user_id=current_user["id"],
+                request=request,
+                properties={
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "force": force,
+                    "username_hash": username_hash,
+                    "cached": True,
+                },
+            )
+            conn.commit()
             return FullAnalysisResponse(
                 status="completed",
                 analysis=full_analysis,
@@ -489,6 +628,7 @@ async def run_full_analysis_endpoint(
 
     existing_job = get_analysis_job(conn, current_user["id"], username, game_id, depth, multipv, site)
     if existing_job:
+        conn.commit()
         return FullAnalysisResponse(status="processing")
 
     if (
@@ -504,6 +644,20 @@ async def run_full_analysis_endpoint(
             day_end_utc,
         )
         if completed_today >= DEEP_ANALYSIS_DAILY_LIMIT:
+            await track_server_event(
+                conn,
+                event_name="analysis.deep.failed",
+                user_id=current_user["id"],
+                request=request,
+                properties={
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "username_hash": username_hash,
+                    "reason": "Daily limit reached",
+                },
+            )
+            conn.commit()
             raise HTTPException(
                 status_code=429,
                 detail=(
@@ -514,6 +668,20 @@ async def run_full_analysis_endpoint(
 
     async with active_analysis_lock:
         if active_analysis_count >= MAX_CONCURRENT_ANALYSES:
+            await track_server_event(
+                conn,
+                event_name="analysis.deep.failed",
+                user_id=current_user["id"],
+                request=request,
+                properties={
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "username_hash": username_hash,
+                    "reason": "Server busy",
+                },
+            )
+            conn.commit()
             raise HTTPException(
                 status_code=429,
                 detail="Server busy. Max 2 analyses can run at once. Try again shortly."
@@ -527,11 +695,39 @@ async def run_full_analysis_endpoint(
     if not game:
         async with active_analysis_lock:
             active_analysis_count -= 1
+        await track_server_event(
+            conn,
+            event_name="analysis.deep.failed",
+            user_id=current_user["id"],
+            request=request,
+            properties={
+                "site": site,
+                "depth": depth,
+                "multipv": multipv,
+                "username_hash": username_hash,
+                "reason": "Game not found",
+            },
+        )
+        conn.commit()
         raise HTTPException(status_code=404, detail="Game not found")
 
     if not game.get("pgn"):
         async with active_analysis_lock:
             active_analysis_count -= 1
+        await track_server_event(
+            conn,
+            event_name="analysis.deep.failed",
+            user_id=current_user["id"],
+            request=request,
+            properties={
+                "site": site,
+                "depth": depth,
+                "multipv": multipv,
+                "username_hash": username_hash,
+                "reason": "Game has no PGN",
+            },
+        )
+        conn.commit()
         raise HTTPException(status_code=400, detail="Game has no PGN")
 
     job_id = str(uuid.uuid4())
@@ -545,6 +741,20 @@ async def run_full_analysis_endpoint(
         site,
     )
     create_analysis_job(conn, job_id, current_user["id"], username, game_id, depth, multipv, site)
+    await track_server_event(
+        conn,
+        event_name="analysis.deep.started",
+        user_id=current_user["id"],
+        request=request,
+        properties={
+            "job_id": job_id,
+            "site": site,
+            "depth": depth,
+            "multipv": multipv,
+            "force": force,
+            "username_hash": username_hash,
+        },
+    )
     conn.commit()
 
     asyncio.create_task(
@@ -558,6 +768,10 @@ async def run_full_analysis_endpoint(
             depth,
             multipv,
             site,
+            analytics_user_id=current_user["id"],
+            analytics_anonymous_id=request.headers.get("x-anonymous-id") if request else None,
+            analytics_session_id=request.headers.get("x-session-id") if request else None,
+            username_hash=username_hash,
         )
     )
 
