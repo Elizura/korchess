@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Chess } from "chess.js";
 import Link from "next/link";
@@ -91,6 +91,13 @@ interface FullAnalysisResponse {
   } | null;
   insights?: SingleGameInsightsResponse | null;
   created_at: string | null;
+}
+
+interface AIInsightsResponse {
+  status: "ready" | "analysis_missing" | "quota_exceeded" | "generation_failed";
+  insights: SingleGameInsightsResponse | null;
+  created_at: string | null;
+  detail?: string | null;
 }
 
 interface InsightEvidence {
@@ -295,6 +302,7 @@ interface SingleGameInsightsResponse {
 
 export default function GameAnalyzerPage() {
   const params = useParams();
+  const router = useRouter();
   const site = params.site as string;
   const username = decodeURIComponent(params.username as string);
   const gameId = params.gameId as string;
@@ -319,10 +327,15 @@ export default function GameAnalyzerPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [singleInsights, setSingleInsights] = useState<SingleGameInsightsResponse | null>(null);
   const [singleInsightsStatus, setSingleInsightsStatus] = useState<"idle" | "ready" | "error">("idle");
+  const [aiInsightsLoading, setAiInsightsLoading] = useState(false);
+  const [aiInsightsRequesting, setAiInsightsRequesting] = useState(false);
+  const [aiInsightsError, setAiInsightsError] = useState<string | null>(null);
+  const [activeAnalysisTab, setActiveAnalysisTab] = useState<"engine" | "ai">("engine");
   
   // Polling for async analysis
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
   const analysisStartTime = useRef<number | null>(null);
+  const aiHydratedKey = useRef<string | null>(null);
   
   // Board settings
   const [orientation, setOrientation] = useState<"white" | "black">("white");
@@ -779,6 +792,10 @@ export default function GameAnalyzerPage() {
       setAnalysisStatus("idle");
       setSingleInsights(null);
       setSingleInsightsStatus("idle");
+      setAiInsightsError(null);
+      setAiInsightsLoading(false);
+      setAiInsightsRequesting(false);
+      aiHydratedKey.current = null;
       trackEvent("analysis.light.start", {
         properties: {
           source: "game_page_load",
@@ -869,13 +886,32 @@ export default function GameAnalyzerPage() {
     [depth, multiPv, site, username, gameId]
   );
 
+  const buildAiInsightsUrl = useCallback(
+    (force = false) => {
+      const params = new URLSearchParams({
+        depth: String(depth),
+        multipv: String(multiPv),
+      });
+      if (force) {
+        params.set("force", "1");
+      }
+      return `${API_BASE_URL}/api/v1/analysis/${site}/${encodeURIComponent(username)}/${gameId}/ai-insights?${params.toString()}`;
+    },
+    [depth, multiPv, site, username, gameId]
+  );
+
+  const getSignupReturnPath = useCallback((): string => {
+    if (typeof window !== "undefined") {
+      return `${window.location.pathname}${window.location.search}`;
+    }
+    return `/game/${encodeURIComponent(site)}/${encodeURIComponent(username)}/${encodeURIComponent(gameId)}`;
+  }, [site, username, gameId]);
+
   // Handle analysis completion
   const handleAnalysisReady = useCallback((data: FullAnalysisResponse) => {
     if (data.analysis) {
       setAnalysisData(data.analysis);
       setAnalysisStatus("completed");
-      setSingleInsights(data.insights || null);
-      setSingleInsightsStatus(data.insights ? "ready" : "idle");
 
       // Rebuild tree with analysis data
       const tree = buildTreeFromAnalysis(data.analysis.moves);
@@ -897,7 +933,7 @@ export default function GameAnalyzerPage() {
   // Hydrate cached in-depth analysis on page load (does not start a new job)
   useEffect(() => {
     const hydrateCachedAnalysis = async () => {
-      if (!game || !isAuthenticated) return;
+      if (!game) return;
       if (analysisStatus === "completed" || analyzing) return;
 
       try {
@@ -915,7 +951,6 @@ export default function GameAnalyzerPage() {
     hydrateCachedAnalysis();
   }, [
     game,
-    isAuthenticated,
     site,
     username,
     gameId,
@@ -971,15 +1006,6 @@ export default function GameAnalyzerPage() {
         force,
       },
     });
-    if (!isAuthenticated) {
-      trackEvent("analysis.deep.blocked_signup", {
-        properties: {
-          source: "game_page",
-        },
-      });
-      setError("Sign in to request in-depth analysis.");
-      return;
-    }
     const preserveCompletedState = force && analysisStatus === "completed";
     setAnalyzing(true);
     setError(null);
@@ -987,6 +1013,8 @@ export default function GameAnalyzerPage() {
     if (!preserveCompletedState) {
       setSingleInsights(null);
       setSingleInsightsStatus("idle");
+      setAiInsightsError(null);
+      aiHydratedKey.current = null;
     }
     analysisStartTime.current = Date.now();
 
@@ -1068,10 +1096,182 @@ export default function GameAnalyzerPage() {
     multiPv,
     analysisStatus,
     handleAnalysisReady,
-    isAuthenticated,
     authHeaders,
     buildFullAnalysisUrl,
   ]);
+
+  const handleAnalysisTabChange = useCallback((tab: "engine" | "ai") => {
+    if (tab === activeAnalysisTab) {
+      return;
+    }
+    setActiveAnalysisTab(tab);
+    trackEvent("feature.usage", {
+      properties: {
+        feature: "game_analysis_tab_switch",
+        tab,
+      },
+    });
+  }, [activeAnalysisTab]);
+
+  const aiInsightsCacheKey = useMemo(
+    () => `${site}:${username}:${gameId}:${depth}:${multiPv}`,
+    [site, username, gameId, depth, multiPv]
+  );
+
+  const hydrateAiInsights = useCallback(async () => {
+    if (!isAuthenticated || analysisStatus !== "completed") {
+      return;
+    }
+    setAiInsightsLoading(true);
+    setAiInsightsError(null);
+    try {
+      const res = await fetch(buildAiInsightsUrl(), {
+        headers: withTrackingHeaders(authHeaders),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSingleInsights(null);
+        setSingleInsightsStatus("idle");
+        setAiInsightsError(data.detail || "Unable to load AI insights.");
+        return;
+      }
+      const data: AIInsightsResponse = await res.json();
+      if (data.status === "ready" && data.insights) {
+        setSingleInsights(data.insights);
+        setSingleInsightsStatus("ready");
+        setAiInsightsError(null);
+        return;
+      }
+      setSingleInsights(null);
+      setSingleInsightsStatus("idle");
+      setAiInsightsError(null);
+    } catch {
+      setSingleInsights(null);
+      setSingleInsightsStatus("idle");
+      setAiInsightsError("Unable to load AI insights right now.");
+    } finally {
+      setAiInsightsLoading(false);
+    }
+  }, [analysisStatus, authHeaders, buildAiInsightsUrl, isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated || analysisStatus !== "completed") {
+      return;
+    }
+    if (aiHydratedKey.current === aiInsightsCacheKey) {
+      return;
+    }
+    aiHydratedKey.current = aiInsightsCacheKey;
+    void hydrateAiInsights();
+  }, [analysisStatus, aiInsightsCacheKey, hydrateAiInsights, isAuthenticated]);
+
+  const handleRequestAiInsights = useCallback(async () => {
+    if (!isAuthenticated) {
+      trackEvent("analysis.ai.blocked_signup", {
+        properties: {
+          source: "game_ai_tab",
+        },
+      });
+      const next = encodeURIComponent(getSignupReturnPath());
+      router.push(`/signup?next=${next}`);
+      return;
+    }
+    if (analysisStatus !== "completed") {
+      setAiInsightsError("Run in-depth analysis before requesting AI insights.");
+      return;
+    }
+
+    trackEvent("analysis.ai.requested", {
+      properties: {
+        source: "game_ai_tab",
+      },
+    });
+    setAiInsightsRequesting(true);
+    setAiInsightsError(null);
+
+    try {
+      const res = await fetch(buildAiInsightsUrl(), {
+        method: "POST",
+        headers: withTrackingHeaders(authHeaders),
+      });
+      const data: AIInsightsResponse = await res.json().catch(() => ({
+        status: "generation_failed",
+        insights: null,
+        created_at: null,
+        detail: "AI insights request failed.",
+      }));
+
+      if (!res.ok) {
+        if (res.status === 403) {
+          const next = encodeURIComponent(getSignupReturnPath());
+          router.push(`/signup?next=${next}`);
+          return;
+        }
+        trackEvent("analysis.ai.failed", {
+          properties: {
+            reason: data.detail || `Status ${res.status}`,
+          },
+        });
+        setAiInsightsError(data.detail || "AI insights request failed.");
+        setSingleInsights(null);
+        setSingleInsightsStatus("error");
+        return;
+      }
+
+      if (data.status === "ready" && data.insights) {
+        trackEvent("analysis.ai.completed", {
+          properties: {
+            source: "game_ai_tab",
+          },
+        });
+        setSingleInsights(data.insights);
+        setSingleInsightsStatus("ready");
+        setAiInsightsError(null);
+        aiHydratedKey.current = aiInsightsCacheKey;
+        return;
+      }
+
+      trackEvent("analysis.ai.failed", {
+        properties: {
+          reason: data.detail || data.status,
+        },
+      });
+      setSingleInsights(null);
+      setSingleInsightsStatus(data.status === "analysis_missing" ? "idle" : "error");
+      setAiInsightsError(data.detail || "AI insights request failed.");
+    } catch {
+      trackEvent("analysis.ai.failed", {
+        properties: {
+          reason: "Network error",
+        },
+      });
+      setSingleInsights(null);
+      setSingleInsightsStatus("error");
+      setAiInsightsError("AI insights request failed. Please try again.");
+    } finally {
+      setAiInsightsRequesting(false);
+    }
+  }, [
+    aiInsightsCacheKey,
+    analysisStatus,
+    authHeaders,
+    buildAiInsightsUrl,
+    getSignupReturnPath,
+    isAuthenticated,
+    router,
+  ]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      return;
+    }
+    setSingleInsights(null);
+    setSingleInsightsStatus("idle");
+    setAiInsightsError(null);
+    setAiInsightsLoading(false);
+    setAiInsightsRequesting(false);
+    aiHydratedKey.current = null;
+  }, [isAuthenticated]);
 
   // Start/stop polling based on status
   useEffect(() => {
@@ -1262,162 +1462,184 @@ export default function GameAnalyzerPage() {
           </div>
 
           {/* Right: Analysis panels */}
-          <div className="lg:col-span-5 space-y-4">
-            {/* Engine lines */}
+          <div className="lg:col-span-5">
             <div className="zen-surface p-4">
-              <h3 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">
-                Engine Analysis
-                {analysisStatus === "completed" && analysisData?.meta.depth ? (
-                  <span className="font-normal text-[color:var(--zen-muted)] ml-2">
-                    Depth {analysisData.meta.depth}
-                  </span>
-                ) : (
-                  <span className="font-normal text-[color:var(--zen-muted)] ml-2">
-                    Local depth {LOCAL_ENGINE_DEPTH}
-                  </span>
-                )}
-              </h3>
+              <div
+                role="tablist"
+                aria-label="Game analysis panels"
+                className="mb-4 inline-flex gap-2 rounded-xl border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-1"
+              >
+                <button
+                  id="analysis-tab-engine"
+                  role="tab"
+                  type="button"
+                  aria-selected={activeAnalysisTab === "engine"}
+                  aria-controls="analysis-tab-panel-engine"
+                  tabIndex={activeAnalysisTab === "engine" ? 0 : -1}
+                  onClick={() => handleAnalysisTabChange("engine")}
+                  className={[
+                    "rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-wide transition",
+                    activeAnalysisTab === "engine"
+                      ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
+                      : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
+                  ].join(" ")}
+                >
+                  Engine Analysis
+                </button>
+                <button
+                  id="analysis-tab-ai"
+                  role="tab"
+                  type="button"
+                  aria-selected={activeAnalysisTab === "ai"}
+                  aria-controls="analysis-tab-panel-ai"
+                  tabIndex={activeAnalysisTab === "ai" ? 0 : -1}
+                  onClick={() => handleAnalysisTabChange("ai")}
+                  className={[
+                    "rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-wide transition",
+                    activeAnalysisTab === "ai"
+                      ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
+                      : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
+                  ].join(" ")}
+                >
+                  AI Summary
+                </button>
+              </div>
 
-              {!analyzing && (
-                <div className="text-center py-6">
-                  <button
-                    onClick={() => runAnalysis(analysisStatus === "completed")}
-                    className="zen-pill px-6 py-3 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition"
-                  >
-                    {!isAuthenticated
-                      ? "Sign in for in-depth analysis"
-                      : analysisStatus === "completed"
-                      ? "Re-run in-depth analysis"
-                      : "Request in-depth analysis"}
-                  </button>
-                  <p className="text-xs text-[color:var(--zen-muted)] mt-2">
-                    {!isAuthenticated
-                      ? "In-depth analysis is available after sign in."
-                      : analysisStatus === "completed"
-                      ? "Starts a fresh backend deep analysis and replaces this result."
-                      : "Runs backend deep analysis with accuracy + insights."}
-                  </p>
-                </div>
-              )}
-
-              {analyzing && (
-                <div className="text-center py-6">
-                  <div className="inline-flex flex-col items-center gap-2">
-                    <div className="inline-flex items-center gap-3 zen-pill px-6 py-3">
-                      <div className="animate-spin rounded-full h-5 w-5 border-2 border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
-                      <span className="text-[color:var(--zen-text)]">Analyzing game...</span>
-                    </div>
-                    <p className="text-xs text-[color:var(--zen-muted)]">
-                      Analysis runs in background. You'll see a notification when complete.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {currentNode && (
-                <EngineLines
-                  lines={displayEngineLines}
-                  depth={displayEngineDepth}
-                  isLoading={!currentNode.eval && isLocalEvaluating}
-                />
-              )}
-
-              {localEngineError && (
-                <p className="text-xs text-[color:var(--zen-muted)] mt-3">
-                  Local engine: {localEngineError}
-                </p>
-              )}
-            </div>
-
-            {/* Move list */}
-            <div className="zen-surface p-4">
-              <h3 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">Moves</h3>
-              <MoveList
-                tree={moveTree}
-                currentId={moveTree.currentId}
-                onSelectMove={handleSelectMove}
-                maxHeight={280}
-              />
-            </div>
-
-            {/* Current move info */}
-            {currentNode && currentNode.san && (
-              <div className="zen-surface p-4">
-                {/* <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-[color:var(--zen-muted)]">Current Move</span>
-                  {currentNode.classification && (
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded font-medium ${
-                        currentNode.classification === "blunder"
-                          ? "bg-red-500/15 text-[color:var(--zen-danger)]"
-                          : currentNode.classification === "mistake"
-                          ? "bg-orange-500/15 text-orange-300"
-                          : currentNode.classification === "inaccuracy"
-                          ? "bg-yellow-500/15 text-yellow-300"
-                          : currentNode.classification === "best" ||
-                            currentNode.classification === "excellent"
-                          ? "bg-emerald-500/15 text-[color:var(--zen-success)]"
-                          : "bg-white/5 text-[color:var(--zen-text)]"
-                      }`}
-                    >
-                      {currentNode.classification.charAt(0).toUpperCase() +
-                        currentNode.classification.slice(1)}
-                    </span>
-                  )}
-                </div> */}
-                <div className="text-2xl font-mono font-semibold text-[color:var(--zen-text)]">
-                  {currentNode.san}
-                </div>
-                {currentNode.cpLoss !== undefined && currentNode.cpLoss > 0 && (
-                  <p className="text-sm text-[color:var(--zen-danger)] mt-1">
-                    -{currentNode.cpLoss / 100} centipawns
-                  </p>
-                )}
-                {currentNode.bestMove && currentNode.bestMove.san !== currentNode.san && (
-                  <p className="text-sm text-[color:var(--zen-success)] mt-1">
-                    Best: <span className="font-mono">{currentNode.bestMove.san}</span>
-                  </p>
-                )}
-                {currentTactical && (
-                  <div className={`zen-surface-flat mt-3 p-3 border ${getTacticalTone(currentTactical.tactic_type).border}`}>
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <span
-                        className={`inline-flex items-center gap-2 text-[11px] uppercase tracking-wide px-2 py-1 border ${getTacticalTone(currentTactical.tactic_type).badge}`}
-                      >
-                        <span>{getTacticalIcon(currentTactical.tactic_type)}</span>
-                        <span>{getTacticalLabel(currentTactical.tactic_type)}</span>
+              <div
+                id="analysis-tab-panel-engine"
+                role="tabpanel"
+                aria-labelledby="analysis-tab-engine"
+                hidden={activeAnalysisTab !== "engine"}
+                className={activeAnalysisTab === "engine" ? "space-y-4" : "hidden"}
+              >
+                <div>
+                  <h3 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">
+                    Engine Analysis
+                    {analysisStatus === "completed" && analysisData?.meta.depth ? (
+                      <span className="font-normal text-[color:var(--zen-muted)] ml-2">
+                        Depth {analysisData.meta.depth}
                       </span>
-                      {typeof currentTactical.severity_score === "number" && (
-                        <span className="text-xs text-[color:var(--zen-muted)]">
-                          Severity {(currentTactical.severity_score * 100).toFixed(0)}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-[color:var(--zen-text)] leading-6">
-                      {buildTacticalSummary(currentTactical)}
-                    </p>
-                    {currentTactical.missed_move_san && (
-                      <p className="text-xs text-[color:var(--zen-muted)] mt-1.5">
-                        Missed tactical move: <span className="font-mono">{currentTactical.missed_move_san}</span>
+                    ) : (
+                      <span className="font-normal text-[color:var(--zen-muted)] ml-2">
+                        Local depth {LOCAL_ENGINE_DEPTH}
+                      </span>
+                    )}
+                  </h3>
+
+                  {!analyzing && (
+                    <div className="text-center py-6">
+                      <button
+                        onClick={() => runAnalysis(analysisStatus === "completed")}
+                        className="zen-pill px-6 py-3 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition"
+                      >
+                        {analysisStatus === "completed"
+                          ? "Re-run in-depth analysis"
+                          : "Request in-depth analysis"}
+                      </button>
+                      <p className="text-xs text-[color:var(--zen-muted)] mt-2">
+                        {analysisStatus === "completed"
+                          ? "Starts a fresh backend deep analysis and replaces this result."
+                          : "Free for everyone. Runs backend deep analysis with full engine output."}
                       </p>
+                    </div>
+                  )}
+
+                  {analyzing && (
+                    <div className="text-center py-6">
+                      <div className="inline-flex flex-col items-center gap-2">
+                        <div className="inline-flex items-center gap-3 zen-pill px-6 py-3">
+                          <div className="animate-spin rounded-full h-5 w-5 border-2 border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
+                          <span className="text-[color:var(--zen-text)]">Analyzing game...</span>
+                        </div>
+                        <p className="text-xs text-[color:var(--zen-muted)]">
+                          Analysis runs in background. You'll see a notification when complete.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {currentNode && (
+                    <EngineLines
+                      lines={displayEngineLines}
+                      depth={displayEngineDepth}
+                      isLoading={!currentNode.eval && isLocalEvaluating}
+                    />
+                  )}
+
+                  {localEngineError && (
+                    <p className="text-xs text-[color:var(--zen-muted)] mt-3">
+                      Local engine: {localEngineError}
+                    </p>
+                  )}
+                </div>
+
+                <div className="zen-surface-flat p-4">
+                  <h3 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">Moves</h3>
+                  <MoveList
+                    tree={moveTree}
+                    currentId={moveTree.currentId}
+                    onSelectMove={handleSelectMove}
+                    maxHeight={280}
+                  />
+                </div>
+
+                {currentNode && currentNode.san && (
+                  <div className="zen-surface-flat p-4">
+                    <div className="text-2xl font-mono font-semibold text-[color:var(--zen-text)]">
+                      {currentNode.san}
+                    </div>
+                    {currentNode.cpLoss !== undefined && currentNode.cpLoss > 0 && (
+                      <p className="text-sm text-[color:var(--zen-danger)] mt-1">
+                        -{currentNode.cpLoss / 100} centipawns
+                      </p>
+                    )}
+                    {currentNode.bestMove && currentNode.bestMove.san !== currentNode.san && (
+                      <p className="text-sm text-[color:var(--zen-success)] mt-1">
+                        Best: <span className="font-mono">{currentNode.bestMove.san}</span>
+                      </p>
+                    )}
+                    {currentTactical && (
+                      <div className={`zen-surface-flat mt-3 p-3 border ${getTacticalTone(currentTactical.tactic_type).border}`}>
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <span
+                            className={`inline-flex items-center gap-2 text-[11px] uppercase tracking-wide px-2 py-1 border ${getTacticalTone(currentTactical.tactic_type).badge}`}
+                          >
+                            <span>{getTacticalIcon(currentTactical.tactic_type)}</span>
+                            <span>{getTacticalLabel(currentTactical.tactic_type)}</span>
+                          </span>
+                          {typeof currentTactical.severity_score === "number" && (
+                            <span className="text-xs text-[color:var(--zen-muted)]">
+                              Severity {(currentTactical.severity_score * 100).toFixed(0)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-[color:var(--zen-text)] leading-6">
+                          {buildTacticalSummary(currentTactical)}
+                        </p>
+                        {currentTactical.missed_move_san && (
+                          <p className="text-xs text-[color:var(--zen-muted)] mt-1.5">
+                            Missed tactical move: <span className="font-mono">{currentTactical.missed_move_san}</span>
+                          </p>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* Error display */}
-            {error && (
-              <div className="zen-surface-flat p-4 border border-[color:var(--zen-danger)]/30">
-                <p className="text-sm text-[color:var(--zen-danger)]">{error}</p>
+                {error && (
+                  <div className="zen-surface-flat p-4 border border-[color:var(--zen-danger)]/30">
+                    <p className="text-sm text-[color:var(--zen-danger)]">{error}</p>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          {/* Deterministic single-game insights */}
-          {analysisStatus === "completed" && (
-            <div className="lg:col-span-12">
-              <div className="zen-surface p-4">
+              <div
+                id="analysis-tab-panel-ai"
+                role="tabpanel"
+                aria-labelledby="analysis-tab-ai"
+                hidden={activeAnalysisTab !== "ai"}
+                className={activeAnalysisTab === "ai" ? "space-y-4" : "hidden"}
+              >
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-[color:var(--zen-text)]">Game Insights</h3>
                   {singleInsights?.confidence !== undefined && (
@@ -1427,139 +1649,183 @@ export default function GameAnalyzerPage() {
                   )}
                 </div>
 
-                {singleInsightsStatus === "error" && (
-                  <p className="text-sm text-[color:var(--zen-danger)]">
-                    Unable to load game insights right now.
+                <div className="zen-surface-flat p-4 border border-[color:var(--zen-border)] space-y-3">
+                  <p className="text-xs text-[color:var(--zen-muted)]">
+                    you can only do 2 AI insights per day
                   </p>
+                  <button
+                    type="button"
+                    onClick={handleRequestAiInsights}
+                    disabled={
+                      aiInsightsRequesting ||
+                      aiInsightsLoading ||
+                      (analysisStatus !== "completed" && isAuthenticated)
+                    }
+                    className="zen-pill px-5 py-2.5 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {!isAuthenticated
+                      ? "Request AI insights"
+                      : aiInsightsRequesting
+                      ? "Requesting AI insights..."
+                      : "Request AI insights"}
+                  </button>
+                  {!isAuthenticated && (
+                    <p className="text-xs text-[color:var(--zen-muted)]">
+                      Sign up to unlock AI insights for this game.
+                    </p>
+                  )}
+                  {isAuthenticated && aiInsightsLoading && !aiInsightsRequesting && (
+                    <p className="text-xs text-[color:var(--zen-muted)]">
+                      Loading your saved AI insights...
+                    </p>
+                  )}
+                </div>
+
+                {analysisStatus !== "completed" && (
+                  <div className="zen-surface-flat p-4 border border-[color:var(--zen-border)]">
+                    <p className="text-sm text-[color:var(--zen-muted)]">
+                      Run in-depth analysis before requesting AI insights.
+                    </p>
+                  </div>
                 )}
-                {singleInsightsStatus === "idle" && (
-                  <p className="text-sm text-[color:var(--zen-muted)]">
-                    Insights were not available for this deep analysis result.
-                  </p>
-                )}
 
-                {singleInsightsStatus === "ready" && singleInsights && (
-                  <div className="space-y-4">
-                    {hasAiNarration && singleInsights.narration ? (
-                      <div className="space-y-3">
-                        <div
-                          className="zen-surface-flat p-4 md:p-5 space-y-4 border border-[color:var(--zen-accent)]/45"
-                          style={{
-                            background:
-                              "linear-gradient(145deg, rgba(24,30,44,0.92), rgba(20,26,38,0.9) 52%, rgba(17,23,34,0.9))",
-                            boxShadow:
-                              "inset 0 0 0 1px rgba(120,132,160,0.2), inset 0 0 0 2px rgba(84,98,132,0.16), 0 10px 24px rgba(0,0,0,0.24)",
-                          }}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--zen-muted)] mb-1">
-                                Mission Brief
-                              </p>
-                              <p className="text-lg font-semibold text-[color:var(--zen-text)]">
-                                {singleInsights.narration.title}
-                              </p>
-                            </div>
-                            <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] whitespace-nowrap bg-white/5">
-                              {Math.round((singleInsights.confidence || 0) * 100)}% confidence
-                            </span>
-                          </div>
+                {analysisStatus === "completed" && (
+                  <>
+                    {aiInsightsError && (
+                      <p className="text-sm text-[color:var(--zen-danger)]">
+                        {aiInsightsError}
+                      </p>
+                    )}
+                    {singleInsightsStatus === "idle" && (
+                      <p className="text-sm text-[color:var(--zen-muted)]">
+                        Request AI insights to generate your account-specific summary.
+                      </p>
+                    )}
 
-                          <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
-                            {singleInsights.narration.one_liner}
-                          </p>
-                          <p className="text-sm leading-6 text-[color:var(--zen-muted)]">
-                            {singleInsights.narration.confidence_note}
-                          </p>
-
-                          <div className="flex flex-wrap gap-2">
-                            <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
-                              Decisive phase: {singleInsights.narration.labels.decisive_phase}
-                            </span>
-                            <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
-                              Style: {singleInsights.narration.labels.player_style}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                          {singleInsights.narration.sections.map((section) => {
-                            const sectionKey = section.heading.toLowerCase();
-                            const isWideSection =
-                              sectionKey.includes("result") ||
-                              sectionKey.includes("turning") ||
-                              sectionKey.includes("next");
-                            const tone = getNarrationSectionTone(section.heading);
-                            return (
-                              <div
-                                key={section.heading}
-                                className={`zen-surface-flat p-3.5 md:p-4 border ${tone.cardBorder} ${
-                                  isWideSection ? "md:col-span-2" : ""
-                                }`}
-                                style={{
-                                  background:
-                                    "linear-gradient(140deg, rgba(22,28,40,0.9), rgba(18,24,36,0.9) 60%, rgba(15,20,30,0.92))",
-                                  boxShadow:
-                                    "inset 0 0 0 1px rgba(124,136,164,0.2), inset 0 0 0 2px rgba(84,96,126,0.14)",
-                                }}
-                              >
-                                <div className="flex items-center gap-2 mb-2">
-                                  <span
-                                    className={`inline-flex h-5 w-5 items-center justify-center text-[11px] font-semibold border ${tone.badgeBorder} ${tone.badgeText}`}
-                                  >
-                                    {getNarrationSectionBadge(section.heading)}
-                                  </span>
-                                  <p className={`text-[11px] uppercase tracking-[0.12em] ${tone.headingText}`}>
-                                    {section.heading}
+                    {singleInsightsStatus === "ready" && singleInsights && (
+                      <div className="space-y-4">
+                        {hasAiNarration && singleInsights.narration ? (
+                          <div className="space-y-3">
+                            <div
+                              className="zen-surface-flat p-4 md:p-5 space-y-4 border border-[color:var(--zen-accent)]/45"
+                              style={{
+                                background:
+                                  "linear-gradient(145deg, rgba(24,30,44,0.92), rgba(20,26,38,0.9) 52%, rgba(17,23,34,0.9))",
+                                boxShadow:
+                                  "inset 0 0 0 1px rgba(120,132,160,0.2), inset 0 0 0 2px rgba(84,98,132,0.16), 0 10px 24px rgba(0,0,0,0.24)",
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--zen-muted)] mb-1">
+                                    Mission Brief
+                                  </p>
+                                  <p className="text-lg font-semibold text-[color:var(--zen-text)]">
+                                    {singleInsights.narration.title}
                                   </p>
                                 </div>
-                                <ul className="space-y-2.5 text-[15px] leading-7 text-[color:var(--zen-text)]">
-                                  {section.bullets.map((bullet, idx) => (
-                                    <li key={`${section.heading}-${idx}`} className="flex gap-2">
-                                      <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
-                                        {getNarrationBulletIcon(section.heading, bullet)}
-                                      </span>
-                                      {(() => {
-                                        const parsedPly = extractPlyFromText(bullet);
-                                        const turningEvents = singleInsights.turning_points?.events || [];
-                                        const matchedEvent =
-                                          section.heading.toLowerCase().includes("turning") && parsedPly !== null
-                                            ? turningEvents.find((event) => event.ply === parsedPly)
-                                            : undefined;
-                                        const displayText = replacePlyWithMoveText(bullet);
-                                        if (matchedEvent) {
-                                          return (
-                                            <button
-                                              type="button"
-                                              onClick={() => jumpToInsightEvent(matchedEvent)}
-                                              className="text-left underline decoration-dotted underline-offset-4 hover:text-[color:var(--zen-accent)] transition"
-                                            >
-                                              {displayText}
-                                            </button>
-                                          );
-                                        }
-                                        return <span>{displayText}</span>;
-                                      })()}
-                                    </li>
-                                  ))}
-                                </ul>
+                                <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] whitespace-nowrap bg-white/5">
+                                  {Math.round((singleInsights.confidence || 0) * 100)}% confidence
+                                </span>
                               </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="zen-surface-flat p-4 border border-[color:var(--zen-border)]">
-                        <p className="text-sm text-[color:var(--zen-muted)]">
-                          AI review is not available for this game right now.
-                        </p>
+
+                              <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
+                                {singleInsights.narration.one_liner}
+                              </p>
+                              <p className="text-sm leading-6 text-[color:var(--zen-muted)]">
+                                {singleInsights.narration.confidence_note}
+                              </p>
+
+                              <div className="flex flex-wrap gap-2">
+                                <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
+                                  Decisive phase: {singleInsights.narration.labels.decisive_phase}
+                                </span>
+                                <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
+                                  Style: {singleInsights.narration.labels.player_style}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                              {singleInsights.narration.sections.map((section) => {
+                                const sectionKey = section.heading.toLowerCase();
+                                const isWideSection =
+                                  sectionKey.includes("result") ||
+                                  sectionKey.includes("turning") ||
+                                  sectionKey.includes("next");
+                                const tone = getNarrationSectionTone(section.heading);
+                                return (
+                                  <div
+                                    key={section.heading}
+                                    className={`zen-surface-flat p-3.5 md:p-4 border ${tone.cardBorder} ${
+                                      isWideSection ? "md:col-span-2" : ""
+                                    }`}
+                                    style={{
+                                      background:
+                                        "linear-gradient(140deg, rgba(22,28,40,0.9), rgba(18,24,36,0.9) 60%, rgba(15,20,30,0.92))",
+                                      boxShadow:
+                                        "inset 0 0 0 1px rgba(124,136,164,0.2), inset 0 0 0 2px rgba(84,96,126,0.14)",
+                                    }}
+                                  >
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <span
+                                        className={`inline-flex h-5 w-5 items-center justify-center text-[11px] font-semibold border ${tone.badgeBorder} ${tone.badgeText}`}
+                                      >
+                                        {getNarrationSectionBadge(section.heading)}
+                                      </span>
+                                      <p className={`text-[11px] uppercase tracking-[0.12em] ${tone.headingText}`}>
+                                        {section.heading}
+                                      </p>
+                                    </div>
+                                    <ul className="space-y-2.5 text-[15px] leading-7 text-[color:var(--zen-text)]">
+                                      {section.bullets.map((bullet, idx) => (
+                                        <li key={`${section.heading}-${idx}`} className="flex gap-2">
+                                          <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
+                                            {getNarrationBulletIcon(section.heading, bullet)}
+                                          </span>
+                                          {(() => {
+                                            const parsedPly = extractPlyFromText(bullet);
+                                            const turningEvents = singleInsights.turning_points?.events || [];
+                                            const matchedEvent =
+                                              section.heading.toLowerCase().includes("turning") && parsedPly !== null
+                                                ? turningEvents.find((event) => event.ply === parsedPly)
+                                                : undefined;
+                                            const displayText = replacePlyWithMoveText(bullet);
+                                            if (matchedEvent) {
+                                              return (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => jumpToInsightEvent(matchedEvent)}
+                                                  className="text-left underline decoration-dotted underline-offset-4 hover:text-[color:var(--zen-accent)] transition"
+                                                >
+                                                  {displayText}
+                                                </button>
+                                              );
+                                            }
+                                            return <span>{displayText}</span>;
+                                          })()}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="zen-surface-flat p-4 border border-[color:var(--zen-border)]">
+                            <p className="text-sm text-[color:var(--zen-muted)]">
+                              AI review is not available for this game right now.
+                            </p>
+                          </div>
+                        )}
                       </div>
                     )}
-                  </div>
+                  </>
                 )}
               </div>
             </div>
-          )}
+          </div>
         </div>
       </div>
     </main>
