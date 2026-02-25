@@ -1,9 +1,10 @@
 """Authentication endpoints."""
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from analytics import track_server_event
 from auth import get_current_user
 from db import create_user_if_missing, get_user_by_id, get_user_by_username, update_user_profile, update_user_profile_partial
 from dependencies import get_db
@@ -25,13 +26,27 @@ class ProfileUpdateBody(BaseModel):
 
 @router.post("/auth/register")
 async def register_user(
+    request: Request,
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Create user record if missing and return profile."""
-    create_user_if_missing(conn, current_user)
+    created = create_user_if_missing(conn, current_user)
+    if created:
+        await track_server_event(
+            conn,
+            event_name="auth.registered",
+            user_id=current_user["id"],
+            request=request,
+            properties={
+                "auth_provider": "google",
+            },
+        )
     conn.commit()
-    return current_user
+    return {
+        **current_user,
+        "created": created,
+    }
 
 
 @router.get("/auth/profile")
