@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
 import { useCountUp } from "@/hooks/useCountUp";
 import { useSession } from "next-auth/react";
+import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 import {
   PAGE_DATA_CACHE_TTL_MS,
   buildOpeningCacheKey,
@@ -165,7 +166,7 @@ export default function OpeningDetailPage() {
       
       const response = await fetch(
         `${API_BASE_URL}/api/v1/games/${site}/${encodeURIComponent(username)}?${params}`,
-        { headers: authHeaders }
+        { headers: withTrackingHeaders(authHeaders) }
       );
 
       if (!response.ok) {
@@ -218,6 +219,15 @@ export default function OpeningDetailPage() {
       void fetchGames(true);
     }
   }, [username, openingKey, colorFilter, timeClassFilter, resultFilter, site, authUserId]);
+
+  useEffect(() => {
+    if (!username || !openingKey) return;
+    trackEvent("opening.view", {
+      properties: {
+        source: "opening_detail_page",
+      },
+    });
+  }, [username, openingKey]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Unknown date";
@@ -411,12 +421,22 @@ export default function OpeningDetailPage() {
               key={`${game.site_game_id}-${idx}`}
               role="button"
               tabIndex={0}
-              onClick={() =>
-                router.push(`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`)
-              }
+              onClick={() => {
+                trackEvent("game.view", {
+                  properties: {
+                    source: "opening_games_list",
+                  },
+                });
+                router.push(`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
+                  trackEvent("game.view", {
+                    properties: {
+                      source: "opening_games_list_keyboard",
+                    },
+                  });
                   router.push(`/game/${game.site}/${encodeURIComponent(username)}/${game.site_game_id}`);
                 }
               }}
