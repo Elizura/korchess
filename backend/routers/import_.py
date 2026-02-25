@@ -10,6 +10,7 @@ from analytics import hash_username, track_server_event
 from db import (
     ensure_public_user_for_username,
     get_import_history,
+    get_import_status,
     upsert_game,
     upsert_import_status,
 )
@@ -23,6 +24,62 @@ from auth import get_optional_user, get_registered_user
 
 router = APIRouter(tags=["import"])
 logger = logging.getLogger(__name__)
+
+
+async def _maybe_return_existing_import(
+    *,
+    conn: psycopg.Connection,
+    current_user: dict | None,
+    http_request: Request,
+    username: str,
+    site: str,
+    max_games: int,
+    username_hash: str | None,
+) -> ImportResponse | None:
+    """Short-circuit import when games already exist for username+site."""
+    public_user_id = ensure_public_user_for_username(conn, username)
+    existing = get_import_status(conn, public_user_id, username, site)
+    existing_games = int(existing.get("total_games") or 0)
+
+    if existing_games <= 0:
+        return None
+
+    # Keep signed-in import history/status useful even when reusing existing public data.
+    if current_user:
+        imported_at = existing.get("imported_at") or datetime.now(timezone.utc).isoformat()
+        upsert_import_status(
+            conn,
+            current_user["id"],
+            username,
+            site,
+            int(existing.get("last_imported") or existing_games),
+            int(existing.get("last_skipped") or 0),
+            max_games,
+            imported_at,
+        )
+
+    await track_server_event(
+        conn,
+        event_name="import.success",
+        user_id=current_user["id"] if current_user else None,
+        request=http_request,
+        properties={
+            "site": site,
+            "max_games": max_games,
+            "username_hash": username_hash,
+            "imported": existing_games,
+            "skipped": 0,
+            "cache_hit": True,
+            "is_authenticated": bool(current_user),
+        },
+    )
+    conn.commit()
+
+    return ImportResponse(
+        username=username,
+        imported=existing_games,
+        skipped=0,
+    )
 
 
 @router.get("/history", response_model=ImportHistoryResponse)
@@ -62,6 +119,19 @@ async def import_lichess_games(
             "is_authenticated": bool(current_user),
         },
     )
+
+    existing_response = await _maybe_return_existing_import(
+        conn=conn,
+        current_user=current_user,
+        http_request=http_request,
+        username=username,
+        site="lichess",
+        max_games=max_games,
+        username_hash=username_hash,
+    )
+    print(existing_response is not None, "<<<<<<<<<<<<<<<")
+    if existing_response is not None:
+        return existing_response
 
     public_user_id = ensure_public_user_for_username(conn, username)
 
@@ -229,6 +299,18 @@ async def import_chesscom_games(
             "is_authenticated": bool(current_user),
         },
     )
+
+    existing_response = await _maybe_return_existing_import(
+        conn=conn,
+        current_user=current_user,
+        http_request=http_request,
+        username=username,
+        site="chesscom",
+        max_games=max_games,
+        username_hash=username_hash,
+    )
+    if existing_response is not None:
+        return existing_response
 
     public_user_id = ensure_public_user_for_username(conn, username)
 
