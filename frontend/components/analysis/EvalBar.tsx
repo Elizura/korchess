@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 interface EvalBarProps {
   eval: { cp?: number; mate?: number } | null;
@@ -31,15 +31,13 @@ function formatEval(evalData: { cp?: number; mate?: number } | null): string {
   if (!evalData) return "0.0";
 
   if (evalData.mate !== undefined && evalData.mate !== null) {
-    const sign = evalData.mate > 0 ? "" : "-";
-    return `M${sign}${Math.abs(evalData.mate)}`;
+    return `M${Math.abs(evalData.mate)}`;
   }
 
   if (evalData.cp !== undefined && evalData.cp !== null) {
-    const value = evalData.cp / 100;
+    const value = Math.abs(evalData.cp / 100);
     if (value === 0) return "0.0";
-    const sign = value > 0 ? "+" : "";
-    return `${sign}${value.toFixed(1)}`;
+    return `${value.toFixed(1)}`;
   }
 
   return "0.0";
@@ -51,9 +49,9 @@ export default function EvalBar({
   height = 400,
   width = 30,
 }: EvalBarProps) {
-  const { whitePercent, displayValue, isWhiteAdvantage } = useMemo(() => {
+  const { targetWhitePercent, displayValue, isWhiteAdvantage } = useMemo(() => {
     if (!evalData) {
-      return { whitePercent: 50, displayValue: "0.0", isWhiteAdvantage: null };
+      return { targetWhitePercent: 50, displayValue: "0.0", isWhiteAdvantage: null };
     }
 
     let percent: number;
@@ -77,15 +75,67 @@ export default function EvalBar({
         : null;
 
     return {
-      whitePercent: percent,
+      targetWhitePercent: percent,
       displayValue: formatEval(evalData),
       isWhiteAdvantage: isAdvantage,
     };
   }, [evalData]);
 
+  const [animatedWhitePercent, setAnimatedWhitePercent] = useState(targetWhitePercent);
+  const animatedRef = useRef(targetWhitePercent);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    const animate = () => {
+      const current = animatedRef.current;
+      const delta = targetWhitePercent - current;
+
+      if (Math.abs(delta) < 0.08) {
+        animatedRef.current = targetWhitePercent;
+        setAnimatedWhitePercent(targetWhitePercent);
+        rafRef.current = null;
+        return;
+      }
+
+      // Dampened interpolation for smoother bar movement during frequent eval updates.
+      const next = current + delta * 0.2;
+      animatedRef.current = next;
+      setAnimatedWhitePercent(next);
+      rafRef.current = requestAnimationFrame(animate);
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+      rafRef.current = null;
+    };
+  }, [targetWhitePercent]);
+
   // If board is flipped, we still show white on bottom
-  const whiteHeight = (height * whitePercent) / 100;
+  const whiteHeight = (height * animatedWhitePercent) / 100;
   const blackHeight = height - whiteHeight;
+  const evalLabelPositionClass =
+    isWhiteAdvantage === null
+      ? "top-1/2 -translate-y-1/2"
+      : isWhiteAdvantage
+      ? "bottom-2"
+      : "top-2";
+  const evalLabelStyle = {
+    color:
+      isWhiteAdvantage === null
+        ? "#e5e7eb"
+        : isWhiteAdvantage
+        ? "rgba(17,24,39,0.92)"
+        : "rgba(255,255,255,0.95)",
+  };
 
   return (
     <div
@@ -108,25 +158,10 @@ export default function EvalBar({
           backgroundColor: "#f0f0f0",
         }}
       />
-      {/* Evaluation display */}
+      {/* Evaluation display (fixed at bar end, not on divider) */}
       <div
-        className="absolute left-1/2 -translate-x-1/2 text-xs font-mono font-bold px-1 py-0.5 rounded shadow-sm"
-        style={{
-          // Position near the dividing line
-          top: blackHeight - 12,
-          backgroundColor: isWhiteAdvantage === null 
-            ? "#888" 
-            : isWhiteAdvantage 
-            ? "#f0f0f0" 
-            : "#1a1a1a",
-          color: isWhiteAdvantage === null 
-            ? "#fff" 
-            : isWhiteAdvantage 
-            ? "#1a1a1a" 
-            : "#f0f0f0",
-          minWidth: 28,
-          textAlign: "center",
-        }}
+        className={`pointer-events-none absolute left-1/2 -translate-x-1/2 text-xs font-mono font-semibold ${evalLabelPositionClass}`}
+        style={evalLabelStyle}
       >
         {displayValue}
       </div>
