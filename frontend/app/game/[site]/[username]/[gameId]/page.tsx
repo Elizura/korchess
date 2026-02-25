@@ -545,8 +545,8 @@ export default function GameAnalyzerPage() {
     if (side === "white") {
       return {
         background:
-          "linear-gradient(90deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.24) 46%, rgba(255,255,255,0.05) 100%)",
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.35)",
+          "linear-gradient(90deg, rgba(255,255,255,0.98) 0%, rgba(255,255,255,0.88) 18%, rgba(255,255,255,0.42) 52%, rgba(255,255,255,0.08) 100%)",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.45)",
       };
     }
     return {
@@ -581,11 +581,26 @@ export default function GameAnalyzerPage() {
     [plyToMoveNumber]
   );
 
-  const extractPlyFromText = useCallback((text: string): number | null => {
-    const match = text.match(/Ply\s+(\d+)/i);
-    if (!match) return null;
-    const parsed = Number(match[1]);
-    return Number.isFinite(parsed) ? parsed : null;
+  const extractExplicitPlyFromText = useCallback((text: string): number | null => {
+    const plyMatch = text.match(/Ply\s+(\d+)/i);
+    if (!plyMatch) return null;
+    const parsed = Number(plyMatch[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }, []);
+
+  const extractMoveNumberFromText = useCallback((text: string): number | null => {
+    const moveMatch = text.match(/(?:At\s+)?Move\s+(\d+)/i);
+    if (!moveMatch) return null;
+    const moveNumber = Number(moveMatch[1]);
+    return Number.isFinite(moveNumber) && moveNumber > 0 ? moveNumber : null;
+  }, []);
+
+  const extractActorHintFromText = useCallback((text: string): "user" | "opponent" | null => {
+    if (/\byour opponent\b/i.test(text)) return "opponent";
+    if (/\byour move\b/i.test(text) || /\byou\b/i.test(text) || /\byour\b/i.test(text)) {
+      return "user";
+    }
+    return null;
   }, []);
 
   const hasAiNarration = useMemo(() => {
@@ -604,6 +619,151 @@ export default function GameAnalyzerPage() {
   const resultSummarySection = aiNarrationSectionsByHeading.get("result summary");
   const activeAiSectionHeading = AI_SECTION_TABS.find((tab) => tab.id === activeAiSectionTab)?.heading || "Result summary";
   const activeAiSection = aiNarrationSectionsByHeading.get(activeAiSectionHeading.toLowerCase());
+  const turningNarrationSection = aiNarrationSectionsByHeading.get("turning points");
+  const turningEvents = singleInsights?.turning_points?.events || [];
+
+  const getInsightEventPly = useCallback((event?: InsightEvent | null): number | null => {
+    if (!event) return null;
+    const candidate = event.anchor?.ply ?? event.ply;
+    if (typeof candidate !== "number" || !Number.isFinite(candidate) || candidate <= 0) {
+      return null;
+    }
+    return candidate;
+  }, []);
+
+  const doesTurningBulletMatchIndexedEvent = useCallback((bullet: string, event?: InsightEvent | null) => {
+    const eventPly = getInsightEventPly(event);
+    if (!eventPly) return false;
+
+    const explicitPly = extractExplicitPlyFromText(bullet);
+    if (explicitPly !== null && explicitPly !== eventPly) {
+      return false;
+    }
+
+    const moveNumber = extractMoveNumberFromText(bullet);
+    if (moveNumber !== null && plyToMoveNumber(eventPly) !== moveNumber) {
+      return false;
+    }
+
+    const actorHint = extractActorHintFromText(bullet);
+    if (actorHint && event?.actor && actorHint !== event.actor) {
+      return false;
+    }
+
+    return explicitPly !== null || moveNumber !== null;
+  }, [
+    extractActorHintFromText,
+    extractExplicitPlyFromText,
+    extractMoveNumberFromText,
+    getInsightEventPly,
+    plyToMoveNumber,
+  ]);
+
+  const hasGroundedTurningBullets = useMemo(() => {
+    if (!turningNarrationSection?.bullets?.length || !turningEvents.length) {
+      return false;
+    }
+    const compareCount = Math.min(turningNarrationSection.bullets.length, turningEvents.length);
+    if (compareCount <= 0) return false;
+    for (let idx = 0; idx < compareCount; idx += 1) {
+      if (!doesTurningBulletMatchIndexedEvent(turningNarrationSection.bullets[idx], turningEvents[idx])) {
+        return false;
+      }
+    }
+    return true;
+  }, [doesTurningBulletMatchIndexedEvent, turningEvents, turningNarrationSection?.bullets]);
+
+  const resolveLegacyTurningPointEvent = useCallback((bullet: string): InsightEvent | null => {
+    if (!turningEvents.length) return null;
+    const actorHint = extractActorHintFromText(bullet);
+    const explicitPly = extractExplicitPlyFromText(bullet);
+
+    const selectFromCandidates = (candidates: InsightEvent[]): InsightEvent | null => {
+      if (!candidates.length) return null;
+      if (actorHint) {
+        const actorExact = candidates.filter((event) => event.actor === actorHint);
+        if (actorExact.length === 1) return actorExact[0];
+        if (actorExact.length > 1) {
+          candidates = actorExact;
+        }
+      }
+
+      if (actorHint) {
+        const moveNumber = extractMoveNumberFromText(bullet);
+        if (moveNumber !== null && game?.color) {
+          const expectedPly =
+            actorHint === "user"
+              ? (game.color === "white" ? (moveNumber * 2) - 1 : moveNumber * 2)
+              : (game.color === "white" ? moveNumber * 2 : (moveNumber * 2) - 1);
+          const parityMatch = candidates.find((event) => getInsightEventPly(event) === expectedPly);
+          if (parityMatch) return parityMatch;
+        }
+      }
+
+      return candidates.length === 1 ? candidates[0] : null;
+    };
+
+    if (explicitPly !== null) {
+      const explicitCandidates = turningEvents.filter((event) => getInsightEventPly(event) === explicitPly);
+      return selectFromCandidates(explicitCandidates);
+    }
+
+    const moveNumber = extractMoveNumberFromText(bullet);
+    if (moveNumber === null) return null;
+    const moveCandidates = turningEvents.filter((event) => {
+      const eventPly = getInsightEventPly(event);
+      return eventPly !== null && plyToMoveNumber(eventPly) === moveNumber;
+    });
+    return selectFromCandidates(moveCandidates);
+  }, [
+    extractActorHintFromText,
+    extractExplicitPlyFromText,
+    extractMoveNumberFromText,
+    game?.color,
+    getInsightEventPly,
+    plyToMoveNumber,
+    turningEvents,
+  ]);
+
+  const resolveTurningPointEventForBullet = useCallback((bullet: string, idx: number): InsightEvent | null => {
+    let event: InsightEvent | null = null;
+
+    if (hasGroundedTurningBullets) {
+      const indexed = turningEvents[idx];
+      if (indexed && doesTurningBulletMatchIndexedEvent(bullet, indexed)) {
+        event = indexed;
+      }
+    } else {
+      event = resolveLegacyTurningPointEvent(bullet);
+    }
+
+    const targetPly = getInsightEventPly(event);
+    if (!event || !targetPly || !nodeIdByPly.has(targetPly)) {
+      return null;
+    }
+    return event;
+  }, [
+    doesTurningBulletMatchIndexedEvent,
+    getInsightEventPly,
+    hasGroundedTurningBullets,
+    nodeIdByPly,
+    resolveLegacyTurningPointEvent,
+    turningEvents,
+  ]);
+
+  const isObviousResultBullet = useCallback((bullet: string) => {
+    const normalized = bullet.trim().toLowerCase();
+    if (!normalized) return true;
+    return (
+      /^you\s+(won|lost|drew|draw)\s+this\s+game\.?$/.test(normalized) ||
+      /^the\s+result\s+was\s+(a\s+)?(win|loss|draw)\.?$/.test(normalized)
+    );
+  }, []);
+
+  const filteredResultSummaryBullets = useMemo(() => {
+    const bullets = resultSummarySection?.bullets ?? [];
+    return bullets.filter((bullet) => !isObviousResultBullet(bullet));
+  }, [isObviousResultBullet, resultSummarySection?.bullets]);
 
   const getNarrationSectionBadge = useCallback((heading: string) => {
     const key = heading.toLowerCase();
@@ -1448,7 +1608,7 @@ export default function GameAnalyzerPage() {
   if (loading) {
     return (
       <main className="analysis-page min-h-screen py-8">
-        <div className="max-w-[1320px] mx-auto px-4 relative z-10">
+        <div className="max-w-[1380px] mx-auto px-4 relative z-10">
           <div className="py-10 flex justify-center">
             <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
           </div>
@@ -1460,7 +1620,7 @@ export default function GameAnalyzerPage() {
   if (error && !game) {
     return (
       <main className="analysis-page min-h-screen py-8">
-        <div className="max-w-[1320px] mx-auto px-4 relative z-10">
+        <div className="max-w-[1380px] mx-auto px-4 relative z-10">
           <div className="zen-surface p-8 text-center">
             <p className="text-[color:var(--zen-danger)] mb-4">{error}</p>
             <Link
@@ -1477,11 +1637,11 @@ export default function GameAnalyzerPage() {
 
   return (
     <main className="analysis-page min-h-screen py-6">
-      <div className="max-w-[1320px] mx-auto px-4 relative z-10">
+      <div className="max-w-[1380px] mx-auto px-4 relative z-10">
         {/* Main layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.24fr)_minmax(0,1fr)]">
           {/* Left: Board + Eval Bar */}
-          <div className="lg:col-span-7">
+          <div className="lg:min-w-0">
             <div className="zen-surface zen-surface-no-backdrop p-4">
 	              <div
 	                className="mb-3 rounded-xl px-3 py-2"
@@ -1568,7 +1728,7 @@ export default function GameAnalyzerPage() {
           </div>
 
           {/* Right: Analysis panels */}
-          <div className="lg:col-span-5">
+          <div className="lg:min-w-0">
             <div className="zen-surface p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
@@ -1668,20 +1828,16 @@ export default function GameAnalyzerPage() {
                     )}
                   </h3>
 
-                  {!analyzing && (
+                  {!analyzing && analysisStatus !== "completed" && (
                     <div className="text-center py-6">
                       <button
-                        onClick={() => runAnalysis(analysisStatus === "completed")}
+                        onClick={() => runAnalysis(false)}
                         className="zen-pill px-6 py-3 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition"
                       >
-                        {analysisStatus === "completed"
-                          ? "Re-run in-depth analysis"
-                          : "Request in-depth analysis"}
+                        Request in-depth analysis
                       </button>
                       <p className="text-xs text-[color:var(--zen-muted)] mt-2">
-                        {analysisStatus === "completed"
-                          ? "Starts a fresh backend deep analysis and replaces this result."
-                          : "Free for everyone. Runs backend deep analysis with full engine output."}
+                        Free for everyone. Runs backend deep analysis with full engine output.
                       </p>
                     </div>
                   )}
@@ -1965,10 +2121,6 @@ export default function GameAnalyzerPage() {
                                 <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
                                   {singleInsights.narration.one_liner}
                                 </p>
-                                <p className="text-sm leading-6 text-[color:var(--zen-muted)]">
-                                  {singleInsights.narration.confidence_note}
-                                </p>
-
                                 <div className="flex flex-wrap gap-2">
                                   <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
                                     Decisive phase: {singleInsights.narration.labels.decisive_phase}
@@ -1978,12 +2130,12 @@ export default function GameAnalyzerPage() {
                                   </span>
                                 </div>
 
-                                {resultSummarySection?.bullets?.length ? (
+                                {filteredResultSummaryBullets.length ? (
                                   <ul className="space-y-2.5 border-t border-[color:var(--zen-border)]/60 pt-3 text-[15px] leading-7 text-[color:var(--zen-text)]">
-                                    {resultSummarySection.bullets.map((bullet, idx) => (
+                                    {filteredResultSummaryBullets.map((bullet, idx) => (
                                       <li key={`result-summary-${idx}`} className="flex gap-2">
                                         <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
-                                          {getNarrationBulletIcon(resultSummarySection.heading, bullet)}
+                                          {getNarrationBulletIcon(resultSummarySection?.heading || "Result summary", bullet)}
                                         </span>
                                         <span>{replacePlyWithMoveText(bullet)}</span>
                                       </li>
@@ -2035,12 +2187,10 @@ export default function GameAnalyzerPage() {
                                           {getNarrationBulletIcon(activeAiSection.heading, bullet)}
                                         </span>
                                         {(() => {
-                                          const parsedPly = extractPlyFromText(bullet);
-                                          const turningEvents = singleInsights.turning_points?.events || [];
                                           const matchedEvent =
-                                            activeAiSectionTab === "turning_points" && parsedPly !== null
-                                              ? turningEvents.find((event) => event.ply === parsedPly)
-                                              : undefined;
+                                            activeAiSectionTab === "turning_points"
+                                              ? resolveTurningPointEventForBullet(bullet, idx)
+                                              : null;
                                           const displayText = replacePlyWithMoveText(bullet);
                                           if (matchedEvent) {
                                             return (
