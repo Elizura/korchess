@@ -19,17 +19,6 @@ interface BoardControlsProps {
   showArrows: boolean;
   onToggleArrows: () => void;
   
-  // Engine settings
-  multiPv: number;
-  onMultiPvChange: (value: number) => void;
-  
-  depth: number;
-  onDepthChange: (value: number) => void;
-  
-  // Analysis state
-  isAnalyzing?: boolean;
-  onRunAnalysis?: () => void;
-  
   // External link (URL and site for label: "Lichess" vs "Chess.com")
   lichessUrl?: string;
   site?: string;
@@ -46,12 +35,6 @@ export default function BoardControls({
   onToggleCoordinates,
   showArrows,
   onToggleArrows,
-  multiPv,
-  onMultiPvChange,
-  depth,
-  onDepthChange,
-  isAnalyzing,
-  onRunAnalysis,
   lichessUrl,
   site,
 }: BoardControlsProps) {
@@ -137,68 +120,6 @@ export default function BoardControls({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
           </svg>
         </button>
-      </div>
-
-      {/* Engine settings */}
-      <div className="flex items-center gap-3">
-        {/* MultiPV selector */}
-        <div className="flex items-center gap-1.5">
-          <label className="text-xs text-[color:var(--zen-muted)]">Lines:</label>
-          <select
-            value={multiPv}
-            onChange={(e) => onMultiPvChange(Number(e.target.value))}
-            className="zen-input text-sm px-2 py-1"
-          >
-            {[1, 2, 3, 4, 5].map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Depth selector */}
-        <div className="flex items-center gap-1.5">
-          <label className="text-xs text-[color:var(--zen-muted)]">Depth:</label>
-          <select
-            value={depth}
-            onChange={(e) => onDepthChange(Number(e.target.value))}
-            className="zen-input text-sm px-2 py-1"
-          >
-            {[12, 15, 18, 20, 22, 24].map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Run analysis button */}
-        {onRunAnalysis && (
-          <button
-            onClick={onRunAnalysis}
-            disabled={isAnalyzing}
-            className={`
-              zen-pill px-3 py-1.5 text-sm font-medium transition-colors
-              ${isAnalyzing
-                ? "opacity-50 cursor-not-allowed"
-                : "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent)] hover:text-white"
-              }
-            `}
-          >
-            {isAnalyzing ? (
-              <span className="flex items-center gap-1.5">
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Analyzing...
-              </span>
-            ) : (
-              "Analyze"
-            )}
-          </button>
-        )}
       </div>
 
       {/* External game link (Lichess or Chess.com) */}
