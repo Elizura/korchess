@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 import { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { signIn, signOut, useSession } from "next-auth/react";
+import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 import {
   PAGE_DATA_CACHE_TTL_MS,
   buildDashboardCacheKey,
@@ -210,7 +211,7 @@ export default function DashboardPage() {
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/v1/auth/profile`,
-          { headers: { Authorization: `Bearer ${session.idToken}` } }
+          { headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }) }
         );
         if (!res.ok) return;
         const profile = await res.json();
@@ -314,7 +315,7 @@ export default function DashboardPage() {
 
     const response = await fetch(
       `${API_BASE_URL}/api/v1/openings/all/${encodeURIComponent(user)}?${params}`,
-      { headers: authHeaders }
+      { headers: withTrackingHeaders(authHeaders) }
     );
 
     if (!response.ok) {
@@ -328,7 +329,7 @@ export default function DashboardPage() {
   const fetchImportStatus = async (user: string) => {
     const response = await fetch(
       `${API_BASE_URL}/api/v1/import-status/all/${encodeURIComponent(user)}`,
-      { headers: authHeaders }
+      { headers: withTrackingHeaders(authHeaders) }
     );
     
     if (!response.ok) {
@@ -350,7 +351,7 @@ export default function DashboardPage() {
     }
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/import/history`, {
-        headers: authHeaders,
+        headers: withTrackingHeaders(authHeaders),
       });
       if (response.ok) {
         const data = await response.json();
@@ -370,7 +371,7 @@ export default function DashboardPage() {
 
     const response = await fetch(
       `${API_BASE_URL}/api/v1/insights/profile?${params.toString()}`,
-      { headers: authHeaders }
+      { headers: withTrackingHeaders(authHeaders) }
     );
     if (!response.ok) {
       return null;
@@ -382,10 +383,10 @@ export default function DashboardPage() {
   const requestInsightsRefresh = async (user: string, force = true): Promise<InsightsProfile | null> => {
     const response = await fetch(`${API_BASE_URL}/api/v1/insights/profile`, {
       method: "POST",
-      headers: {
+      headers: withTrackingHeaders({
         "Content-Type": "application/json",
         ...authHeaders,
-      } as Record<string, string>,
+      } as Record<string, string>),
       body: JSON.stringify({
         username: user,
         site: "all",
@@ -406,7 +407,7 @@ export default function DashboardPage() {
 
     const response = await fetch(
       `${API_BASE_URL}/api/v1/openings/all/${encodeURIComponent(user)}/variations?${params}`,
-      { headers: authHeaders }
+      { headers: withTrackingHeaders(authHeaders) }
     );
 
     if (!response.ok) {
@@ -515,6 +516,13 @@ export default function DashboardPage() {
       return;
     }
 
+    trackEvent("import.start", {
+      properties: {
+        site: "lichess",
+        max_games: 200,
+      },
+    });
+
     setLoading(true);
     setError(null);
     setReport(null);
@@ -525,7 +533,7 @@ export default function DashboardPage() {
     try {
       const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/lichess`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders } as Record<string, string>,
+        headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
         body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
       });
 
@@ -538,6 +546,13 @@ export default function DashboardPage() {
 
       const importData: ImportResponse = await importResponse.json();
       setImportResult(importData);
+      trackEvent("import.success", {
+        properties: {
+          site: "lichess",
+          imported: importData.imported,
+          skipped: importData.skipped,
+        },
+      });
 
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
@@ -578,6 +593,12 @@ export default function DashboardPage() {
       setInsights(insightsData);
       setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
     } catch (err) {
+      trackEvent("import.failed", {
+        properties: {
+          site: "lichess",
+          reason: err instanceof Error ? err.message : "An error occurred",
+        },
+      });
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
@@ -590,6 +611,13 @@ export default function DashboardPage() {
       return;
     }
 
+    trackEvent("import.start", {
+      properties: {
+        site: "chesscom",
+        max_games: 200,
+      },
+    });
+
     setLoading(true);
     setError(null);
     setReport(null);
@@ -600,7 +628,7 @@ export default function DashboardPage() {
     try {
       const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/chesscom`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders } as Record<string, string>,
+        headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
         body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
       });
 
@@ -613,6 +641,13 @@ export default function DashboardPage() {
 
       const importData: ImportResponse = await importResponse.json();
       setImportResult(importData);
+      trackEvent("import.success", {
+        properties: {
+          site: "chesscom",
+          imported: importData.imported,
+          skipped: importData.skipped,
+        },
+      });
 
       setUsername(trimmedUsername);
       setCurrentUsername(trimmedUsername);
@@ -653,6 +688,12 @@ export default function DashboardPage() {
       setInsights(insightsData);
       setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
     } catch (err) {
+      trackEvent("import.failed", {
+        properties: {
+          site: "chesscom",
+          reason: err instanceof Error ? err.message : "An error occurred",
+        },
+      });
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
@@ -660,6 +701,11 @@ export default function DashboardPage() {
   };
 
   const handleHistoryItemClick = (item: ImportHistoryItem) => {
+    trackEvent("feature.usage", {
+      properties: {
+        feature: "recently_analyzed_select",
+      },
+    });
     setUsername(item.username);
     setCurrentUsername(item.username);
     setExpandedOpenings({});
@@ -672,6 +718,11 @@ export default function DashboardPage() {
 
   const handleRefresh = () => {
     if (!currentUsername) return;
+    trackEvent("feature.usage", {
+      properties: {
+        feature: "dashboard_refresh",
+      },
+    });
 
     setReportRefreshNotice(null);
     setError(null);
@@ -695,10 +746,20 @@ export default function DashboardPage() {
 
   const handleRefreshInsights = async () => {
     if (!currentUsername) return;
+    trackEvent("insights.refresh.requested", {
+      properties: {
+        source: "dashboard",
+      },
+    });
     setInsightsRefreshing(true);
     try {
       const refreshed = await requestInsightsRefresh(currentUsername, true);
       if (refreshed) {
+        trackEvent("insights.refresh.completed", {
+          properties: {
+            lifecycle_status: refreshed.lifecycle_status,
+          },
+        });
         setInsights(refreshed);
         setCached<InsightsProfile | null>(
           getDashboardInsightsCacheKey(currentUsername),
@@ -714,6 +775,13 @@ export default function DashboardPage() {
     newColor: ColorFilter,
     newTimeClass: TimeClassFilter
   ) => {
+    trackEvent("feature.usage", {
+      properties: {
+        feature: "dashboard_filter_change",
+        color: newColor,
+        time_class: newTimeClass,
+      },
+    });
     setColorFilter(newColor);
     setTimeClassFilter(newTimeClass);
     setExpandedOpenings({});
@@ -727,6 +795,11 @@ export default function DashboardPage() {
   };
 
   const toggleOpening = async (openingKey: string) => {
+    trackEvent("feature.usage", {
+      properties: {
+        feature: "opening_expand_toggle",
+      },
+    });
     setExpandedOpenings((prev) => ({
       ...prev,
       [openingKey]: !prev[openingKey],
@@ -915,7 +988,14 @@ export default function DashboardPage() {
             </>
           ) : (
             <button
-              onClick={() => signIn("google", { callbackUrl: "/dashboard" })}
+              onClick={() => {
+                trackEvent("auth.signin.clicked", {
+                  properties: {
+                    source: "dashboard_header",
+                  },
+                });
+                signIn("google", { callbackUrl: "/dashboard" });
+              }}
               className="bg-primary text-white font-display text-[9px] uppercase tracking-wider px-5 py-2.5 rounded-lg border-2 border-[#7d8fd4] shadow-[0_4px_0_0_#3b4887] hover:bg-primary/90 active:translate-y-1 active:shadow-[0_2px_0_0_#3b4887] transition-all"
             >
               SIGN IN
@@ -1404,6 +1484,11 @@ export default function DashboardPage() {
                       <tr
                         onClick={() => {
                           if (currentUsername) {
+                            trackEvent("opening.view", {
+                              properties: {
+                                source: "dashboard_openings_table",
+                              },
+                            });
                             router.push(
                               `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.opening_key)}?site=all`
                             );
@@ -1524,6 +1609,11 @@ export default function DashboardPage() {
                                       className="opening-variation-item"
                                       onClick={() => {
                                         if (currentUsername) {
+                                          trackEvent("opening.view", {
+                                            properties: {
+                                              source: "dashboard_variations_table",
+                                            },
+                                          });
                                           router.push(
                                             `/opening/${encodeURIComponent(
                                               currentUsername
