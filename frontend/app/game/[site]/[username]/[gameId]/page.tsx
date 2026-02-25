@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from "react";
 import { Chess } from "chess.js";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -300,6 +300,28 @@ interface SingleGameInsightsResponse {
   narration_meta?: GameInsightsNarrationMeta;
 }
 
+type AiSectionTab =
+  | "result_summary"
+  | "turning_points"
+  | "what_you_did_well"
+  | "what_to_improve"
+  | "next_game_focus";
+
+const AI_SECTION_TABS: Array<{ id: AiSectionTab; label: string; heading: string }> = [
+  { id: "result_summary", label: "Result summary", heading: "Result summary" },
+  { id: "turning_points", label: "Turning points", heading: "Turning points" },
+  { id: "what_you_did_well", label: "What you did well", heading: "What you did well" },
+  { id: "what_to_improve", label: "What to improve", heading: "What to improve" },
+  { id: "next_game_focus", label: "Next game focus", heading: "Next game focus" },
+];
+
+const AI_REQUEST_LOADING_STEPS = [
+  "Analyzing your games",
+  "Spotting blunders and tactical misses",
+  "Finding recurring mistakes",
+  "Preparing your next-game focus",
+];
+
 export default function GameAnalyzerPage() {
   const params = useParams();
   const router = useRouter();
@@ -324,13 +346,14 @@ export default function GameAnalyzerPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<"idle" | "completed" | "missing" | "processing">("idle");
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [singleInsights, setSingleInsights] = useState<SingleGameInsightsResponse | null>(null);
   const [singleInsightsStatus, setSingleInsightsStatus] = useState<"idle" | "ready" | "error">("idle");
   const [aiInsightsLoading, setAiInsightsLoading] = useState(false);
   const [aiInsightsRequesting, setAiInsightsRequesting] = useState(false);
+  const [aiRequestStepIndex, setAiRequestStepIndex] = useState(0);
   const [aiInsightsError, setAiInsightsError] = useState<string | null>(null);
   const [activeAnalysisTab, setActiveAnalysisTab] = useState<"engine" | "ai">("engine");
+  const [activeAiSectionTab, setActiveAiSectionTab] = useState<AiSectionTab>("result_summary");
   
   // Polling for async analysis
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
@@ -463,6 +486,76 @@ export default function GameAnalyzerPage() {
       : analysisData.summary.accuracy_black;
   }, [analysisData, game]);
 
+  const whitePlayerName = useMemo(() => {
+    if (!game) return "White";
+    return game.color === "white" ? username : (game.opponent || "Unknown");
+  }, [game, username]);
+
+  const blackPlayerName = useMemo(() => {
+    if (!game) return "Black";
+    return game.color === "black" ? username : (game.opponent || "Unknown");
+  }, [game, username]);
+
+  const topSideColor = orientation === "white" ? "black" : "white";
+  const bottomSideColor = orientation === "white" ? "white" : "black";
+
+  const topPlayerName = topSideColor === "white" ? whitePlayerName : blackPlayerName;
+  const bottomPlayerName = bottomSideColor === "white" ? whitePlayerName : blackPlayerName;
+
+  const normalizedUserResult = useMemo(() => {
+    const result = game?.result?.toLowerCase?.();
+    if (result === "win" || result === "loss" || result === "draw") return result;
+    return null;
+  }, [game]);
+
+  const invertResult = useCallback((result: "win" | "loss" | "draw") => {
+    if (result === "win") return "loss";
+    if (result === "loss") return "win";
+    return "draw";
+  }, []);
+
+  const resultForSide = useCallback(
+    (side: "white" | "black"): "win" | "loss" | "draw" | null => {
+      if (!normalizedUserResult || !game?.color) return null;
+      return side === game.color ? normalizedUserResult : invertResult(normalizedUserResult);
+    },
+    [game, invertResult, normalizedUserResult],
+  );
+
+  const formatResultLabel = useCallback((result: "win" | "loss" | "draw") => {
+    if (result === "win") return "Win";
+    if (result === "loss") return "Loss";
+    return "Draw";
+  }, []);
+
+  const resultTextClasses = useCallback((result: "win" | "loss" | "draw") => {
+    const base = "shrink-0 text-xs font-semibold";
+    if (result === "win") return `${base} text-[color:var(--zen-success)]`;
+    if (result === "loss") return `${base} text-[color:var(--zen-danger)]`;
+    return `${base} text-[color:var(--zen-muted)]`;
+  }, []);
+
+  const topSideResult = useMemo(() => resultForSide(topSideColor), [resultForSide, topSideColor]);
+  const bottomSideResult = useMemo(
+    () => resultForSide(bottomSideColor),
+    [bottomSideColor, resultForSide],
+  );
+
+  const getPlayerStripStyle = useCallback((side: "white" | "black"): CSSProperties => {
+    if (side === "white") {
+      return {
+        background:
+          "linear-gradient(90deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.24) 46%, rgba(255,255,255,0.05) 100%)",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.35)",
+      };
+    }
+    return {
+      background:
+        "linear-gradient(90deg, rgba(10,15,25,0.9) 0%, rgba(14,20,34,0.55) 48%, rgba(14,20,34,0.1) 100%)",
+      boxShadow: "inset 0 0 0 1px rgba(148,163,184,0.18)",
+    };
+  }, []);
+
   const nodeIdByPly = useMemo(() => {
     const mapping = new Map<number, string>();
     moveTree.nodes.forEach((node) => {
@@ -498,6 +591,19 @@ export default function GameAnalyzerPage() {
   const hasAiNarration = useMemo(() => {
     return Boolean(singleInsights?.narration && singleInsights?.narration_meta?.source === "gemini");
   }, [singleInsights?.narration, singleInsights?.narration_meta?.source]);
+
+  const aiNarrationSectionsByHeading = useMemo(() => {
+    const mapped = new Map<string, GameInsightsNarrationSection>();
+    const sections = singleInsights?.narration?.sections || [];
+    for (const section of sections) {
+      mapped.set(section.heading.trim().toLowerCase(), section);
+    }
+    return mapped;
+  }, [singleInsights?.narration?.sections]);
+
+  const resultSummarySection = aiNarrationSectionsByHeading.get("result summary");
+  const activeAiSectionHeading = AI_SECTION_TABS.find((tab) => tab.id === activeAiSectionTab)?.heading || "Result summary";
+  const activeAiSection = aiNarrationSectionsByHeading.get(activeAiSectionHeading.toLowerCase());
 
   const getNarrationSectionBadge = useCallback((heading: string) => {
     const key = heading.toLowerCase();
@@ -917,14 +1023,11 @@ export default function GameAnalyzerPage() {
       const tree = buildTreeFromAnalysis(data.analysis.moves);
       setMoveTree(tree);
 
-      // Log and show success
+      // Log success
       const elapsedSeconds = analysisStartTime.current 
         ? Math.round((Date.now() - analysisStartTime.current) / 1000)
         : 0;
       console.log(`[Analysis] Completed in ${elapsedSeconds}s - ${data.analysis.moves.length} moves analyzed`);
-      
-      setSuccessMessage(`Analysis complete! (${elapsedSeconds}s)`);
-      setTimeout(() => setSuccessMessage(null), 5000);
     }
     setAnalyzing(false);
     analysisStartTime.current = null;
@@ -1009,7 +1112,6 @@ export default function GameAnalyzerPage() {
     const preserveCompletedState = force && analysisStatus === "completed";
     setAnalyzing(true);
     setError(null);
-    setSuccessMessage(null);
     if (!preserveCompletedState) {
       setSingleInsights(null);
       setSingleInsightsStatus("idle");
@@ -1113,6 +1215,30 @@ export default function GameAnalyzerPage() {
     });
   }, [activeAnalysisTab]);
 
+  const centerAiSectionTab = useCallback((element?: HTMLElement | null) => {
+    if (!element) return;
+    element.scrollIntoView({
+      behavior: "smooth",
+      inline: "center",
+      block: "nearest",
+    });
+  }, []);
+
+  const handleAiSectionTabChange = useCallback((tab: AiSectionTab, tabElement?: HTMLButtonElement | null) => {
+    if (tab === activeAiSectionTab) {
+      centerAiSectionTab(tabElement);
+      return;
+    }
+    setActiveAiSectionTab(tab);
+    centerAiSectionTab(tabElement);
+    trackEvent("feature.usage", {
+      properties: {
+        feature: "game_ai_section_tab_switch",
+        tab,
+      },
+    });
+  }, [activeAiSectionTab, centerAiSectionTab]);
+
   const aiInsightsCacheKey = useMemo(
     () => `${site}:${username}:${gameId}:${depth}:${multiPv}`,
     [site, username, gameId, depth, multiPv]
@@ -1164,6 +1290,17 @@ export default function GameAnalyzerPage() {
     aiHydratedKey.current = aiInsightsCacheKey;
     void hydrateAiInsights();
   }, [analysisStatus, aiInsightsCacheKey, hydrateAiInsights, isAuthenticated]);
+
+  useEffect(() => {
+    if (!aiInsightsRequesting) {
+      setAiRequestStepIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setAiRequestStepIndex((prev) => (prev + 1) % AI_REQUEST_LOADING_STEPS.length);
+    }, 1400);
+    return () => clearInterval(interval);
+  }, [aiInsightsRequesting]);
 
   const handleRequestAiInsights = useCallback(async () => {
     if (!isAuthenticated) {
@@ -1311,7 +1448,7 @@ export default function GameAnalyzerPage() {
   if (loading) {
     return (
       <main className="analysis-page min-h-screen py-8">
-        <div className="max-w-6xl mx-auto px-4 relative z-10">
+        <div className="max-w-[1320px] mx-auto px-4 relative z-10">
           <div className="py-10 flex justify-center">
             <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
           </div>
@@ -1323,7 +1460,7 @@ export default function GameAnalyzerPage() {
   if (error && !game) {
     return (
       <main className="analysis-page min-h-screen py-8">
-        <div className="max-w-6xl mx-auto px-4 relative z-10">
+        <div className="max-w-[1320px] mx-auto px-4 relative z-10">
           <div className="zen-surface p-8 text-center">
             <p className="text-[color:var(--zen-danger)] mb-4">{error}</p>
             <Link
@@ -1340,77 +1477,32 @@ export default function GameAnalyzerPage() {
 
   return (
     <main className="analysis-page min-h-screen py-6">
-      {/* Success notification toast */}
-      {successMessage && (
-        <div className="fixed top-4 right-4 z-50 animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="zen-surface px-4 py-3 flex items-center gap-3 shadow-lg">
-            <div className="w-2 h-2 rounded-full bg-[color:var(--zen-success)] animate-pulse" />
-            <span className="text-sm font-medium text-[color:var(--zen-success)]">{successMessage}</span>
-          </div>
-        </div>
-      )}
-
-      <div className="max-w-6xl mx-auto px-4 relative z-10">
-        {/* Header */}
-        <div className="mb-4 flex items-center justify-between flex-wrap gap-4">
-          <div>
-            <Link
-              href={`/?user=${encodeURIComponent(username)}`}
-              className="inline-flex items-center gap-2 text-sm zen-pill px-3 py-2 text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition"
-            >
-              ← Back to openings
-            </Link>
-            <h1 className="text-xl font-semibold text-[color:var(--zen-text)] mt-3">
-              {game?.opening_name || "Game Analysis"}
-            </h1>
-            <p className="text-sm text-[color:var(--zen-muted)]">
-              {(game?.color ?? "white") === "white" ? (
-                <>
-                  <span className="text-[color:var(--zen-text)]">{username}</span>
-                  <span className="mx-1.5 text-[color:var(--zen-muted)]">(White)</span>
-                  <span className="mx-1">vs</span>
-                  <span className="text-[color:var(--zen-text)]">{game?.opponent || "Unknown"}</span>
-                  <span className="ml-1.5 text-[color:var(--zen-muted)]">(Black)</span>
-                </>
-              ) : (
-                <>
-                  <span className="text-[color:var(--zen-text)]">{username}</span>
-                  <span className="mx-1.5 text-[color:var(--zen-muted)]">(Black)</span>
-                  <span className="mx-1">vs</span>
-                  <span className="text-[color:var(--zen-text)]">{game?.opponent || "Unknown"}</span>
-                  <span className="ml-1.5 text-[color:var(--zen-muted)]">(White)</span>
-                </>
-              )}{" "}
-              • {formatDate(game?.played_at ?? null)}
-              <span
-                className={`ml-2 font-medium ${
-                  game?.result === "win"
-                    ? "text-[color:var(--zen-success)]"
-                    : game?.result === "loss"
-                    ? "text-[color:var(--zen-danger)]"
-                    : "text-[color:var(--zen-muted)]"
-                }`}
-              >
-                {game?.result?.charAt(0).toUpperCase()}
-                {game?.result?.slice(1)}
-              </span>
-            </p>
-          </div>
-
-          {/* Accuracy badge */}
-          {userAccuracy !== null && (
-            <div className="zen-surface-flat px-4 py-2 text-center">
-              <div className="text-2xl font-bold text-[color:var(--zen-text)]">{userAccuracy}%</div>
-              <div className="text-xs text-[color:var(--zen-muted)] uppercase tracking-wide">Accuracy</div>
-            </div>
-          )}
-        </div>
-
+      <div className="max-w-[1320px] mx-auto px-4 relative z-10">
         {/* Main layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Left: Board + Eval Bar */}
-          <div className="lg:col-span-7 lg:ml-4">
+          <div className="lg:col-span-7">
             <div className="zen-surface zen-surface-no-backdrop p-4">
+	              <div
+	                className="mb-3 rounded-xl px-3 py-2"
+	                style={getPlayerStripStyle(topSideColor)}
+	              >
+	                <div className="flex items-center justify-between gap-3">
+	                  <p
+	                    className={`truncate text-base font-semibold ${
+	                      topSideColor === "white" ? "text-slate-900" : "text-slate-100"
+	                    }`}
+	                  >
+	                    {topPlayerName}
+	                  </p>
+	                  {topSideResult && (
+	                    <span className={resultTextClasses(topSideResult)}>
+	                      {formatResultLabel(topSideResult)}
+	                    </span>
+	                  )}
+	                </div>
+	              </div>
+
               <div className="flex gap-3">
                 {/* Eval bar */}
                 <EvalBar eval={currentEval} orientation={orientation} height={600} />
@@ -1430,8 +1522,28 @@ export default function GameAnalyzerPage() {
                 </div>
               </div>
 
+	              <div
+	                className="mt-3 rounded-xl px-3 py-2"
+	                style={getPlayerStripStyle(bottomSideColor)}
+	              >
+	                <div className="flex items-center justify-between gap-3">
+	                  <p
+	                    className={`truncate text-base font-semibold ${
+	                      bottomSideColor === "white" ? "text-slate-900" : "text-slate-100"
+	                    }`}
+	                  >
+	                    {bottomPlayerName}
+	                  </p>
+	                  {bottomSideResult && (
+	                    <span className={resultTextClasses(bottomSideResult)}>
+	                      {formatResultLabel(bottomSideResult)}
+	                    </span>
+	                  )}
+	                </div>
+	              </div>
+
               {/* Controls */}
-              <div className="mt-4">
+              <div className="mt-3">
                 <BoardControls
                   onFirst={handleGoToStart}
                   onPrev={handleGoBack}
@@ -1443,12 +1555,6 @@ export default function GameAnalyzerPage() {
                   onToggleCoordinates={() => setShowCoordinates((v) => !v)}
                   showArrows={showArrows}
                   onToggleArrows={() => setShowArrows((v) => !v)}
-                  multiPv={multiPv}
-                  onMultiPvChange={setMultiPv}
-                  depth={depth}
-                  onDepthChange={setDepth}
-                  isAnalyzing={analyzing}
-                  onRunAnalysis={() => runAnalysis(analysisStatus === "completed")}
                   lichessUrl={game?.lichess_url || (
                     site === "lichess" 
                       ? `https://lichess.org/${gameId}`
@@ -1464,10 +1570,30 @@ export default function GameAnalyzerPage() {
           {/* Right: Analysis panels */}
           <div className="lg:col-span-5">
             <div className="zen-surface p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={`/dashboard?user=${encodeURIComponent(username)}`}
+                    className="inline-flex items-center gap-1 rounded-lg border border-[color:var(--zen-border)] px-2.5 py-1 text-xs text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition"
+                  >
+                    ← Openings
+                  </Link>
+                  {userAccuracy !== null && (
+                    <div className="inline-flex items-center gap-1 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] px-2.5 py-1">
+                      <span className="text-xs font-semibold text-[color:var(--zen-text)]">{userAccuracy}%</span>
+                      <span className="text-[10px] uppercase tracking-wide text-[color:var(--zen-muted)]">Accuracy</span>
+                    </div>
+                  )}
+                </div>
+	                <p className="text-xs text-[color:var(--zen-muted)]">
+	                  {formatDate(game?.played_at ?? null)}
+	                </p>
+	              </div>
+
               <div
                 role="tablist"
                 aria-label="Game analysis panels"
-                className="mb-4 inline-flex gap-2 rounded-xl border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-1"
+                className="mb-4 flex w-full gap-2 rounded-xl border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-1"
               >
                 <button
                   id="analysis-tab-engine"
@@ -1478,7 +1604,7 @@ export default function GameAnalyzerPage() {
                   tabIndex={activeAnalysisTab === "engine" ? 0 : -1}
                   onClick={() => handleAnalysisTabChange("engine")}
                   className={[
-                    "rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-wide transition",
+                    "flex-1 rounded-lg px-4 py-2 text-center text-xs font-semibold uppercase tracking-wide transition",
                     activeAnalysisTab === "engine"
                       ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
                       : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
@@ -1495,13 +1621,29 @@ export default function GameAnalyzerPage() {
                   tabIndex={activeAnalysisTab === "ai" ? 0 : -1}
                   onClick={() => handleAnalysisTabChange("ai")}
                   className={[
-                    "rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-wide transition",
+                    "flex-1 rounded-lg px-4 py-2 text-center text-xs font-semibold uppercase tracking-wide transition",
                     activeAnalysisTab === "ai"
                       ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
                       : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
                   ].join(" ")}
                 >
-                  AI Summary
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                      <defs>
+                        <linearGradient id="geminiSparkGradientTab" x1="0%" y1="0%" x2="100%" y2="100%">
+                          <stop offset="0%" stopColor="#ef4444" />
+                          <stop offset="28%" stopColor="#f59e0b" />
+                          <stop offset="56%" stopColor="#22c55e" />
+                          <stop offset="100%" stopColor="#3b82f6" />
+                        </linearGradient>
+                      </defs>
+                      <path
+                        d="M12 1.9c1.3 4 3.8 7.3 8.1 10.1-4.3 2.8-6.8 6.1-8.1 10.1-1.3-4-3.8-7.3-8.1-10.1 4.3-2.8 6.8-6.1 8.1-10.1z"
+                        fill="url(#geminiSparkGradientTab)"
+                      />
+                    </svg>
+                    AI Summary
+                  </span>
                 </button>
               </div>
 
@@ -1649,43 +1791,101 @@ export default function GameAnalyzerPage() {
                   )}
                 </div>
 
-                <div className="zen-surface-flat p-4 border border-[color:var(--zen-border)] space-y-3">
-                  <p className="text-xs text-[color:var(--zen-muted)]">
-                    you can only do 2 AI insights per day
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleRequestAiInsights}
-                    disabled={
-                      aiInsightsRequesting ||
-                      aiInsightsLoading ||
-                      (analysisStatus !== "completed" && isAuthenticated)
-                    }
-                    className="zen-pill px-5 py-2.5 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {!isAuthenticated
-                      ? "Request AI insights"
-                      : aiInsightsRequesting
-                      ? "Requesting AI insights..."
-                      : "Request AI insights"}
-                  </button>
-                  {!isAuthenticated && (
-                    <p className="text-xs text-[color:var(--zen-muted)]">
-                      Sign up to unlock AI insights for this game.
-                    </p>
+                <div className="zen-surface-flat p-3 border border-[color:var(--zen-border)]">
+                  {isAuthenticated ? (
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-xs text-[color:var(--zen-muted)]">
+                        you can only do 2 AI insights per day
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleRequestAiInsights}
+                        disabled={
+                          aiInsightsRequesting ||
+                          aiInsightsLoading ||
+                          analysisStatus !== "completed"
+                        }
+                        className="zen-pill inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {aiInsightsRequesting ? "Generating insights..." : "Request AI insights"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="rounded-xl border border-amber-300/25 bg-amber-500/10 p-4 text-amber-50">
+                        <div className="flex items-start gap-3">
+                          <svg
+                            className="mt-0.5 h-4 w-4 shrink-0 text-amber-200"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <circle cx="12" cy="12" r="10" />
+                            <path d="M12 16v-4" />
+                            <path d="M12 8h.01" />
+                          </svg>
+                          <p className="text-sm font-medium">
+                            Sign up to unlock AI insights for this game.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRequestAiInsights}
+                        className="inline-flex items-center justify-center rounded-lg border border-[color:var(--zen-accent)] bg-[color:var(--zen-accent-2)] px-4 py-2 text-sm font-semibold text-[color:var(--zen-text)] transition hover:bg-[color:var(--zen-accent)] hover:text-white"
+                      >
+                        Sign up for AI insights
+                      </button>
+                    </div>
+                  )}
+                  {isAuthenticated && aiInsightsRequesting && (
+                    <div className="mt-3 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-3">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[color:var(--zen-accent)] border-t-transparent" />
+                        <p className="text-sm font-medium text-[color:var(--zen-text)]">
+                          {AI_REQUEST_LOADING_STEPS[aiRequestStepIndex]}...
+                        </p>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[color:var(--zen-border)]">
+                        <div className="h-full w-1/2 rounded-full bg-[color:var(--zen-accent)] animate-pulse" />
+                      </div>
+                      <p className="mt-2 text-xs text-[color:var(--zen-muted)]">
+                        Building account-specific AI insights.
+                      </p>
+                    </div>
                   )}
                   {isAuthenticated && aiInsightsLoading && !aiInsightsRequesting && (
-                    <p className="text-xs text-[color:var(--zen-muted)]">
+                    <p className="mt-1 text-xs text-[color:var(--zen-muted)]">
                       Loading your saved AI insights...
                     </p>
                   )}
                 </div>
 
                 {analysisStatus !== "completed" && (
-                  <div className="zen-surface-flat p-4 border border-[color:var(--zen-border)]">
-                    <p className="text-sm text-[color:var(--zen-muted)]">
-                      Run in-depth analysis before requesting AI insights.
-                    </p>
+                  <div className="rounded-xl border border-amber-300/25 bg-amber-500/10 p-4 text-amber-50">
+                    <div className="flex items-start gap-3">
+                      <svg
+                        className="mt-0.5 h-4 w-4 shrink-0 text-amber-200"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="12" cy="12" r="10" />
+                        <path d="M12 16v-4" />
+                        <path d="M12 8h.01" />
+                      </svg>
+                      <p className="text-sm font-medium">
+                        Run in-depth analysis before requesting AI insights.
+                      </p>
+                    </div>
                   </div>
                 )}
 
@@ -1696,7 +1896,7 @@ export default function GameAnalyzerPage() {
                         {aiInsightsError}
                       </p>
                     )}
-                    {singleInsightsStatus === "idle" && (
+                    {singleInsightsStatus === "idle" && !aiInsightsRequesting && isAuthenticated && (
                       <p className="text-sm text-[color:var(--zen-muted)]">
                         Request AI insights to generate your account-specific summary.
                       </p>
@@ -1705,113 +1905,167 @@ export default function GameAnalyzerPage() {
                     {singleInsightsStatus === "ready" && singleInsights && (
                       <div className="space-y-4">
                         {hasAiNarration && singleInsights.narration ? (
-                          <div className="space-y-3">
+                          <>
                             <div
-                              className="zen-surface-flat p-4 md:p-5 space-y-4 border border-[color:var(--zen-accent)]/45"
-                              style={{
-                                background:
-                                  "linear-gradient(145deg, rgba(24,30,44,0.92), rgba(20,26,38,0.9) 52%, rgba(17,23,34,0.9))",
-                                boxShadow:
-                                  "inset 0 0 0 1px rgba(120,132,160,0.2), inset 0 0 0 2px rgba(84,98,132,0.16), 0 10px 24px rgba(0,0,0,0.24)",
-                              }}
+                              role="tablist"
+                              aria-label="AI insight sections"
+                              className="hide-scrollbar flex w-full gap-2 overflow-x-auto overflow-y-hidden rounded-xl border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-1"
                             >
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <p className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--zen-muted)] mb-1">
-                                    Mission Brief
+                              {AI_SECTION_TABS.map((tab) => (
+                                <button
+                                  key={tab.id}
+                                  id={`ai-section-tab-${tab.id}`}
+                                  role="tab"
+                                  type="button"
+                                  aria-selected={activeAiSectionTab === tab.id}
+                                  aria-controls={`ai-section-panel-${tab.id}`}
+                                  tabIndex={activeAiSectionTab === tab.id ? 0 : -1}
+                                  onClick={(event) =>
+                                    handleAiSectionTabChange(tab.id, event.currentTarget)
+                                  }
+                                  className={[
+                                    "whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition",
+                                    activeAiSectionTab === tab.id
+                                      ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
+                                      : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
+                                  ].join(" ")}
+                                >
+                                  {tab.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            {activeAiSectionTab === "result_summary" ? (
+                              <div
+                                id="ai-section-panel-result_summary"
+                                role="tabpanel"
+                                aria-labelledby="ai-section-tab-result_summary"
+                                className="zen-surface-flat p-4 md:p-5 space-y-4 border border-[color:var(--zen-accent)]/45"
+                                style={{
+                                  background:
+                                    "linear-gradient(145deg, rgba(24,30,44,0.92), rgba(20,26,38,0.9) 52%, rgba(17,23,34,0.9))",
+                                  boxShadow:
+                                    "inset 0 0 0 1px rgba(120,132,160,0.2), inset 0 0 0 2px rgba(84,98,132,0.16), 0 10px 24px rgba(0,0,0,0.24)",
+                                }}
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--zen-muted)] mb-1">
+                                      Result Summary
+                                    </p>
+                                    <p className="text-lg font-semibold text-[color:var(--zen-text)]">
+                                      {singleInsights.narration.title}
+                                    </p>
+                                  </div>
+                                  <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] whitespace-nowrap bg-white/5">
+                                    {Math.round((singleInsights.confidence || 0) * 100)}% confidence
+                                  </span>
+                                </div>
+
+                                <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
+                                  {singleInsights.narration.one_liner}
+                                </p>
+                                <p className="text-sm leading-6 text-[color:var(--zen-muted)]">
+                                  {singleInsights.narration.confidence_note}
+                                </p>
+
+                                <div className="flex flex-wrap gap-2">
+                                  <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
+                                    Decisive phase: {singleInsights.narration.labels.decisive_phase}
+                                  </span>
+                                  <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
+                                    Style: {singleInsights.narration.labels.player_style}
+                                  </span>
+                                </div>
+
+                                {resultSummarySection?.bullets?.length ? (
+                                  <ul className="space-y-2.5 border-t border-[color:var(--zen-border)]/60 pt-3 text-[15px] leading-7 text-[color:var(--zen-text)]">
+                                    {resultSummarySection.bullets.map((bullet, idx) => (
+                                      <li key={`result-summary-${idx}`} className="flex gap-2">
+                                        <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
+                                          {getNarrationBulletIcon(resultSummarySection.heading, bullet)}
+                                        </span>
+                                        <span>{replacePlyWithMoveText(bullet)}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="text-sm text-[color:var(--zen-muted)]">
+                                    No result-summary details were provided for this insight.
                                   </p>
-                                  <p className="text-lg font-semibold text-[color:var(--zen-text)]">
-                                    {singleInsights.narration.title}
+                                )}
+                              </div>
+                            ) : (
+                              <div
+                                id={`ai-section-panel-${activeAiSectionTab}`}
+                                role="tabpanel"
+                                aria-labelledby={`ai-section-tab-${activeAiSectionTab}`}
+                                className={`zen-surface-flat p-3.5 md:p-4 border ${
+                                  getNarrationSectionTone(activeAiSectionHeading).cardBorder
+                                }`}
+                                style={{
+                                  background:
+                                    "linear-gradient(140deg, rgba(22,28,40,0.9), rgba(18,24,36,0.9) 60%, rgba(15,20,30,0.92))",
+                                  boxShadow:
+                                    "inset 0 0 0 1px rgba(124,136,164,0.2), inset 0 0 0 2px rgba(84,96,126,0.14)",
+                                }}
+                              >
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span
+                                    className={`inline-flex h-5 w-5 items-center justify-center text-[11px] font-semibold border ${
+                                      getNarrationSectionTone(activeAiSectionHeading).badgeBorder
+                                    } ${getNarrationSectionTone(activeAiSectionHeading).badgeText}`}
+                                  >
+                                    {getNarrationSectionBadge(activeAiSectionHeading)}
+                                  </span>
+                                  <p
+                                    className={`text-[11px] uppercase tracking-[0.12em] ${
+                                      getNarrationSectionTone(activeAiSectionHeading).headingText
+                                    }`}
+                                  >
+                                    {activeAiSectionHeading}
                                   </p>
                                 </div>
-                                <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] whitespace-nowrap bg-white/5">
-                                  {Math.round((singleInsights.confidence || 0) * 100)}% confidence
-                                </span>
+
+                                {activeAiSection?.bullets?.length ? (
+                                  <ul className="space-y-2.5 text-[15px] leading-7 text-[color:var(--zen-text)]">
+                                    {activeAiSection.bullets.map((bullet, idx) => (
+                                      <li key={`${activeAiSection.heading}-${idx}`} className="flex gap-2">
+                                        <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
+                                          {getNarrationBulletIcon(activeAiSection.heading, bullet)}
+                                        </span>
+                                        {(() => {
+                                          const parsedPly = extractPlyFromText(bullet);
+                                          const turningEvents = singleInsights.turning_points?.events || [];
+                                          const matchedEvent =
+                                            activeAiSectionTab === "turning_points" && parsedPly !== null
+                                              ? turningEvents.find((event) => event.ply === parsedPly)
+                                              : undefined;
+                                          const displayText = replacePlyWithMoveText(bullet);
+                                          if (matchedEvent) {
+                                            return (
+                                              <button
+                                                type="button"
+                                                onClick={() => jumpToInsightEvent(matchedEvent)}
+                                                className="text-left underline decoration-dotted underline-offset-4 hover:text-[color:var(--zen-accent)] transition"
+                                              >
+                                                {displayText}
+                                              </button>
+                                            );
+                                          }
+                                          return <span>{displayText}</span>;
+                                        })()}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="text-sm text-[color:var(--zen-muted)]">
+                                    No details are available for this section yet.
+                                  </p>
+                                )}
                               </div>
-
-                              <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
-                                {singleInsights.narration.one_liner}
-                              </p>
-                              <p className="text-sm leading-6 text-[color:var(--zen-muted)]">
-                                {singleInsights.narration.confidence_note}
-                              </p>
-
-                              <div className="flex flex-wrap gap-2">
-                                <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
-                                  Decisive phase: {singleInsights.narration.labels.decisive_phase}
-                                </span>
-                                <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
-                                  Style: {singleInsights.narration.labels.player_style}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                              {singleInsights.narration.sections.map((section) => {
-                                const sectionKey = section.heading.toLowerCase();
-                                const isWideSection =
-                                  sectionKey.includes("result") ||
-                                  sectionKey.includes("turning") ||
-                                  sectionKey.includes("next");
-                                const tone = getNarrationSectionTone(section.heading);
-                                return (
-                                  <div
-                                    key={section.heading}
-                                    className={`zen-surface-flat p-3.5 md:p-4 border ${tone.cardBorder} ${
-                                      isWideSection ? "md:col-span-2" : ""
-                                    }`}
-                                    style={{
-                                      background:
-                                        "linear-gradient(140deg, rgba(22,28,40,0.9), rgba(18,24,36,0.9) 60%, rgba(15,20,30,0.92))",
-                                      boxShadow:
-                                        "inset 0 0 0 1px rgba(124,136,164,0.2), inset 0 0 0 2px rgba(84,96,126,0.14)",
-                                    }}
-                                  >
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <span
-                                        className={`inline-flex h-5 w-5 items-center justify-center text-[11px] font-semibold border ${tone.badgeBorder} ${tone.badgeText}`}
-                                      >
-                                        {getNarrationSectionBadge(section.heading)}
-                                      </span>
-                                      <p className={`text-[11px] uppercase tracking-[0.12em] ${tone.headingText}`}>
-                                        {section.heading}
-                                      </p>
-                                    </div>
-                                    <ul className="space-y-2.5 text-[15px] leading-7 text-[color:var(--zen-text)]">
-                                      {section.bullets.map((bullet, idx) => (
-                                        <li key={`${section.heading}-${idx}`} className="flex gap-2">
-                                          <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
-                                            {getNarrationBulletIcon(section.heading, bullet)}
-                                          </span>
-                                          {(() => {
-                                            const parsedPly = extractPlyFromText(bullet);
-                                            const turningEvents = singleInsights.turning_points?.events || [];
-                                            const matchedEvent =
-                                              section.heading.toLowerCase().includes("turning") && parsedPly !== null
-                                                ? turningEvents.find((event) => event.ply === parsedPly)
-                                                : undefined;
-                                            const displayText = replacePlyWithMoveText(bullet);
-                                            if (matchedEvent) {
-                                              return (
-                                                <button
-                                                  type="button"
-                                                  onClick={() => jumpToInsightEvent(matchedEvent)}
-                                                  className="text-left underline decoration-dotted underline-offset-4 hover:text-[color:var(--zen-accent)] transition"
-                                                >
-                                                  {displayText}
-                                                </button>
-                                              );
-                                            }
-                                            return <span>{displayText}</span>;
-                                          })()}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
+                            )}
+                          </>
                         ) : (
                           <div className="zen-surface-flat p-4 border border-[color:var(--zen-border)]">
                             <p className="text-sm text-[color:var(--zen-muted)]">

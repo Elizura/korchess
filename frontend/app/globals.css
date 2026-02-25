@@ -904,6 +904,18 @@ html:has(.analysis-page)::-webkit-scrollbar {
   display: none;
 }
 
+/* Generic hidden-scrollbar utility for horizontally scrollable tab rails */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 
 .opening-page .opening-overall {
   border: 2px solid #2d2d33;
