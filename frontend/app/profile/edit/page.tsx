@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { withTrackingHeaders } from "@/lib/analytics/client";
@@ -19,7 +18,6 @@ const AVATARS = [
 ] as const;
 
 export default function ProfileEditPage() {
-  const router = useRouter();
   const { data: session, status } = useSession();
   const [avatar, setAvatar] = useState<string>("pawn");
   const [username, setUsername] = useState("");
@@ -95,21 +93,25 @@ export default function ProfileEditPage() {
 
   if (status === "loading" || status === "unauthenticated") {
     return (
-      <div className="bg-charcoal font-mono text-white min-h-screen flex items-center justify-center">
-        <div className="font-display text-xs uppercase tracking-widest opacity-60">
-          Loading...
+      <main className="analysis-page min-h-screen py-8">
+        <div className="max-w-3xl mx-auto px-4">
+          <div className="py-16 flex items-center justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
+          </div>
         </div>
-      </div>
+      </main>
     );
   }
 
   if (!profileLoaded) {
     return (
-      <div className="bg-charcoal font-mono text-white min-h-screen flex items-center justify-center">
-        <div className="font-display text-xs uppercase tracking-widest opacity-60">
-          Loading profile...
+      <main className="analysis-page min-h-screen py-8">
+        <div className="max-w-3xl mx-auto px-4">
+          <div className="py-16 flex items-center justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
+          </div>
         </div>
-      </div>
+      </main>
     );
   }
 
@@ -130,170 +132,99 @@ export default function ProfileEditPage() {
   };
 
   return (
-    <div className="profile-edit-page min-h-screen text-white font-mono">
-      <div className="max-w-4xl mx-auto px-6 py-12">
-        <header className="mb-12">
-          <div className="flex items-center gap-4 mb-4">
-            <Link
-              href="/dashboard"
-              className="group flex items-center text-primary hover:text-accent-blue transition-colors"
-            >
-              <span className="material-symbols-outlined text-2xl mr-2 group-hover:-translate-x-1 transition-transform">
-                west
-              </span>
-              <span className="font-display text-[10px] tracking-tight">
-                BACK TO DASHBOARD
-              </span>
-            </Link>
-          </div>
-          <h1 className="font-display text-2xl md:text-3xl lg:text-4xl text-white tracking-tighter mb-2">
-            USER PROFILE / CHARACTER SHEET
+    <main className="analysis-page min-h-screen py-8">
+      <div className="max-w-4xl mx-auto px-4 relative z-10">
+        <header className="mb-6">
+          <Link
+            href="/dashboard"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--zen-border)]/70 bg-[color:var(--zen-surface)]/60 px-2.5 py-1.5 text-xs font-medium text-[color:var(--zen-muted)] hover:border-[color:var(--zen-accent)]/40 hover:text-[color:var(--zen-text)] transition"
+          >
+            ← Dashboard
+          </Link>
+          <h1 className="mt-4 text-2xl sm:text-3xl font-semibold tracking-tight text-[color:var(--zen-text)]">
+            Profile
           </h1>
-          <div className="h-1 w-32 bg-primary profile-glow" />
+          <p className="mt-2 text-sm text-[color:var(--zen-muted)]">
+            Update your username and avatar.
+          </p>
         </header>
 
-        <form onSubmit={handleSubmit}>
-          <main className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-            <section className="lg:col-span-7">
-              <div className="flex items-center gap-3 mb-8">
-                <span className="material-symbols-outlined text-primary">
-                  face
-                </span>
-                <h2 className="font-display text-sm text-slate-400">
-                  CHANGE AVATAR
-                </h2>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
-                {AVATARS.map((av) => (
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <section className="zen-surface p-4 sm:p-5">
+            <h2 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">Avatar</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {AVATARS.map((av) => {
+                const selected = avatar === av.piece;
+                return (
                   <button
                     key={av.id}
                     type="button"
                     onClick={() => setAvatar(av.piece)}
-                    className={`profile-avatar-card group relative flex flex-col items-center justify-center aspect-square bg-slate-900 border-4 transition-all ${
-                      avatar === av.piece
-                        ? "border-primary profile-glow"
-                        : "border-slate-800 hover:bg-primary/10"
-                    }`}
+                    className={[
+                      "zen-surface-flat flex items-center gap-3 rounded-lg border px-3 py-3 text-left transition",
+                      selected
+                        ? "border-[color:var(--zen-accent)] bg-[color:var(--zen-accent-2)]/35"
+                        : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/45",
+                    ].join(" ")}
                   >
-                    {avatar === av.piece && (
-                      <div className="absolute -top-3 -right-3 bg-primary text-white p-1 flex">
-                        <span className="material-symbols-outlined text-sm">
-                          check
-                        </span>
-                      </div>
-                    )}
                     <span
-                      className={`material-symbols-outlined text-4xl ${
-                        avatar === av.piece
-                          ? "text-primary"
-                          : "text-white opacity-60 group-hover:opacity-100"
+                      className={`material-symbols-outlined text-2xl ${
+                        selected ? "text-[color:var(--zen-accent)]" : "text-[color:var(--zen-muted)]"
                       }`}
                       style={{
-                        fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 48",
+                        fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 40",
                       }}
                     >
                       {av.icon}
                     </span>
-                    <span
-                      className={`mt-2 text-[10px] font-display uppercase ${
-                        avatar === av.piece
-                          ? "text-primary"
-                          : "text-slate-500 group-hover:text-primary"
-                      }`}
-                    >
+                    <span className="text-sm font-medium text-[color:var(--zen-text)]">
                       {av.label}
                     </span>
                   </button>
-                ))}
-              </div>
-            </section>
+                );
+              })}
+            </div>
+          </section>
 
-            <section className="lg:col-span-5 space-y-12">
-              <div>
-                <div className="flex items-center gap-3 mb-8">
-                  <span className="material-symbols-outlined text-primary">
-                    terminal
-                  </span>
-                  <h2 className="font-display text-sm text-slate-400">
-                    CHANGE USERNAME
-                  </h2>
-                </div>
-                <div className="relative">
-                  <div className="bg-black/40 border-2 border-slate-800 p-6 profile-glow focus-within:border-primary transition-all">
-                    <label className="block text-[10px] font-display text-slate-500 mb-2">
-                      SYSTEM_USER_ID
-                    </label>
-                    <div className="flex items-center">
-                      <span className="text-primary mr-2 font-bold font-mono">
-                        $
-                      </span>
-                      <input
-                        type="text"
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value)}
-                        className="bg-transparent border-none p-0 text-xl font-mono text-white focus:ring-0 w-full flex-1 pr-4"
-                        maxLength={32}
-                        autoComplete="username"
-                      />
-                      <span className="profile-cursor" />
-                    </div>
-                  </div>
-                  <p className="mt-3 text-[10px] font-display text-slate-600">
-                    WARNING: USERNAME CHANGES ARE RESTRICTED TO ONCE PER SEASON.
-                  </p>
-                </div>
-              </div>
+          <section className="zen-surface p-4 sm:p-5 space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold text-[color:var(--zen-text)] mb-2">Username</h2>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
+                maxLength={32}
+                autoComplete="username"
+                placeholder="Enter username"
+              />
+              <p className="mt-2 text-xs text-[color:var(--zen-muted)]">
+                This name appears across your profile and game pages.
+              </p>
+            </div>
 
-              {fetchError && (
-                <p className="text-amber-400 font-display text-[10px] uppercase">
-                  {fetchError}
-                </p>
-              )}
-              {error && (
-                <p className="text-red-400 font-display text-[10px] uppercase">
-                  {error}
-                </p>
-              )}
+            {fetchError && (
+              <p className="text-sm text-amber-300">{fetchError}</p>
+            )}
+            {error && (
+              <p className="text-sm text-[color:var(--zen-danger)]">{error}</p>
+            )}
 
-              <div className="pt-8 border-t border-slate-800">
-                <button
-                  type="submit"
-                  disabled={loading || !username.trim()}
-                  className="w-full bg-primary hover:bg-blue-600 text-white font-display py-6 px-8 text-lg transition-all active:translate-y-1 mb-6 profile-glow relative group overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <span className="relative z-10">
-                    {loading ? "SAVING..." : "SAVE CHANGES"}
-                  </span>
-                  <div className="absolute inset-0 bg-white/10 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
-                </button>
-                <div className="flex flex-col gap-4">
-                  <div className="flex justify-between items-center text-[10px] font-display text-slate-500">
-                    <span>LAST MODIFIED</span>
-                    <span className="text-slate-300">
-                      {formatDate(updatedAt)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center text-[10px] font-display text-slate-500">
-                    <span>ACCOUNT STATUS</span>
-                    <span className="text-accent-green">[ ACTIVE ]</span>
-                  </div>
-                </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[color:var(--zen-border)] pt-4">
+              <div className="text-xs text-[color:var(--zen-muted)]">
+                Last updated: {formatDate(updatedAt)}
               </div>
-            </section>
-          </main>
+              <button
+                type="submit"
+                disabled={loading || !username.trim()}
+                className="zen-pill px-5 py-2.5 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          </section>
         </form>
-
-        <footer className="mt-24 border-t border-slate-900 pt-8 flex justify-between items-end opacity-20">
-          <div className="space-y-1">
-            <div className="h-1 w-24 bg-slate-700" />
-            <div className="h-1 w-16 bg-slate-700" />
-            <div className="h-1 w-32 bg-slate-700" />
-          </div>
-          <div className="font-display text-[8px] text-slate-700">
-            KORCHESS_ENGINE_V2.0.4 // NOIR_EDITION
-          </div>
-        </footer>
       </div>
-    </div>
+    </main>
   );
 }
