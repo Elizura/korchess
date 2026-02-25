@@ -4,8 +4,9 @@ import logging
 from datetime import datetime, timezone
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from analytics import hash_username, track_server_event
 from db import (
     ensure_public_user_for_username,
     get_import_history,
@@ -39,6 +40,7 @@ async def get_import_history_endpoint(
 @router.post("/lichess", response_model=ImportResponse)
 async def import_lichess_games(
     request: ImportRequest,
+    http_request: Request,
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict | None = Depends(get_optional_user),
 ):
@@ -47,11 +49,39 @@ async def import_lichess_games(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
+    username_hash = hash_username(username)
+    await track_server_event(
+        conn,
+        event_name="import.start",
+        user_id=current_user["id"] if current_user else None,
+        request=http_request,
+        properties={
+            "site": "lichess",
+            "max_games": max_games,
+            "username_hash": username_hash,
+            "is_authenticated": bool(current_user),
+        },
+    )
+
     public_user_id = ensure_public_user_for_username(conn, username)
 
     try:
         pgn_text = fetch_lichess_pgn(username, max_games)
     except LichessAPIError as e:
+        await track_server_event(
+            conn,
+            event_name="import.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=http_request,
+            properties={
+                "site": "lichess",
+                "max_games": max_games,
+                "username_hash": username_hash,
+                "status_code": e.status_code,
+                "reason": e.message,
+            },
+        )
+        conn.commit()
         if e.status_code == 404:
             raise HTTPException(status_code=404, detail=e.message)
         elif e.status_code == 429:
@@ -60,6 +90,20 @@ async def import_lichess_games(
             raise HTTPException(status_code=502, detail=e.message)
 
     if not pgn_text.strip():
+        await track_server_event(
+            conn,
+            event_name="import.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=http_request,
+            properties={
+                "site": "lichess",
+                "max_games": max_games,
+                "username_hash": username_hash,
+                "status_code": 404,
+                "reason": "No rated games found",
+            },
+        )
+        conn.commit()
         raise HTTPException(
             status_code=404,
             detail=f"No rated games found for user '{username}'."
@@ -69,6 +113,20 @@ async def import_lichess_games(
     games, skipped = parse_pgn_games(pgn_text, username, conn)
 
     if not games and skipped == 0:
+        await track_server_event(
+            conn,
+            event_name="import.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=http_request,
+            properties={
+                "site": "lichess",
+                "max_games": max_games,
+                "username_hash": username_hash,
+                "status_code": 404,
+                "reason": "No games parsed from PGN",
+            },
+        )
+        conn.commit()
         raise HTTPException(
             status_code=404,
             detail=f"No games found for user '{username}'."
@@ -98,6 +156,20 @@ async def import_lichess_games(
             max_games,
             imported_at,
         )
+    await track_server_event(
+        conn,
+        event_name="import.success",
+        user_id=current_user["id"] if current_user else None,
+        request=http_request,
+        properties={
+            "site": "lichess",
+            "max_games": max_games,
+            "username_hash": username_hash,
+            "imported": imported,
+            "skipped": skipped,
+            "is_authenticated": bool(current_user),
+        },
+    )
     conn.commit()
 
     try:
@@ -131,6 +203,7 @@ async def import_lichess_games(
 @router.post("/chesscom", response_model=ImportResponse)
 async def import_chesscom_games(
     request: ImportRequest,
+    http_request: Request,
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict | None = Depends(get_optional_user),
 ):
@@ -143,11 +216,39 @@ async def import_chesscom_games(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
+    username_hash = hash_username(username)
+    await track_server_event(
+        conn,
+        event_name="import.start",
+        user_id=current_user["id"] if current_user else None,
+        request=http_request,
+        properties={
+            "site": "chesscom",
+            "max_games": max_games,
+            "username_hash": username_hash,
+            "is_authenticated": bool(current_user),
+        },
+    )
+
     public_user_id = ensure_public_user_for_username(conn, username)
 
     try:
         games = fetch_chesscom_games(username, max_games, conn)
     except ChesscomAPIError as e:
+        await track_server_event(
+            conn,
+            event_name="import.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=http_request,
+            properties={
+                "site": "chesscom",
+                "max_games": max_games,
+                "username_hash": username_hash,
+                "status_code": e.status_code,
+                "reason": e.message,
+            },
+        )
+        conn.commit()
         if e.status_code == 404:
             raise HTTPException(status_code=404, detail=e.message)
         elif e.status_code == 429:
@@ -156,6 +257,20 @@ async def import_chesscom_games(
             raise HTTPException(status_code=502, detail=e.message)
 
     if not games:
+        await track_server_event(
+            conn,
+            event_name="import.failed",
+            user_id=current_user["id"] if current_user else None,
+            request=http_request,
+            properties={
+                "site": "chesscom",
+                "max_games": max_games,
+                "username_hash": username_hash,
+                "status_code": 404,
+                "reason": "No games found",
+            },
+        )
+        conn.commit()
         raise HTTPException(
             status_code=404,
             detail=f"No games found for user '{username}' on Chess.com."
@@ -187,6 +302,20 @@ async def import_chesscom_games(
             max_games,
             imported_at,
         )
+    await track_server_event(
+        conn,
+        event_name="import.success",
+        user_id=current_user["id"] if current_user else None,
+        request=http_request,
+        properties={
+            "site": "chesscom",
+            "max_games": max_games,
+            "username_hash": username_hash,
+            "imported": imported,
+            "skipped": skipped,
+            "is_authenticated": bool(current_user),
+        },
+    )
     conn.commit()
 
     try:
