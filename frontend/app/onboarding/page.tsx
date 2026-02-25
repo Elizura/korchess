@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { withTrackingHeaders } from "@/lib/analytics/client";
+import { resolvePostAuthNextPath, withNextParam } from "@/lib/safeNext";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -19,19 +20,24 @@ const AVATARS = [
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session, status } = useSession();
   const [avatar, setAvatar] = useState<string>("pawn");
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
+  const safeNextPath = useMemo(
+    () => resolvePostAuthNextPath(searchParams.get("next")),
+    [searchParams]
+  );
 
   useEffect(() => {
     if (status !== "authenticated") {
       return;
     }
     if (!session?.idToken) {
-      router.replace("/signup");
+      router.replace(withNextParam("/signup", safeNextPath));
       return;
     }
 
@@ -41,22 +47,22 @@ export default function OnboardingPage() {
           headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }),
         });
         if (!res.ok) {
-          router.replace("/signup");
+          router.replace(withNextParam("/signup", safeNextPath));
           return;
         }
         const profile = await res.json();
         if (profile.onboarding_complete) {
-          router.replace("/dashboard");
+          router.replace(safeNextPath || "/dashboard");
         } else {
           setChecking(false);
         }
       } catch {
-        router.replace("/signup");
+        router.replace(withNextParam("/signup", safeNextPath));
       }
     };
 
     checkProfile();
-  }, [status, session?.idToken, router]);
+  }, [status, session?.idToken, router, safeNextPath]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,7 +90,7 @@ export default function OnboardingPage() {
         throw new Error(data.detail || "Failed to complete setup");
       }
 
-      router.replace("/dashboard");
+      router.replace(safeNextPath || "/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {

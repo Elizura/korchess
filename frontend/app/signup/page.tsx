@@ -1,17 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { signIn, useSession } from "next-auth/react";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
+import { resolvePostAuthNextPath, withNextParam } from "@/lib/safeNext";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 export default function SignupPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session, status } = useSession();
   const [profileError, setProfileError] = useState<string | null>(null);
+  const safeNextPath = useMemo(
+    () => resolvePostAuthNextPath(searchParams.get("next")),
+    [searchParams]
+  );
 
   const ensureAndRedirect = useCallback(async () => {
     if (!session?.idToken || !session?.userId) return;
@@ -35,14 +41,14 @@ export default function SignupPage() {
 
       const profile = await profileRes.json();
       if (profile.onboarding_complete) {
-        router.replace("/dashboard");
+        router.replace(safeNextPath || "/dashboard");
       } else {
-        router.replace("/onboarding");
+        router.replace(withNextParam("/onboarding", safeNextPath));
       }
     } catch {
       setProfileError("Something went wrong. Please try again.");
     }
-  }, [session?.idToken, session?.userId, router]);
+  }, [session?.idToken, session?.userId, router, safeNextPath]);
 
   useEffect(() => {
     if (status !== "authenticated" || !session?.idToken || !session?.userId) {
@@ -99,7 +105,7 @@ export default function SignupPage() {
                     source: "signup_page",
                   },
                 });
-                signIn("google", { callbackUrl: "/signup" });
+                signIn("google", { callbackUrl: withNextParam("/signup", safeNextPath) });
               }}
             >
               <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
