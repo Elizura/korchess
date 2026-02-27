@@ -47,6 +47,7 @@ router = APIRouter(tags=["analysis"])
 MAX_CONCURRENT_ANALYSES = 2
 active_analysis_count = 0
 active_analysis_lock = asyncio.Lock()
+FULL_ANALYSIS_TIME_MS = max(200, int(os.environ.get("FULL_ANALYSIS_TIME_MS", "350")))
 AI_INSIGHTS_DAILY_LIMIT = max(0, int(os.environ.get("AI_INSIGHTS_DAILY_LIMIT", "2")))
 AI_INSIGHTS_UNLIMITED_EMAILS = {
     entry.strip().lower()
@@ -196,7 +197,7 @@ async def run_analysis_background(
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: run_full_analysis(pgn, depth, multipv)
+            lambda: run_full_analysis(pgn, depth, multipv, FULL_ANALYSIS_TIME_MS)
         )
         full_analysis = {
             "moves": result["moves"],
@@ -229,6 +230,9 @@ async def run_analysis_background(
                     "depth": depth,
                     "multipv": multipv,
                     "username_hash": username_hash,
+                    "total_time_ms": full_analysis["meta"].get("total_time_ms"),
+                    "positions_analyzed": full_analysis["meta"].get("positions_analyzed"),
+                    "time_per_position_ms": full_analysis["meta"].get("time_per_position_ms"),
                 },
             )
             delete_analysis_job(conn, job_id)
