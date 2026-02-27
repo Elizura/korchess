@@ -1039,13 +1039,10 @@ export default function DashboardPage() {
         className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]"
       >
         <div className="zen-surface-flat px-4 py-4 h-fit rounded-xl border border-[color:var(--zen-border)]">
-          <div className="flex items-baseline justify-between gap-2 mb-3">
+          <div className="mb-3">
             <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
               Recently analyzed
             </p>
-            <span className="text-[10px] uppercase tracking-wider text-[color:var(--zen-muted)]/80">
-              {isAuthenticated ? "Account + browser" : "This browser"}
-            </span>
           </div>
           <div className="space-y-2">
             {uniqueHistoryByUser.length === 0 ? (
