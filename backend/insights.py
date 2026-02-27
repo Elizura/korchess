@@ -20,9 +20,11 @@ from db import (
     create_insight_job,
     get_active_insight_job,
     get_connection,
+    get_full_analysis,
     get_games_for_insights,
     get_insight_game_features,
     get_player_insights,
+    save_full_analysis,
     update_insight_job,
     upsert_insight_game_feature,
     upsert_player_insights,
@@ -36,7 +38,8 @@ MAX_GAMES_WINDOW = max(50, int(os.environ.get("INSIGHTS_MAX_GAMES", "500")))
 DEEP_ANALYSIS_BUDGET = max(0, int(os.environ.get("INSIGHTS_DEEP_BUDGET", "8")))
 DEEP_ANALYSIS_DEPTH = max(6, int(os.environ.get("INSIGHTS_DEEP_DEPTH", "14")))
 DEEP_ANALYSIS_MULTIPV = 1
-DEEP_ANALYSIS_TIME_MS = max(250, int(os.environ.get("INSIGHTS_DEEP_TIME_MS", "600")))
+DEEP_ANALYSIS_TIME_MS = max(250, int(os.environ.get("INSIGHTS_DEEP_TIME_MS", "350")))
+DEEP_ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("INSIGHTS_DEEP_CONCURRENCY", "2")))
 MAX_CONCURRENT_INSIGHTS = max(1, int(os.environ.get("MAX_CONCURRENT_INSIGHTS", "1")))
 LOW_TIME_RATIO = float(os.environ.get("INSIGHTS_LOW_TIME_RATIO", "0.1"))
 LOW_TIME_FLOOR_SECONDS = max(10, int(os.environ.get("INSIGHTS_LOW_TIME_FLOOR_SECONDS", "30")))
@@ -474,6 +477,102 @@ def _extract_deep_game_features(
         "theme_counts": theme_counts,
         "move_artifacts": move_artifacts[:80],
     }
+
+
+def _load_cached_full_analysis_payload(
+    owner_user_id: str,
+    username: str,
+    site: str,
+    site_game_id: str,
+) -> dict[str, Any] | None:
+    conn = get_connection()
+    try:
+        cached = get_full_analysis(
+            conn,
+            owner_user_id,
+            username,
+            site_game_id,
+            DEEP_ANALYSIS_DEPTH,
+            DEEP_ANALYSIS_MULTIPV,
+            site,
+        )
+    finally:
+        conn.close()
+
+    if not cached:
+        return None
+
+    try:
+        return {
+            "moves": json.loads(cached.get("moves_json") or "[]"),
+            "summary": json.loads(cached.get("summary_json") or "{}"),
+            "meta": json.loads(cached.get("meta_json") or "{}"),
+        }
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def _save_full_analysis_cache_payload(
+    owner_user_id: str,
+    username: str,
+    site: str,
+    site_game_id: str,
+    full_analysis: dict[str, Any],
+) -> None:
+    conn = get_connection()
+    try:
+        save_full_analysis(
+            conn,
+            owner_user_id,
+            username,
+            site_game_id,
+            depth=DEEP_ANALYSIS_DEPTH,
+            multipv=DEEP_ANALYSIS_MULTIPV,
+            moves_json=json.dumps(full_analysis.get("moves") or []),
+            summary_json=json.dumps(full_analysis.get("summary") or {}),
+            meta_json=json.dumps(full_analysis.get("meta") or {}),
+            insights_json=None,
+            site=site,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _build_deep_feature_with_cache(
+    game: dict[str, Any],
+    light_feature: dict[str, Any],
+    *,
+    source_owner_id: str,
+    username: str,
+) -> dict[str, Any]:
+    site = str(game.get("site") or "lichess")
+    site_game_id = str(game.get("site_game_id") or "")
+    if not site_game_id:
+        raise ValueError("Missing site_game_id for deep feature build.")
+
+    full_analysis = _load_cached_full_analysis_payload(
+        source_owner_id,
+        username,
+        site,
+        site_game_id,
+    )
+    if full_analysis is None:
+        full_analysis = run_full_analysis(
+            game.get("pgn") or "",
+            DEEP_ANALYSIS_DEPTH,
+            DEEP_ANALYSIS_MULTIPV,
+            DEEP_ANALYSIS_TIME_MS,
+        )
+        _save_full_analysis_cache_payload(
+            source_owner_id,
+            username,
+            site,
+            site_game_id,
+            full_analysis,
+        )
+
+    return _extract_deep_game_features(game, light_feature, full_analysis)
 
 
 def _add_fact(
@@ -1304,20 +1403,32 @@ async def run_insights_pipeline(
                     for row in stored_features
                 }
 
-                for game in deep_candidates:
-                    try:
-                        full_analysis = await asyncio.to_thread(
-                            run_full_analysis,
-                            game.get("pgn") or "",
-                            DEEP_ANALYSIS_DEPTH,
-                            DEEP_ANALYSIS_MULTIPV,
-                            DEEP_ANALYSIS_TIME_MS,
-                        )
-                        light_feature = light_by_key.get((game["site"], game["site_game_id"])) or extract_light_game_features(game)
-                        deep_feature = _extract_deep_game_features(game, light_feature, full_analysis)
+                deep_slots = asyncio.Semaphore(DEEP_ANALYSIS_CONCURRENCY)
 
-                        conn = get_connection()
+                async def _process_deep_candidate(game: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+                    async with deep_slots:
                         try:
+                            key = (game["site"], game["site_game_id"])
+                            light_feature = light_by_key.get(key) or await asyncio.to_thread(extract_light_game_features, game)
+                            deep_feature = await asyncio.to_thread(
+                                _build_deep_feature_with_cache,
+                                game,
+                                light_feature,
+                                source_owner_id=source_owner_id,
+                                username=username,
+                            )
+                            return game, light_feature, deep_feature
+                        except Exception:
+                            # Keep pipeline resilient: one failed deep sample should not fail the entire profile.
+                            return None
+
+                deep_tasks = [asyncio.create_task(_process_deep_candidate(game)) for game in deep_candidates]
+                deep_results = await asyncio.gather(*deep_tasks)
+                valid_results = [item for item in deep_results if item is not None]
+                if valid_results:
+                    conn = get_connection()
+                    try:
+                        for game, light_feature, deep_feature in valid_results:
                             upsert_insight_game_feature(
                                 conn,
                                 user_id=user_id,
@@ -1328,12 +1439,9 @@ async def run_insights_pipeline(
                                 light=light_feature,
                                 deep=deep_feature,
                             )
-                            conn.commit()
-                        finally:
-                            conn.close()
-                    except Exception:
-                        # Keep pipeline resilient: one failed deep sample should not fail the entire profile.
-                        continue
+                        conn.commit()
+                    finally:
+                        conn.close()
 
                 conn = get_connection()
                 try:
