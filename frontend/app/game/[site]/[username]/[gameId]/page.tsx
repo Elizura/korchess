@@ -322,6 +322,103 @@ const AI_REQUEST_LOADING_STEPS = [
   "Preparing your next-game focus",
 ];
 
+const ANON_MOCK_INSIGHTS_VARIANTS: Record<AiSectionTab, string[][]> = {
+  result_summary: [
+    [
+      "You kept practical chances but drifted after one critical middlegame decision.",
+      "The position stayed balanced for long stretches before momentum flipped quickly.",
+      "Your result mostly hinged on conversion quality in the final phase.",
+    ],
+    [
+      "You built a playable structure and found active pieces in early play.",
+      "A single unstable sequence changed the evaluation and reduced your counterplay.",
+      "The game narrative suggests strong ideas, but inconsistent execution under pressure.",
+    ],
+    [
+      "Your opening setup created a solid platform for a competitive middlegame.",
+      "Key initiative shifted after a forcing line that favored your opponent’s activity.",
+      "Overall pattern: good direction, but critical accuracy dipped at decisive moments.",
+    ],
+  ],
+  turning_points: [
+    [
+      "Around move 14, a forcing continuation gave your opponent the easier plan.",
+      "Near move 21, the position simplified into a structure where your weaknesses were fixed.",
+      "Late transition to endgame reduced your tactical resources and recovery chances.",
+    ],
+    [
+      "A central break in the middlegame opened lines against your king safety setup.",
+      "One exchange decision handed long-term square control to your opponent.",
+      "The final conversion phase became technical after your active counterplay disappeared.",
+    ],
+    [
+      "A tempo-loss sequence allowed your opponent to seize initiative in the center.",
+      "A defensive inaccuracy turned a holdable position into a difficult defense.",
+      "After simplification, your opponent converted with fewer practical risks.",
+    ],
+  ],
+  what_you_did_well: [
+    [
+      "You consistently developed with purpose and avoided early tactical collapses.",
+      "Your piece coordination created useful counterplay windows in the middlegame.",
+      "You identified practical resources even when objective evaluation worsened.",
+    ],
+    [
+      "You managed transitions between phases with clear strategic intent.",
+      "Your move choices often prioritized activity over passive defense.",
+      "You stayed resilient and kept the game complex for a long time.",
+    ],
+    [
+      "You found several stabilizing moves after temporary pressure spikes.",
+      "Your structure management delayed direct breakthroughs against your king.",
+      "You repeatedly chose plans that preserved practical winning chances.",
+    ],
+  ],
+  what_to_improve: [
+    [
+      "Recheck forcing replies before committing to irreversible pawn moves.",
+      "When ahead in development, convert with simple plans instead of sharp complications.",
+      "In equal positions, reduce risk by improving king safety before expansion.",
+    ],
+    [
+      "Prioritize threat detection in transitions from opening to middlegame.",
+      "Avoid structural concessions unless they create immediate active compensation.",
+      "In tense positions, use one extra move to complete piece coordination first.",
+    ],
+    [
+      "Convert small advantages by limiting counterplay rather than racing attacks.",
+      "Treat exchange decisions as strategic commitments and evaluate resulting endgames.",
+      "Under pressure, choose robust defensive resources over speculative activity.",
+    ],
+  ],
+  next_game_focus: [
+    [
+      "Focus on spotting forcing tactical ideas one move earlier.",
+      "Build a repeatable checklist for high-volatility middlegame decisions.",
+      "Practice clean conversion technique from equal and slightly better endgames.",
+    ],
+    [
+      "Emphasize king safety when central files open unexpectedly.",
+      "Use a slower decision cadence in critical transition moments.",
+      "Aim for stable advantages before launching tactical sequences.",
+    ],
+    [
+      "Train pattern recognition for initiative swings after exchanges.",
+      "Improve time allocation around your opponent’s forcing options.",
+      "Prioritize practical simplification when your position is objectively better.",
+    ],
+  ],
+};
+
+const stableIndexFromSeed = (seed: string, modulo: number): number => {
+  if (modulo <= 0) return 0;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return hash % modulo;
+};
+
 export default function GameAnalyzerPage() {
   const params = useParams();
   const router = useRouter();
@@ -621,6 +718,17 @@ export default function GameAnalyzerPage() {
   const activeAiSection = aiNarrationSectionsByHeading.get(activeAiSectionHeading.toLowerCase());
   const turningNarrationSection = aiNarrationSectionsByHeading.get("turning points");
   const turningEvents = singleInsights?.turning_points?.events || [];
+  const anonMockBulletsByTab = useMemo(() => {
+    const seedBase = `${site}:${username}:${gameId}`.toLowerCase();
+    const resolved = {} as Record<AiSectionTab, string[]>;
+    for (const tab of AI_SECTION_TABS) {
+      const variants = ANON_MOCK_INSIGHTS_VARIANTS[tab.id];
+      const variantIndex = stableIndexFromSeed(`${seedBase}:${tab.id}`, variants.length);
+      resolved[tab.id] = variants[variantIndex] || variants[0] || [];
+    }
+    return resolved;
+  }, [gameId, site, username]);
+  const activeAnonMockBullets = anonMockBulletsByTab[activeAiSectionTab] || [];
 
   const getInsightEventPly = useCallback((event?: InsightEvent | null): number | null => {
     if (!event) return null;
@@ -1558,6 +1666,17 @@ export default function GameAnalyzerPage() {
     router,
   ]);
 
+  const handleAnonymousMockSignup = useCallback(() => {
+    trackEvent("analysis.ai.blocked_signup", {
+      properties: {
+        source: "game_ai_tab",
+        section: activeAiSectionHeading,
+      },
+    });
+    const next = encodeURIComponent(getSignupReturnPath());
+    router.push(`/signup?next=${next}`);
+  }, [activeAiSectionHeading, getSignupReturnPath, router]);
+
   useEffect(() => {
     if (isAuthenticated) {
       return;
@@ -2021,7 +2140,7 @@ export default function GameAnalyzerPage() {
                   )}
                 </div>
 
-                {analysisStatus !== "completed" && (
+                {isAuthenticated && analysisStatus !== "completed" && (
                   <div className="rounded-xl border border-amber-300/25 bg-amber-500/10 p-4 text-amber-50">
                     <div className="flex items-start gap-3">
                       <svg
@@ -2045,7 +2164,102 @@ export default function GameAnalyzerPage() {
                   </div>
                 )}
 
-                {analysisStatus === "completed" && (
+                {!isAuthenticated && (
+                  <div className="space-y-4">
+                    <div
+                      role="tablist"
+                      aria-label="AI insight sections"
+                      className="hide-scrollbar flex w-full gap-2 overflow-x-auto overflow-y-hidden rounded-xl border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-1"
+                    >
+                      {AI_SECTION_TABS.map((tab) => (
+                        <button
+                          key={tab.id}
+                          id={`ai-section-tab-${tab.id}`}
+                          role="tab"
+                          type="button"
+                          aria-selected={activeAiSectionTab === tab.id}
+                          aria-controls={`ai-section-panel-${tab.id}`}
+                          tabIndex={activeAiSectionTab === tab.id ? 0 : -1}
+                          onClick={(event) =>
+                            handleAiSectionTabChange(tab.id, event.currentTarget)
+                          }
+                          className={[
+                            "whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition",
+                            activeAiSectionTab === tab.id
+                              ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
+                              : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
+                          ].join(" ")}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div
+                      id={`ai-section-panel-${activeAiSectionTab}`}
+                      role="tabpanel"
+                      aria-labelledby={`ai-section-tab-${activeAiSectionTab}`}
+                      className={`relative zen-surface-flat p-3.5 md:p-4 border ${
+                        getNarrationSectionTone(activeAiSectionHeading).cardBorder
+                      }`}
+                      style={{
+                        background:
+                          "linear-gradient(140deg, rgba(22,28,40,0.9), rgba(18,24,36,0.9) 60%, rgba(15,20,30,0.92))",
+                        boxShadow:
+                          "inset 0 0 0 1px rgba(124,136,164,0.2), inset 0 0 0 2px rgba(84,96,126,0.14)",
+                      }}
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <span
+                          className={`inline-flex h-5 w-5 items-center justify-center text-[11px] font-semibold border ${
+                            getNarrationSectionTone(activeAiSectionHeading).badgeBorder
+                          } ${getNarrationSectionTone(activeAiSectionHeading).badgeText}`}
+                        >
+                          {getNarrationSectionBadge(activeAiSectionHeading)}
+                        </span>
+                        <p
+                          className={`text-[11px] uppercase tracking-[0.12em] ${
+                            getNarrationSectionTone(activeAiSectionHeading).headingText
+                          }`}
+                        >
+                          {activeAiSectionHeading}
+                        </p>
+                      </div>
+
+                      <ul
+                        className="space-y-2.5 text-[15px] leading-7 text-[color:var(--zen-text)] blur-sm select-none pointer-events-none"
+                        aria-hidden="true"
+                      >
+                        {activeAnonMockBullets.map((bullet, idx) => (
+                          <li key={`anon-mock-${activeAiSectionTab}-${idx}`} className="flex gap-2">
+                            <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
+                              {getNarrationBulletIcon(activeAiSectionHeading, bullet)}
+                            </span>
+                            <span>{bullet}</span>
+                          </li>
+                        ))}
+                      </ul>
+
+                      <div className="absolute inset-x-4 bottom-4 top-14 flex flex-col items-center justify-center gap-3 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)]/85 backdrop-blur-sm p-4">
+                        <p className="text-sm text-[color:var(--zen-text)] text-center">
+                          Sign up to unlock AI insights for this game.
+                        </p>
+                        <p className="text-xs text-[color:var(--zen-muted)] text-center">
+                          Full personalized insights unlock after sign up.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleAnonymousMockSignup}
+                          className="inline-flex items-center justify-center rounded-lg border border-[color:var(--zen-accent)] bg-[color:var(--zen-accent-2)] px-4 py-2 text-sm font-semibold text-[color:var(--zen-text)] transition hover:bg-[color:var(--zen-accent)] hover:text-white"
+                        >
+                          Sign up to see AI insights
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {isAuthenticated && analysisStatus === "completed" && (
                   <>
                     {aiInsightsError && (
                       <p className="text-sm text-[color:var(--zen-danger)]">
