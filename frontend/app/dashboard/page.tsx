@@ -1365,40 +1365,31 @@ export default function DashboardPage() {
         )}
 
         {/* Data Freshness Line */}
-        {importStatus && currentUsername && !loading && (
+        {importStatus?.imported_at && currentUsername && !loading && (
           <div className="mt-5 zen-surface-flat px-4 py-3">
-            {importStatus.imported_at ? (
-              <p className="text-sm text-[color:var(--zen-muted)]">
-                Report generated from{" "}
-                <span className="text-[color:var(--zen-text)] font-medium">
-                  {importStatus.total_games}
-                </span>{" "}
-                games
-                {importStatus.total_games > 0 && (
-                  <>
-                    {" "}
-                    (last import:{" "}
-                    {new Date(importStatus.imported_at).toLocaleString("en-US", {
-                      year: "numeric",
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                    {/* {importStatus.last_imported === 0 &&
-                      `, imported: 0, skipped: ${importStatus.last_skipped}`} */}
-                    )
-                  </>
-                )}
-              </p>
-            ) : (
-              <p className="text-sm text-[color:var(--zen-muted)]">
-                No imports yet for{" "}
-                <span className="text-[color:var(--zen-text)] font-medium">
-                  {currentUsername}
-                </span>
-              </p>
-            )}
+            <p className="text-sm text-[color:var(--zen-muted)]">
+              Report generated from{" "}
+              <span className="text-[color:var(--zen-text)] font-medium">
+                {importStatus.total_games}
+              </span>{" "}
+              games
+              {importStatus.total_games > 0 && (
+                <>
+                  {" "}
+                  (last import:{" "}
+                  {new Date(importStatus.imported_at).toLocaleString("en-US", {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                  {/* {importStatus.last_imported === 0 &&
+                    `, imported: 0, skipped: ${importStatus.last_skipped}`} */}
+                  )
+                </>
+              )}
+            </p>
           </div>
         )}
 
