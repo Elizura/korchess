@@ -1,6 +1,9 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+// This page reads initial filter state from URL search params.
+export const dynamic = "force-dynamic";
+
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
@@ -56,6 +59,20 @@ type ColorFilter = "all" | "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
 type ResultFilter = "all" | "win" | "draw" | "loss";
 
+const sanitizeColorFilter = (raw: string | null): ColorFilter => {
+  if (raw === "all" || raw === "white" || raw === "black") {
+    return raw;
+  }
+  return "all";
+};
+
+const sanitizeTimeClassFilter = (raw: string | null): TimeClassFilter => {
+  if (raw === "all" || raw === "blitz" || raw === "rapid" || raw === "classical") {
+    return raw;
+  }
+  return "all";
+};
+
 // Helper to parse opening name
 const parseOpeningName = (fullName: string) => {
   // Common pattern: "Main Opening: Variation" or "Main Opening, Variation"
@@ -77,20 +94,23 @@ const parseOpeningName = (fullName: string) => {
 
 export default function OpeningDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const { data: session } = useSession();
   const username = params.username as string;
   const openingKey = params.openingKey as string;
   const variationKey = params.variationKey as string;
   const siteParam = "all";
+  const initialColorFilter = sanitizeColorFilter(searchParams.get("color"));
+  const initialTimeClassFilter = sanitizeTimeClassFilter(searchParams.get("time_class"));
   const [site] = useState<Site>(siteParam as Site);
   const [games, setGames] = useState<GameDetail[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openingName, setOpeningName] = useState<string>("");
   const [summary, setSummary] = useState<OpeningSummary | null>(null);
-  const [colorFilter, setColorFilter] = useState<ColorFilter>("all");
-  const [timeClassFilter, setTimeClassFilter] = useState<TimeClassFilter>("all");
+  const [colorFilter, setColorFilter] = useState<ColorFilter>(() => initialColorFilter);
+  const [timeClassFilter, setTimeClassFilter] = useState<TimeClassFilter>(() => initialTimeClassFilter);
   const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -395,7 +415,7 @@ export default function OpeningDetailPage() {
       )}
 
       {refreshing && games && (
-        <p className="mb-3 text-xs text-[color:var(--zen-muted)]">Refreshing cached data...</p>
+        <p className="mb-3 text-xs text-[color:var(--zen-muted)]">Refreshing...</p>
       )}
 
       {refreshNotice && games && (
