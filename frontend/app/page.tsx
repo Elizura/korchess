@@ -70,7 +70,7 @@ export default function LandingPage() {
             KORCHESS
           </h1>
           <p className="text-accent-green font-display text-[10px] md:text-xs mb-10 tracking-[0.2em] uppercase max-w-2xl mx-auto leading-relaxed">
-            Anal your performance and dominate the board
+            Analyze your performance and dominate the board
           </p>
           <div className="flex flex-col items-center">
             <Link
