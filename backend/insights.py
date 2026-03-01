@@ -371,6 +371,10 @@ def _extract_deep_game_features(
     theme_counts: dict[str, int] = {}
     move_artifacts: list[dict[str, Any]] = []
     cp_losses: list[float] = []
+    blunders_total = 0
+    blunders_low_time = 0
+    user_moves_with_clock = 0
+    user_moves_low_time = 0
 
     clock_lookup = {}
     for item in light_feature.get("move_artifacts", []):
@@ -388,7 +392,29 @@ def _extract_deep_game_features(
             continue
 
         phase = _phase_for_ply(ply, opening_end_ply, endgame_start_ply)
+        classification = move.get("classification") or "unknown"
         cp_loss = move.get("cp_loss")
+
+        eval_before = (move.get("eval_before") or {}).get("cp")
+        user_eval_before: float | None = None
+        if isinstance(eval_before, (int, float)):
+            user_eval_before = float(eval_before) * sign
+
+        clock_seconds = clock_lookup.get(ply)
+        is_low_time_move = (
+            low_time_threshold is not None
+            and clock_seconds is not None
+            and clock_seconds <= int(low_time_threshold)
+        )
+        if clock_seconds is not None:
+            user_moves_with_clock += 1
+        if is_low_time_move:
+            user_moves_low_time += 1
+        if classification == "blunder":
+            blunders_total += 1
+            if is_low_time_move:
+                blunders_low_time += 1
+
         if cp_loss is None:
             continue
 
@@ -397,16 +423,10 @@ def _extract_deep_game_features(
         phase_stats[phase]["moves"] += 1
         phase_stats[phase]["cp_loss_sum"] += cp_loss_f
 
-        classification = move.get("classification") or "unknown"
         if classification in {"mistake", "blunder"}:
             phase_stats[phase]["mistakes"] += 1
         if classification == "blunder":
             phase_stats[phase]["blunders"] += 1
-
-        eval_before = (move.get("eval_before") or {}).get("cp")
-        user_eval_before: float | None = None
-        if isinstance(eval_before, (int, float)):
-            user_eval_before = float(eval_before) * sign
 
         themes: list[str] = []
         if cp_loss_f >= 300:
@@ -431,12 +451,7 @@ def _extract_deep_game_features(
         for theme in themes:
             theme_counts[theme] = theme_counts.get(theme, 0) + 1
 
-        clock_seconds = clock_lookup.get(ply)
-        if (
-            low_time_threshold is not None
-            and clock_seconds is not None
-            and clock_seconds <= int(low_time_threshold)
-        ):
+        if is_low_time_move:
             low_time_cp_losses.append(cp_loss_f)
 
         if cp_loss_f >= 80:
@@ -472,6 +487,18 @@ def _extract_deep_game_features(
             if cp_losses
             else None,
             "avg_cp_loss_low_time": round(_mean(low_time_cp_losses), 2) if low_time_cp_losses else None,
+            "time_pressure": {
+                "user_moves_with_clock": user_moves_with_clock,
+                "user_moves_low_time": user_moves_low_time,
+                "blunders_total": blunders_total,
+                "blunders_low_time": blunders_low_time,
+                "blunder_share_low_time": round((blunders_low_time / blunders_total), 4)
+                if blunders_total > 0
+                else None,
+                "blunder_rate_low_time": round((blunders_low_time / user_moves_low_time), 4)
+                if user_moves_low_time > 0
+                else None,
+            },
         },
         "phase_stats": phase_stats,
         "theme_counts": theme_counts,
@@ -563,6 +590,7 @@ def _build_deep_feature_with_cache(
             DEEP_ANALYSIS_DEPTH,
             DEEP_ANALYSIS_MULTIPV,
             DEEP_ANALYSIS_TIME_MS,
+            opening_ply_count=game.get("opening_ply_count"),
         )
         _save_full_analysis_cache_payload(
             source_owner_id,
@@ -666,10 +694,19 @@ def _build_aggregate_features(
     theme_counts: dict[str, int] = {}
     total_user_moves_deep = 0
     total_blunders_deep = 0
+    total_low_time_blunders_deep = 0
+    total_blunders_with_clock_deep = 0
+    total_low_time_moves_deep = 0
+    total_moves_with_clock_deep = 0
 
     for deep in deep_features:
         quality = deep.get("quality", {})
         total_user_moves_deep += int(quality.get("user_moves_analyzed") or 0)
+        deep_time_pressure = quality.get("time_pressure") or {}
+        total_low_time_blunders_deep += int(deep_time_pressure.get("blunders_low_time") or 0)
+        total_blunders_with_clock_deep += int(deep_time_pressure.get("blunders_total") or 0)
+        total_low_time_moves_deep += int(deep_time_pressure.get("user_moves_low_time") or 0)
+        total_moves_with_clock_deep += int(deep_time_pressure.get("user_moves_with_clock") or 0)
 
         for phase_name, stats in (deep.get("phase_stats") or {}).items():
             if phase_name not in phase_accum:
@@ -792,6 +829,21 @@ def _build_aggregate_features(
                 "low_time_score_pct",
                 "Score in low-time games",
                 low_time_score_pct,
+                "pct",
+            )
+        )
+    blunders_under_pressure_pct: float | None = None
+    if total_blunders_with_clock_deep > 0:
+        blunders_under_pressure_pct = round(
+            (total_low_time_blunders_deep / total_blunders_with_clock_deep) * 100,
+            1,
+        )
+        time_pressure_fact_ids.append(
+            _add_fact(
+                fact_map,
+                "blunders_under_time_pressure_pct",
+                "Share of blunders under time pressure",
+                blunders_under_pressure_pct,
                 "pct",
             )
         )
@@ -945,6 +997,11 @@ def _build_aggregate_features(
             "games_with_pressure": low_time_games,
             "score_pct_under_pressure": low_time_score_pct,
             "score_pct_overall": overall_score_pct,
+            "blunders_under_pressure": total_low_time_blunders_deep,
+            "blunders_total_with_clock": total_blunders_with_clock_deep,
+            "blunders_under_pressure_pct": blunders_under_pressure_pct,
+            "low_time_moves_deep": total_low_time_moves_deep,
+            "moves_with_clock_deep": total_moves_with_clock_deep,
             "fact_ids": time_pressure_fact_ids + [clock_cov_fact],
         },
         "recurring_themes": theme_items[:5],
