@@ -226,11 +226,11 @@ export default function LandingPage() {
                 </span>
               </div>
               <h3 className="font-display text-[10px] mb-3 text-white uppercase">
-                Master Lines
+                Opening Radar
               </h3>
               <p className="text-[11px] opacity-70 leading-relaxed font-mono">
-                In-depth statistical breakdown of every line you play. Find your
-                blind spots and sharpen your prep.
+                See your strongest and weakest openings by color with clear
+                score percentages.
               </p>
             </div>
             <div className="bg-card-dark border-2 border-gray-800 p-6 group hover:border-primary transition-colors">
@@ -240,11 +240,11 @@ export default function LandingPage() {
                 </span>
               </div>
               <h3 className="font-display text-[10px] mb-3 text-white uppercase">
-                Global Sync
+                Unified Import
               </h3>
               <p className="text-[11px] opacity-70 leading-relaxed font-mono">
-                Seamlessly import your entire game history from leading chess
-                platforms instantly.
+                Connect Lichess and Chess.com usernames and view opening stats
+                in one place.
               </p>
             </div>
             <div className="bg-card-dark border-2 border-gray-800 p-6 group hover:border-accent-green transition-colors">
@@ -254,11 +254,11 @@ export default function LandingPage() {
                 </span>
               </div>
               <h3 className="font-display text-[10px] mb-3 text-white uppercase">
-                Retro Analytics
+                Prep Priorities
               </h3>
               <p className="text-[11px] opacity-70 leading-relaxed font-mono">
-                Gamified insights with an 8-bit noir aesthetic. Progress tracking
-                that feels like an RPG quest.
+                Find the lines costing you points so you know exactly what to
+                train next.
               </p>
             </div>
           </div>
@@ -273,21 +273,11 @@ export default function LandingPage() {
           <div className="flex gap-6 items-center">
             <a
               className="font-display text-[8px] hover:text-accent-green transition-colors uppercase"
-              href="#"
-            >
-              Twitter
-            </a>
-            <a
-              className="font-display text-[8px] hover:text-accent-green transition-colors uppercase"
-              href="#"
+              href="https://discord.gg/rQKxuywZ7m"
+              rel="noreferrer"
+              target="_blank"
             >
               Discord
-            </a>
-            <a
-              className="font-display text-[8px] hover:text-accent-green transition-colors uppercase"
-              href="#"
-            >
-              GitHub
             </a>
             <Link
               className="font-display text-[8px] hover:text-accent-green transition-colors uppercase"
