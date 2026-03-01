@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -10,6 +11,10 @@ from psycopg.rows import dict_row
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 PUBLIC_USER_ID_PREFIX = "public:"
+LESSON_CONSENT_CHANNEL_EMAIL = "email_lessons"
+LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY = "game_ai_summary"
+LESSON_CONSENT_DECISIONS = frozenset({"consented", "declined"})
+RAW_OPENING_KEY_PREFIX = "raw__"
 
 
 def get_connection() -> psycopg.Connection:
@@ -320,6 +325,35 @@ def init_db() -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_ai_insights_requests_user_day_status
         ON ai_insights_requests(user_id, requested_at, status)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lesson_consent_events (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            source TEXT NOT NULL,
+            site TEXT,
+            site_game_id TEXT,
+            analysis_depth INTEGER,
+            analysis_multipv INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_lesson_consent_events_user_created
+        ON lesson_consent_events(user_id, created_at DESC)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_lesson_consent_events_channel_decision
+        ON lesson_consent_events(channel, decision, created_at DESC)
         """
     )
 
@@ -745,11 +779,13 @@ def get_openings_stats(
     """
     ensure_openings_table(conn)
     cursor = conn.cursor()
+    opening_key_expr = _opening_key_expr_sql("g", "o")
+    opening_label_expr = _opening_label_expr_sql("g", "o")
 
-    query = """
-        SELECT 
-            COALESCE(o.opening_key, 'unknown') as opening_key,
-            COALESCE(o.opening_label, 'Unknown') as opening_label,
+    query = f"""
+        SELECT
+            {opening_key_expr} as opening_key,
+            {opening_label_expr} as opening_label,
             COUNT(*) as games,
             SUM(CASE WHEN g.result = 'win' THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN g.result = 'draw' THEN 1 ELSE 0 END) as draws,
@@ -772,7 +808,8 @@ def get_openings_stats(
         query += " AND g.time_class = %s"
         params.append(time_class)
 
-    query += " GROUP BY opening_key, opening_label ORDER BY games DESC LIMIT %s"
+    # Group by select-list positions so Postgres groups by the computed CASE expressions.
+    query += " GROUP BY 1, 2 ORDER BY games DESC LIMIT %s"
     params.append(limit)
 
     cursor.execute(query, params)
@@ -830,6 +867,55 @@ def upsert_import_status(
         """,
         (user_id, canonical_username, site, imported, skipped, max_games, imported_at),
     )
+
+
+def _opening_name_value_sql(game_alias: str = "g") -> str:
+    return f"NULLIF(BTRIM({game_alias}.opening_name), '')"
+
+
+def _opening_name_slug_sql(game_alias: str = "g") -> str:
+    opening_name_sql = _opening_name_value_sql(game_alias)
+    return (
+        "COALESCE("
+        "NULLIF("
+        f"regexp_replace(regexp_replace(lower({opening_name_sql}), '[^a-z0-9]+', '_', 'g'), '^_+|_+$', '', 'g'),"
+        "''"
+        "),"
+        "'unknown'"
+        ")"
+    )
+
+
+def _opening_key_expr_sql(game_alias: str = "g", opening_alias: str = "o") -> str:
+    opening_name_sql = _opening_name_value_sql(game_alias)
+    opening_slug_sql = _opening_name_slug_sql(game_alias)
+    return (
+        "CASE "
+        f"WHEN {opening_alias}.opening_key IS NOT NULL THEN {opening_alias}.opening_key "
+        f"WHEN {opening_name_sql} IS NOT NULL AND LOWER({opening_name_sql}) <> 'unknown' "
+        f"THEN '{RAW_OPENING_KEY_PREFIX}' || {opening_slug_sql} "
+        "ELSE 'unknown' "
+        "END"
+    )
+
+
+def _opening_label_expr_sql(game_alias: str = "g", opening_alias: str = "o") -> str:
+    opening_name_sql = _opening_name_value_sql(game_alias)
+    return (
+        "CASE "
+        f"WHEN {opening_alias}.opening_label IS NOT NULL THEN {opening_alias}.opening_label "
+        f"WHEN {opening_name_sql} IS NOT NULL AND LOWER({opening_name_sql}) <> 'unknown' THEN {opening_name_sql} "
+        "ELSE 'Unknown' "
+        "END"
+    )
+
+
+def _raw_opening_key_suffix(opening_key: str) -> str:
+    if not opening_key.startswith(RAW_OPENING_KEY_PREFIX):
+        return ""
+    raw_part = opening_key[len(RAW_OPENING_KEY_PREFIX):]
+    normalized = re.sub(r"[^a-z0-9]+", "_", raw_part.strip().lower()).strip("_")
+    return normalized or "unknown"
 
 
 def get_import_status(
@@ -912,6 +998,9 @@ def get_games_by_opening(
     ensure_openings_table(conn)
     cursor = conn.cursor()
     canonical_username = username.strip().lower()
+    opening_name_value_sql = _opening_name_value_sql("g")
+    opening_name_slug_sql = _opening_name_slug_sql("g")
+    opening_label_expr = _opening_label_expr_sql("g", "o")
 
     base_where_conditions = [
         "g.user_id = %s",
@@ -923,13 +1012,23 @@ def get_games_by_opening(
 
     if opening_key == "unknown":
         base_where_conditions.append("g.opening_id IS NULL")
+        base_where_conditions.append(
+            f"({opening_name_value_sql} IS NULL OR LOWER({opening_name_value_sql}) = 'unknown')"
+        )
+    elif opening_key.startswith(RAW_OPENING_KEY_PREFIX):
+        base_where_conditions.append("g.opening_id IS NULL")
+        base_where_conditions.append(f"{opening_name_slug_sql} = %s")
+        base_params.append(_raw_opening_key_suffix(opening_key))
     else:
         base_where_conditions.append("o.opening_key = %s")
         base_params.append(opening_key)
 
     if variation_key:
-        base_where_conditions.append("o.variation_key = %s")
-        base_params.append(variation_key)
+        if opening_key.startswith(RAW_OPENING_KEY_PREFIX):
+            base_where_conditions.append("1 = 0")
+        else:
+            base_where_conditions.append("o.variation_key = %s")
+            base_params.append(variation_key)
 
     if site and site != "all":
         base_where_conditions.append("g.site = %s")
@@ -946,12 +1045,12 @@ def get_games_by_opening(
     base_where_clause = " AND ".join(base_where_conditions)
 
     summary_query = f"""
-        SELECT 
+        SELECT
             COUNT(*) as total_games,
             SUM(CASE WHEN g.result = 'win' THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN g.result = 'draw' THEN 1 ELSE 0 END) as draws,
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses,
-            COALESCE(MAX(o.opening_label), 'Unknown') as opening_label,
+            COALESCE(MAX({opening_label_expr}), 'Unknown') as opening_label,
             MAX(o.variation_label) as variation_label
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
@@ -979,14 +1078,14 @@ def get_games_by_opening(
     games_where_clause = " AND ".join(games_where_conditions)
 
     games_query = f"""
-        SELECT 
+        SELECT
             g.site,
             g.site_game_id,
             g.played_at,
             g.color,
             g.result,
             g.opponent,
-            COALESCE(o.opening_label, g.opening_name) as opening_label
+            COALESCE(o.opening_label, {opening_name_value_sql}, 'Unknown') as opening_label
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
         WHERE {games_where_clause}
@@ -1049,6 +1148,10 @@ def get_variations_stats(
     Aggregate variation statistics for a user and opening_key.
     Returns list of dicts with variation_key, variation_label, games, wins, draws, losses, score_pct.
     """
+    if opening_key.startswith(RAW_OPENING_KEY_PREFIX):
+        # Synthetic keys (from raw opening_name fallback) have no canonical variation mapping.
+        return []
+
     ensure_openings_table(conn)
     cursor = conn.cursor()
 
@@ -1134,7 +1237,7 @@ def get_game_by_id(
     cursor.execute(
         """
         SELECT site, site_game_id, played_at, color, result, opponent, 
-               opening_name, pgn, eco
+               opening_name, opening_ply_count, pgn, eco
         FROM games
         WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s AND site = %s
         """,
@@ -1417,6 +1520,110 @@ def log_ai_insights_request(
             status.strip().lower(),
         ),
     )
+
+
+def insert_lesson_consent_event(
+    conn: psycopg.Connection,
+    user_id: str,
+    decision: str,
+    source: str,
+    *,
+    site: str | None = None,
+    site_game_id: str | None = None,
+    analysis_depth: int | None = None,
+    analysis_multipv: int | None = None,
+    channel: str = LESSON_CONSENT_CHANNEL_EMAIL,
+) -> None:
+    """Insert an append-only lesson consent decision event."""
+    normalized_decision = decision.strip().lower()
+    if normalized_decision not in LESSON_CONSENT_DECISIONS:
+        raise ValueError("Invalid lesson consent decision.")
+
+    normalized_source = source.strip().lower()
+    if normalized_source != LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY:
+        raise ValueError("Invalid lesson consent source.")
+
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO lesson_consent_events
+        (
+            user_id,
+            channel,
+            decision,
+            source,
+            site,
+            site_game_id,
+            analysis_depth,
+            analysis_multipv
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            user_id,
+            channel.strip().lower(),
+            normalized_decision,
+            normalized_source,
+            (site or "").strip().lower() or None,
+            (site_game_id or "").strip() or None,
+            analysis_depth,
+            analysis_multipv,
+        ),
+    )
+
+
+def get_latest_lesson_consent_state(
+    conn: psycopg.Connection,
+    user_id: str,
+    channel: str = LESSON_CONSENT_CHANNEL_EMAIL,
+) -> dict | None:
+    """Return the latest lesson consent event for a user/channel."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT decision, created_at
+        FROM lesson_consent_events
+        WHERE user_id = %s
+          AND channel = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (user_id, channel.strip().lower()),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def get_lesson_consent_status_payload(
+    conn: psycopg.Connection,
+    user_id: str,
+    channel: str = LESSON_CONSENT_CHANNEL_EMAIL,
+) -> dict[str, Any]:
+    """Normalize lesson consent status response payload."""
+    normalized_channel = channel.strip().lower()
+    latest = get_latest_lesson_consent_state(conn, user_id, normalized_channel)
+    if not latest:
+        return {
+            "channel": normalized_channel,
+            "state": "unknown",
+            "consented": False,
+            "last_decision_at": None,
+        }
+
+    raw_decision = str(latest.get("decision") or "").strip().lower()
+    state = raw_decision if raw_decision in LESSON_CONSENT_DECISIONS else "unknown"
+    created_at = latest.get("created_at")
+    if hasattr(created_at, "isoformat"):
+        created_at = created_at.isoformat()
+
+    return {
+        "channel": normalized_channel,
+        "state": state,
+        "consented": state == "consented",
+        "last_decision_at": created_at,
+    }
 
 
 def count_user_ai_gemini_success_utc_day(
