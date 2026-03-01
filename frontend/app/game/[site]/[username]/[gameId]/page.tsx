@@ -15,7 +15,7 @@ import BoardControls from "@/components/analysis/BoardControls";
 import { useLocalEngine } from "@/hooks/useLocalEngine";
 import {
   MoveTree,
-  MoveNode,
+  ReviewTag,
   TacticalAnnotation,
   createMoveTree,
   buildTreeFromAnalysis,
@@ -25,6 +25,7 @@ import {
   goToEnd,
   goBack,
   goForward,
+  toReviewTag,
 } from "@/lib/moveTree";
 
 const API_BASE_URL =
@@ -43,6 +44,7 @@ interface GameData {
   lichess_url: string;
   eco: string | null;
   opening_name: string | null;
+  opening_ply_count?: number | null;
 }
 
 interface MoveEvaluation {
@@ -57,6 +59,7 @@ interface MoveEvaluation {
   best_move_san: string | null;
   pv: string[];
   classification: string | null;
+  review_tag?: ReviewTag | null;
   cp_loss: number | null;
   clock_seconds?: number | null;
   time_spent_seconds?: number | null;
@@ -87,6 +90,11 @@ interface FullAnalysisResponse {
       time_per_position_ms: number;
       total_time_ms: number;
       positions_analyzed: number;
+      unique_positions_analyzed?: number;
+      position_workers?: number;
+      review_counts_white?: Partial<Record<ReviewTag, number>>;
+      review_counts_black?: Partial<Record<ReviewTag, number>>;
+      review_labels_version?: string;
     };
   } | null;
   insights?: SingleGameInsightsResponse | null;
@@ -98,6 +106,15 @@ interface AIInsightsResponse {
   insights: SingleGameInsightsResponse | null;
   created_at: string | null;
   detail?: string | null;
+}
+
+type LessonConsentDecision = "consented" | "declined";
+
+interface LessonConsentResponse {
+  channel: "email_lessons";
+  state: "consented" | "declined" | "unknown";
+  consented: boolean;
+  last_decision_at: string | null;
 }
 
 interface InsightEvidence {
@@ -419,6 +436,187 @@ const stableIndexFromSeed = (seed: string, modulo: number): number => {
   return hash % modulo;
 };
 
+const REVIEW_ROW_ORDER: ReviewTag[] = [
+  "brilliant",
+  "great",
+  "book",
+  "best",
+  "excellent",
+  "good",
+  "inaccuracy",
+  "mistake",
+  "miss",
+  "blunder",
+];
+
+const REVIEW_SUMMARY_ROW_ORDER: ReviewTag[] = [
+  "brilliant",
+  "great",
+  "book",
+  "best",
+  "good",
+  "inaccuracy",
+  "mistake",
+  "blunder",
+];
+
+const REVIEW_LABELS: Record<ReviewTag, string> = {
+  brilliant: "Brilliant",
+  great: "Great",
+  book: "Book",
+  best: "Best",
+  excellent: "Excellent",
+  good: "Good",
+  inaccuracy: "Inaccuracy",
+  mistake: "Mistake",
+  miss: "Miss",
+  blunder: "Blunder",
+};
+
+const REVIEW_SYMBOLS: Record<ReviewTag, string> = {
+  brilliant: "!!",
+  great: "!",
+  book: "📘",
+  best: "⭐",
+  excellent: "👍",
+  good: "✅",
+  inaccuracy: "?!",
+  mistake: "?",
+  miss: "❌",
+  blunder: "??",
+};
+
+const REVIEW_ROW_TONES: Record<ReviewTag, string> = {
+  brilliant: "text-teal-300",
+  great: "text-sky-300",
+  book: "text-cyan-300",
+  best: "text-emerald-300",
+  excellent: "text-green-300",
+  good: "text-lime-300",
+  inaccuracy: "text-amber-300",
+  mistake: "text-orange-400",
+  miss: "text-rose-300",
+  blunder: "text-red-500",
+};
+
+const REVIEW_BADGE_TONES: Record<ReviewTag, string> = {
+  brilliant: "border-teal-300/45 bg-teal-500/20 text-teal-100",
+  great: "border-sky-300/45 bg-sky-500/22 text-sky-100",
+  book: "border-cyan-300/55 bg-cyan-500/20 text-cyan-100",
+  best: "border-emerald-300/45 bg-emerald-500/20 text-emerald-100",
+  excellent: "border-green-300/40 bg-green-500/18 text-green-100",
+  good: "border-lime-300/40 bg-lime-500/16 text-lime-100",
+  inaccuracy: "border-amber-300/60 bg-amber-500/26 text-amber-50",
+  mistake: "border-orange-400/65 bg-orange-600/30 text-orange-50",
+  miss: "border-rose-300/45 bg-rose-500/20 text-rose-100",
+  blunder: "border-red-500/70 bg-red-600/35 text-red-50",
+};
+
+type ReviewCounts = Record<ReviewTag, number>;
+
+const createEmptyReviewCounts = (): ReviewCounts => ({
+  brilliant: 0,
+  great: 0,
+  book: 0,
+  best: 0,
+  excellent: 0,
+  good: 0,
+  inaccuracy: 0,
+  mistake: 0,
+  miss: 0,
+  blunder: 0,
+});
+
+const NARRATION_COMPARISON_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "for",
+  "from",
+  "in",
+  "into",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "this",
+  "to",
+  "was",
+  "were",
+  "with",
+  "you",
+  "your",
+]);
+
+const normalizeNarrationComparisonText = (text: string): string =>
+  text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const narrationComparisonTokens = (text: string): string[] => {
+  const normalized = normalizeNarrationComparisonText(text);
+  if (!normalized) return [];
+  return normalized
+    .split(" ")
+    .filter((token) => token.length > 2 && !NARRATION_COMPARISON_STOPWORDS.has(token));
+};
+
+const narrationTextsAreNearDuplicate = (a: string, b: string): boolean => {
+  const normalizedA = normalizeNarrationComparisonText(a);
+  const normalizedB = normalizeNarrationComparisonText(b);
+  if (!normalizedA || !normalizedB) return false;
+  if (normalizedA === normalizedB) return true;
+  if (normalizedA.includes(normalizedB) || normalizedB.includes(normalizedA)) return true;
+
+  const tokensA = narrationComparisonTokens(normalizedA);
+  const tokensB = narrationComparisonTokens(normalizedB);
+  if (!tokensA.length || !tokensB.length) return false;
+
+  const tokenSetB = new Set(tokensB);
+  let shared = 0;
+  for (const token of tokensA) {
+    if (tokenSetB.has(token)) {
+      shared += 1;
+    }
+  }
+  const overlapA = shared / tokensA.length;
+  const overlapB = shared / tokensB.length;
+  return overlapA >= 0.72 || overlapB >= 0.72 || (shared >= 4 && overlapA >= 0.6 && overlapB >= 0.6);
+};
+
+const compactNarrationBullets = ({
+  bullets,
+  context = [],
+  maxCount = 4,
+}: {
+  bullets: string[];
+  context?: string[];
+  maxCount?: number;
+}): string[] => {
+  if (!bullets.length) return [];
+  const compacted: string[] = [];
+  for (const bullet of bullets) {
+    const trimmed = bullet.trim();
+    if (!trimmed) continue;
+    if (context.some((candidate) => narrationTextsAreNearDuplicate(trimmed, candidate))) continue;
+    if (compacted.some((candidate) => narrationTextsAreNearDuplicate(trimmed, candidate))) continue;
+    compacted.push(trimmed);
+    if (compacted.length >= maxCount) break;
+  }
+  return compacted;
+};
+
 export default function GameAnalyzerPage() {
   const params = useParams();
   const router = useRouter();
@@ -449,13 +647,22 @@ export default function GameAnalyzerPage() {
   const [aiInsightsRequesting, setAiInsightsRequesting] = useState(false);
   const [aiRequestStepIndex, setAiRequestStepIndex] = useState(0);
   const [aiInsightsError, setAiInsightsError] = useState<string | null>(null);
+  const [lessonConsentLoading, setLessonConsentLoading] = useState(false);
+  const [lessonConsentSaving, setLessonConsentSaving] = useState(false);
+  const [lessonConsentState, setLessonConsentState] = useState<LessonConsentResponse | null>(null);
+  const [lessonConsentError, setLessonConsentError] = useState<string | null>(null);
+  const [lastGeneratedInsightNonce, setLastGeneratedInsightNonce] = useState(0);
+  const [dismissedNonce, setDismissedNonce] = useState<number | null>(null);
   const [activeAnalysisTab, setActiveAnalysisTab] = useState<"engine" | "ai">("engine");
   const [activeAiSectionTab, setActiveAiSectionTab] = useState<AiSectionTab>("result_summary");
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewCurrentPly, setReviewCurrentPly] = useState<number | null>(null);
   
   // Polling for async analysis
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
   const analysisStartTime = useRef<number | null>(null);
   const aiHydratedKey = useRef<string | null>(null);
+  const lessonConsentFetchedForUser = useRef<string | null>(null);
   
   // Board settings
   const [orientation, setOrientation] = useState<"white" | "black">("white");
@@ -583,6 +790,94 @@ export default function GameAnalyzerPage() {
       : analysisData.summary.accuracy_black;
   }, [analysisData, game]);
 
+  const reviewStats = useMemo(() => {
+    if (!analysisData?.moves?.length || !game?.color) return null;
+
+    const white = createEmptyReviewCounts();
+    const black = createEmptyReviewCounts();
+
+    const mergeMetaCounts = (
+      target: ReviewCounts,
+      source: Partial<Record<ReviewTag, number>> | undefined,
+    ): boolean => {
+      if (!source) return false;
+      let hasAny = false;
+      for (const tag of REVIEW_ROW_ORDER) {
+        const value = source[tag];
+        if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+          target[tag] = value;
+          hasAny = true;
+        }
+      }
+      return hasAny;
+    };
+
+    const hasWhiteMeta = mergeMetaCounts(white, analysisData.meta.review_counts_white);
+    const hasBlackMeta = mergeMetaCounts(black, analysisData.meta.review_counts_black);
+    const usedMetaCounts = hasWhiteMeta && hasBlackMeta;
+
+    if (!usedMetaCounts) {
+      Object.assign(white, createEmptyReviewCounts());
+      Object.assign(black, createEmptyReviewCounts());
+      const fallbackOpeningPlyCount =
+        typeof game?.opening_ply_count === "number" && game.opening_ply_count > 0
+          ? game.opening_ply_count
+          : null;
+      for (const move of analysisData.moves) {
+        const isBookByOpening =
+          fallbackOpeningPlyCount !== null && (move.ply + 1) <= fallbackOpeningPlyCount;
+        const reviewTag = isBookByOpening
+          ? "book"
+          : toReviewTag(
+            move.review_tag,
+            move.classification,
+            move.cp_loss ?? undefined,
+          );
+        if (!reviewTag) continue;
+        const moverColor = move.ply % 2 === 0 ? "white" : "black";
+        if (moverColor === "white") {
+          white[reviewTag] += 1;
+        } else {
+          black[reviewTag] += 1;
+        }
+      }
+    }
+
+    const user = game.color === "white" ? white : black;
+    const opponent = game.color === "white" ? black : white;
+
+    const totalFor = (counts: ReviewCounts) =>
+      REVIEW_ROW_ORDER.reduce((sum, key) => sum + counts[key], 0);
+
+    return {
+      white,
+      black,
+      user,
+      opponent,
+      userTotal: totalFor(user),
+      opponentTotal: totalFor(opponent),
+    };
+  }, [
+    game?.opening_ply_count,
+    analysisData?.meta.review_counts_black,
+    analysisData?.meta.review_counts_white,
+    analysisData?.moves,
+    game?.color,
+  ]);
+
+  const currentMoveQuality = useMemo(() => {
+    const reviewTag = currentNode
+      ? toReviewTag(currentNode.reviewTag, currentNode.classification, currentNode.cpLoss)
+      : undefined;
+    if (!reviewTag) return null;
+    return {
+      key: reviewTag,
+      label: REVIEW_LABELS[reviewTag],
+      symbol: REVIEW_SYMBOLS[reviewTag],
+      tone: REVIEW_BADGE_TONES[reviewTag],
+    };
+  }, [currentNode]);
+
   const whitePlayerName = useMemo(() => {
     if (!game) return "White";
     return game.color === "white" ? username : (game.opponent || "Unknown");
@@ -592,6 +887,10 @@ export default function GameAnalyzerPage() {
     if (!game) return "Black";
     return game.color === "black" ? username : (game.opponent || "Unknown");
   }, [game, username]);
+
+  const opponentDisplayName = useMemo(() => {
+    return game?.opponent || "Opponent";
+  }, [game?.opponent]);
 
   const topSideColor = orientation === "white" ? "black" : "white";
   const bottomSideColor = orientation === "white" ? "white" : "black";
@@ -870,8 +1169,50 @@ export default function GameAnalyzerPage() {
 
   const filteredResultSummaryBullets = useMemo(() => {
     const bullets = resultSummarySection?.bullets ?? [];
-    return bullets.filter((bullet) => !isObviousResultBullet(bullet));
-  }, [isObviousResultBullet, resultSummarySection?.bullets]);
+    const nonObviousBullets = bullets.filter((bullet) => !isObviousResultBullet(bullet));
+    const title = singleInsights?.narration?.title ?? "";
+    const oneLiner = singleInsights?.narration?.one_liner ?? "";
+    return compactNarrationBullets({
+      bullets: nonObviousBullets,
+      context: [title, oneLiner],
+      maxCount: 4,
+    });
+  }, [
+    isObviousResultBullet,
+    resultSummarySection?.bullets,
+    singleInsights?.narration?.one_liner,
+    singleInsights?.narration?.title,
+  ]);
+
+  const shouldShowResultSummaryOneLiner = useMemo(() => {
+    const oneLiner = singleInsights?.narration?.one_liner?.trim() || "";
+    if (!oneLiner) return false;
+    const title = singleInsights?.narration?.title || "";
+    if (narrationTextsAreNearDuplicate(oneLiner, title)) return false;
+    return !filteredResultSummaryBullets.some((bullet) => narrationTextsAreNearDuplicate(oneLiner, bullet));
+  }, [
+    filteredResultSummaryBullets,
+    singleInsights?.narration?.one_liner,
+    singleInsights?.narration?.title,
+  ]);
+
+  const shouldShowLessonConsentCard = useMemo(() => {
+    if (!isAuthenticated) return false;
+    if (singleInsightsStatus !== "ready" || !singleInsights) return false;
+    if (lastGeneratedInsightNonce <= 0) return false;
+    if (lessonConsentLoading || !lessonConsentState) return false;
+    if (lessonConsentState.consented) return false;
+    if (dismissedNonce === lastGeneratedInsightNonce) return false;
+    return true;
+  }, [
+    dismissedNonce,
+    isAuthenticated,
+    lastGeneratedInsightNonce,
+    lessonConsentLoading,
+    lessonConsentState,
+    singleInsights,
+    singleInsightsStatus,
+  ]);
 
   const getNarrationSectionBadge = useCallback((heading: string) => {
     const key = heading.toLowerCase();
@@ -993,7 +1334,6 @@ export default function GameAnalyzerPage() {
     (tactical: TacticalAnnotation) => {
       const tacticType = tactical.tactic_type;
       const missed = tactical.missed_move_san || tactical.missed_move_uci || null;
-      const materialText = tactical.material_outcome?.text;
 
       if (tacticType === "FORCED_MATE") {
         const mateIn = tactical.mate_outcome?.mate_in;
@@ -1023,13 +1363,9 @@ export default function GameAnalyzerPage() {
       if (tacticType === "HANGING_PIECE") {
         const hangingPiece = tactical.hanging_piece_name?.toLowerCase();
         if (hangingPiece) {
-          return materialText
-            ? `Hung a ${hangingPiece} (${materialText}); opponent had a concrete capture sequence.`
-            : `Hung a ${hangingPiece}; opponent had a concrete capture sequence.`;
+          return `Hung a ${hangingPiece}; opponent had a concrete capture sequence.`;
         }
-        return materialText
-          ? `Hung material (${materialText}); opponent had an immediate capture.`
-          : "Hung a piece; opponent had an immediate capture.";
+        return "Hung a piece; opponent had an immediate capture.";
       }
 
       if (tacticType === "SKEWER") {
@@ -1089,6 +1425,37 @@ export default function GameAnalyzerPage() {
   const handleSelectMove = useCallback((nodeId: string) => {
     setMoveTree((tree) => navigateTo(tree, nodeId));
   }, []);
+
+  const handleStartReview = useCallback(() => {
+    const firstMoveNodeId = nodeIdByPly.get(1);
+    if (!firstMoveNodeId) return;
+    setReviewMode(true);
+    setReviewCurrentPly(1);
+    setMoveTree((tree) => navigateTo(tree, firstMoveNodeId));
+    trackEvent("feature.usage", {
+      properties: {
+        feature: "game_review_start",
+      },
+    });
+  }, [nodeIdByPly]);
+
+  const handleExitReview = useCallback(() => {
+    setReviewMode(false);
+    setReviewCurrentPly(null);
+    setMoveTree((tree) => goToStart(tree));
+  }, []);
+
+  useEffect(() => {
+    if (!reviewMode) {
+      if (reviewCurrentPly !== null) {
+        setReviewCurrentPly(null);
+      }
+      return;
+    }
+    const node = moveTree.nodes.get(moveTree.currentId);
+    const currentPly = node?.ply ?? null;
+    setReviewCurrentPly(currentPly);
+  }, [moveTree, reviewCurrentPly, reviewMode]);
 
   // Handle user making a move on the board
   const handleUserMove = useCallback(
@@ -1169,6 +1536,8 @@ export default function GameAnalyzerPage() {
       setAiInsightsError(null);
       setAiInsightsLoading(false);
       setAiInsightsRequesting(false);
+      setReviewMode(false);
+      setReviewCurrentPly(null);
       aiHydratedKey.current = null;
       trackEvent("analysis.light.start", {
         properties: {
@@ -1274,6 +1643,9 @@ export default function GameAnalyzerPage() {
     [depth, multiPv, site, username, gameId]
   );
 
+  const lessonConsentUrl = `${API_BASE_URL}/api/v1/auth/lesson-consent`;
+  const lessonConsentUserKey = session?.userId || session?.user?.email || null;
+
   const getSignupReturnPath = useCallback((): string => {
     if (typeof window !== "undefined") {
       return `${window.location.pathname}${window.location.search}`;
@@ -1288,8 +1660,10 @@ export default function GameAnalyzerPage() {
       setAnalysisStatus("completed");
 
       // Rebuild tree with analysis data
-      const tree = buildTreeFromAnalysis(data.analysis.moves);
+      const tree = buildTreeFromAnalysis(data.analysis.moves, undefined, game?.opening_ply_count);
       setMoveTree(tree);
+      setReviewMode(false);
+      setReviewCurrentPly(null);
 
       // Log success
       const elapsedSeconds = analysisStartTime.current 
@@ -1299,7 +1673,7 @@ export default function GameAnalyzerPage() {
     }
     setAnalyzing(false);
     analysisStartTime.current = null;
-  }, []);
+  }, [game?.opening_ply_count]);
 
   // Hydrate cached in-depth analysis on page load (does not start a new job)
   useEffect(() => {
@@ -1380,6 +1754,8 @@ export default function GameAnalyzerPage() {
     const preserveCompletedState = force && analysisStatus === "completed";
     setAnalyzing(true);
     setError(null);
+    setReviewMode(false);
+    setReviewCurrentPly(null);
     if (!preserveCompletedState) {
       setSingleInsights(null);
       setSingleInsightsStatus("idle");
@@ -1512,6 +1888,96 @@ export default function GameAnalyzerPage() {
     [site, username, gameId, depth, multiPv]
   );
 
+  const hydrateLessonConsent = useCallback(async () => {
+    if (!isAuthenticated) return;
+    setLessonConsentLoading(true);
+    setLessonConsentError(null);
+    try {
+      const res = await fetch(lessonConsentUrl, {
+        headers: withTrackingHeaders(authHeaders),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to load lesson consent status");
+      }
+      const data: LessonConsentResponse = await res.json();
+      setLessonConsentState(data);
+      lessonConsentFetchedForUser.current = lessonConsentUserKey;
+    } catch {
+      setLessonConsentError("Unable to load lesson-email preference right now.");
+      setLessonConsentState(null);
+      lessonConsentFetchedForUser.current = null;
+    } finally {
+      setLessonConsentLoading(false);
+    }
+  }, [authHeaders, isAuthenticated, lessonConsentUrl, lessonConsentUserKey]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (activeAnalysisTab !== "ai") return;
+    if (!lessonConsentUserKey) return;
+    if (lessonConsentFetchedForUser.current === lessonConsentUserKey) return;
+    void hydrateLessonConsent();
+  }, [
+    activeAnalysisTab,
+    hydrateLessonConsent,
+    isAuthenticated,
+    lessonConsentUserKey,
+  ]);
+
+  const saveLessonConsentDecision = useCallback(async (decision: LessonConsentDecision) => {
+    if (!isAuthenticated) return;
+    setLessonConsentSaving(true);
+    setLessonConsentError(null);
+    try {
+      const res = await fetch(lessonConsentUrl, {
+        method: "POST",
+        headers: withTrackingHeaders({
+          "Content-Type": "application/json",
+          ...authHeaders,
+        } as Record<string, string>),
+        body: JSON.stringify({
+          decision,
+          source: "game_ai_summary",
+          site,
+          site_game_id: gameId,
+          analysis_depth: depth,
+          analysis_multipv: multiPv,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to save lesson consent decision");
+      }
+      const data: LessonConsentResponse = await res.json();
+      setLessonConsentState(data);
+      if (decision === "declined") {
+        setDismissedNonce(lastGeneratedInsightNonce);
+      } else {
+        setDismissedNonce(null);
+      }
+      trackEvent("feature.usage", {
+        properties: {
+          feature: "lesson_email_consent",
+          decision,
+          source: "game_ai_summary",
+          channel: "email_lessons",
+        },
+      });
+    } catch {
+      setLessonConsentError("Could not save your preference. Please try again.");
+    } finally {
+      setLessonConsentSaving(false);
+    }
+  }, [
+    authHeaders,
+    depth,
+    gameId,
+    isAuthenticated,
+    lastGeneratedInsightNonce,
+    lessonConsentUrl,
+    multiPv,
+    site,
+  ]);
+
   const hydrateAiInsights = useCallback(async () => {
     if (!isAuthenticated || analysisStatus !== "completed") {
       return;
@@ -1632,6 +2098,9 @@ export default function GameAnalyzerPage() {
         setSingleInsights(data.insights);
         setSingleInsightsStatus("ready");
         setAiInsightsError(null);
+        setLastGeneratedInsightNonce((prev) => prev + 1);
+        setDismissedNonce(null);
+        setLessonConsentError(null);
         aiHydratedKey.current = aiInsightsCacheKey;
         return;
       }
@@ -1686,8 +2155,27 @@ export default function GameAnalyzerPage() {
     setAiInsightsError(null);
     setAiInsightsLoading(false);
     setAiInsightsRequesting(false);
+    setLessonConsentLoading(false);
+    setLessonConsentSaving(false);
+    setLessonConsentState(null);
+    setLessonConsentError(null);
+    setLastGeneratedInsightNonce(0);
+    setDismissedNonce(null);
     aiHydratedKey.current = null;
+    lessonConsentFetchedForUser.current = null;
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (!lessonConsentUserKey) return;
+    if (lessonConsentFetchedForUser.current && lessonConsentFetchedForUser.current !== lessonConsentUserKey) {
+      lessonConsentFetchedForUser.current = null;
+      setLessonConsentState(null);
+      setLessonConsentError(null);
+      setLastGeneratedInsightNonce(0);
+      setDismissedNonce(null);
+    }
+  }, [isAuthenticated, lessonConsentUserKey]);
 
   // Start/stop polling based on status
   useEffect(() => {
@@ -1788,16 +2276,18 @@ export default function GameAnalyzerPage() {
 
                 {/* Board */}
                 <div className="flex-1">
-                  <AnalysisBoard
-                    fen={currentFen}
-                    orientation={orientation}
-                    onMove={handleUserMove}
-                    bestMove={showArrows ? bestMove : null}
-                    lastMove={lastMove}
-                    showArrows={showArrows}
-                    showCoordinates={showCoordinates}
-                    boardWidth={600}
-                  />
+                  <div className="relative inline-block">
+                    <AnalysisBoard
+                      fen={currentFen}
+                      orientation={orientation}
+                      onMove={reviewMode ? undefined : handleUserMove}
+                      bestMove={showArrows ? bestMove : null}
+                      lastMove={lastMove}
+                      showArrows={showArrows}
+                      showCoordinates={showCoordinates}
+                      boardWidth={600}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1851,12 +2341,13 @@ export default function GameAnalyzerPage() {
             <div className="zen-surface p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <Link
-                    href={`/dashboard?user=${encodeURIComponent(username)}`}
+                  <button
+                    type="button"
+                    onClick={() => router.back()}
                     className="inline-flex items-center gap-1 rounded-lg border border-[color:var(--zen-border)] px-2.5 py-1 text-xs text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition"
                   >
-                    ← Openings
-                  </Link>
+                    ← Back
+                  </button>
                   {userAccuracy !== null && (
                     <div className="inline-flex items-center gap-1 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] px-2.5 py-1">
                       <span className="text-xs font-semibold text-[color:var(--zen-text)]">{userAccuracy}%</span>
@@ -1864,10 +2355,7 @@ export default function GameAnalyzerPage() {
                     </div>
                   )}
                 </div>
-	                <p className="text-xs text-[color:var(--zen-muted)]">
-	                  {formatDate(game?.played_at ?? null)}
-	                </p>
-	              </div>
+              </div>
 
               <div
                 role="tablist"
@@ -1956,10 +2444,24 @@ export default function GameAnalyzerPage() {
                         Request in-depth analysis
                       </button>
                       <p className="text-xs text-[color:var(--zen-muted)] mt-2">
-                        Free for everyone. Runs backend deep analysis with full engine output.
+                        Runs backend deep analysis with full engine output.
                       </p>
                     </div>
                   )}
+
+                  {/* {!analyzing && analysisStatus === "completed" && (
+                    <div className="text-center py-4">
+                      <button
+                        onClick={() => runAnalysis(true)}
+                        className="zen-pill px-5 py-2.5 text-xs font-semibold uppercase tracking-wide text-[color:var(--zen-text)] border border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)] hover:text-[color:var(--zen-accent)] transition"
+                      >
+                        Force re-run in-depth analysis
+                      </button>
+                      <p className="text-xs text-[color:var(--zen-muted)] mt-2">
+                        Bypasses cached deep analysis and starts a fresh backend run.
+                      </p>
+                    </div>
+                  )} */}
 
                   {analyzing && (
                     <div className="text-center py-6">
@@ -1975,47 +2477,107 @@ export default function GameAnalyzerPage() {
                     </div>
                   )}
 
-                  {currentNode && (
-                    <EngineLines
-                      lines={displayEngineLines}
-                      depth={displayEngineDepth}
-                      isLoading={!currentNode.eval && isLocalEvaluating}
-                    />
+                  {analysisStatus === "completed" && reviewStats && !reviewMode && (
+                    <div className="zen-surface-flat p-3.5 mb-4 border border-[color:var(--zen-border)]">
+                      <div className="flex flex-wrap items-end justify-between gap-3 mb-3">
+                        <div>
+                          <h4 className="text-sm font-semibold text-[color:var(--zen-text)]">Game Review</h4>
+                          <p className="text-xs text-[color:var(--zen-muted)]">
+                            Review labels and accuracy by side.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-[color:var(--zen-border)] overflow-hidden">
+                        <div className="grid grid-cols-[1fr_8rem_8rem] gap-3 bg-[color:var(--zen-surface-2)] px-3 py-2 text-[11px] uppercase tracking-wide text-[color:var(--zen-muted)]">
+                          <span>Category</span>
+                          <span className="text-center">You</span>
+                          <span className="text-center">{opponentDisplayName}</span>
+                        </div>
+                        <div className="divide-y divide-[color:var(--zen-border)]">
+                          <div className="grid grid-cols-[1fr_8rem_8rem] items-center gap-3 px-3 py-2">
+                            <span className="text-sm font-medium text-[color:var(--zen-muted)]">Player</span>
+                            <span className="text-center text-sm font-semibold text-[color:var(--zen-text)]">
+                              You
+                            </span>
+                            <span className="text-center text-sm font-semibold text-[color:var(--zen-text)] truncate">
+                              {opponentDisplayName}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-[1fr_8rem_8rem] items-center gap-3 px-3 py-2">
+                            <span className="text-sm font-medium text-[color:var(--zen-muted)]">Accuracy</span>
+                            <span className="text-center text-sm font-semibold text-[color:var(--zen-text)]">
+                              {userAccuracy ?? "-"}
+                            </span>
+                            <span className="text-center text-sm font-semibold text-[color:var(--zen-text)]">
+                              {analysisData?.summary
+                                ? (game?.color === "white"
+                                  ? analysisData.summary.accuracy_black
+                                  : analysisData.summary.accuracy_white)
+                                : "-"}
+                            </span>
+                          </div>
+                          {REVIEW_SUMMARY_ROW_ORDER.map((category) => (
+                            <div
+                              key={`quality-row-${category}`}
+                              className="grid grid-cols-[1fr_8rem_8rem] items-center gap-3 px-3 py-2"
+                            >
+                              <div className="inline-flex items-center gap-2">
+                                <span
+                                  className={`inline-flex min-w-[3rem] justify-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${REVIEW_BADGE_TONES[category]}`}
+                                >
+                                  {REVIEW_SYMBOLS[category]}
+                                </span>
+                                <span className={`text-sm font-medium ${REVIEW_ROW_TONES[category]}`}>
+                                  {REVIEW_LABELS[category]}
+                                </span>
+                              </div>
+                              <span className={`text-center text-sm font-semibold ${REVIEW_ROW_TONES[category]}`}>
+                                {reviewStats.user[category]}
+                              </span>
+                              <span className={`text-center text-sm font-semibold ${REVIEW_ROW_TONES[category]}`}>
+                                {reviewStats.opponent[category]}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="border-t border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] px-3 py-3">
+                          <button
+                            type="button"
+                            onClick={handleStartReview}
+                            className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-emerald-500"
+                          >
+                            Start Review
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   )}
 
-                  {localEngineError && (
-                    <p className="text-xs text-[color:var(--zen-muted)] mt-3">
-                      Local engine: {localEngineError}
-                    </p>
-                  )}
-                </div>
-
-                <div className="zen-surface-flat p-4">
-                  <h3 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">Moves</h3>
-                  <MoveList
-                    tree={moveTree}
-                    currentId={moveTree.currentId}
-                    onSelectMove={handleSelectMove}
-                    maxHeight={280}
-                  />
-                </div>
-
-                {currentNode && currentNode.san && (
+                {reviewMode && currentNode && currentNode.san && (
                   <div className="zen-surface-flat p-4">
+                    <div className="mb-3">
+                      {currentMoveQuality ? (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide ${currentMoveQuality.tone}`}
+                        >
+                          <span>{currentMoveQuality.symbol || "•"}</span>
+                          <span>{currentMoveQuality.label}</span>
+                        </span>
+                      ) : (
+                        <span className="text-xs uppercase tracking-wide text-[color:var(--zen-muted)]">
+                          Current move
+                        </span>
+                      )}
+                    </div>
                     <div className="text-2xl font-mono font-semibold text-[color:var(--zen-text)]">
                       {currentNode.san}
                     </div>
-                    {currentNode.cpLoss !== undefined && currentNode.cpLoss > 0 && (
-                      <p className="text-sm text-[color:var(--zen-danger)] mt-1">
-                        -{currentNode.cpLoss / 100} centipawns
-                      </p>
-                    )}
                     {currentNode.bestMove && currentNode.bestMove.san !== currentNode.san && (
                       <p className="text-sm text-[color:var(--zen-success)] mt-1">
                         Best: <span className="font-mono">{currentNode.bestMove.san}</span>
                       </p>
                     )}
-                    {currentTactical && (
+                    {currentTactical && currentNode.classification === "blunder" && (
                       <div className={`zen-surface-flat mt-3 p-3 border ${getTacticalTone(currentTactical.tactic_type).border}`}>
                         <div className="flex items-center justify-between gap-2 mb-2">
                           <span
@@ -2024,11 +2586,6 @@ export default function GameAnalyzerPage() {
                             <span>{getTacticalIcon(currentTactical.tactic_type)}</span>
                             <span>{getTacticalLabel(currentTactical.tactic_type)}</span>
                           </span>
-                          {typeof currentTactical.severity_score === "number" && (
-                            <span className="text-xs text-[color:var(--zen-muted)]">
-                              Severity {(currentTactical.severity_score * 100).toFixed(0)}
-                            </span>
-                          )}
                         </div>
                         <p className="text-sm text-[color:var(--zen-text)] leading-6">
                           {buildTacticalSummary(currentTactical)}
@@ -2040,6 +2597,50 @@ export default function GameAnalyzerPage() {
                         )}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {localEngineError && (
+                  <p className="text-xs text-[color:var(--zen-muted)] mt-3">
+                    Local engine: {localEngineError}
+                  </p>
+                )}
+              </div>
+
+                {reviewMode && (
+                  <div className="zen-surface-flat p-4">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h3 className="text-sm font-semibold text-[color:var(--zen-text)]">
+                        Review Moves
+                      </h3>
+                    </div>
+                    <MoveList
+                      tree={moveTree}
+                      currentId={moveTree.currentId}
+                      onSelectMove={handleSelectMove}
+                      maxHeight={280}
+                    />
+                    <div className="mt-3 border-t border-[color:var(--zen-border)] pt-3">
+                      <button
+                        type="button"
+                        onClick={handleExitReview}
+                        className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-emerald-500"
+                      >
+                        End Review
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!reviewMode && analysisStatus !== "completed" && (
+                  <div className="zen-surface-flat p-4">
+                    <h3 className="text-sm font-semibold text-[color:var(--zen-text)] mb-3">Moves</h3>
+                    <MoveList
+                      tree={moveTree}
+                      currentId={moveTree.currentId}
+                      onSelectMove={handleSelectMove}
+                      maxHeight={280}
+                    />
                   </div>
                 )}
 
@@ -2104,7 +2705,7 @@ export default function GameAnalyzerPage() {
                             <path d="M12 8h.01" />
                           </svg>
                           <p className="text-sm font-medium">
-                            Sign up to unlock AI insights for this game.
+                            Unlock AI insights for this game.
                           </p>
                         </div>
                       </div>
@@ -2113,7 +2714,7 @@ export default function GameAnalyzerPage() {
                         onClick={handleRequestAiInsights}
                         className="inline-flex items-center justify-center rounded-lg border border-[color:var(--zen-accent)] bg-[color:var(--zen-accent-2)] px-4 py-2 text-sm font-semibold text-[color:var(--zen-text)] transition hover:bg-[color:var(--zen-accent)] hover:text-white"
                       >
-                        Sign up for AI insights
+                        Sign up
                       </button>
                     </div>
                   )}
@@ -2242,7 +2843,7 @@ export default function GameAnalyzerPage() {
 
                       <div className="absolute inset-x-4 bottom-4 top-14 flex flex-col items-center justify-center gap-3 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)]/85 backdrop-blur-sm p-4">
                         <p className="text-sm text-[color:var(--zen-text)] text-center">
-                          Sign up to unlock AI insights for this game.
+                          Unlock AI insights for this game.
                         </p>
                         <p className="text-xs text-[color:var(--zen-muted)] text-center">
                           Full personalized insights unlock after sign up.
@@ -2252,7 +2853,7 @@ export default function GameAnalyzerPage() {
                           onClick={handleAnonymousMockSignup}
                           className="inline-flex items-center justify-center rounded-lg border border-[color:var(--zen-accent)] bg-[color:var(--zen-accent-2)] px-4 py-2 text-sm font-semibold text-[color:var(--zen-text)] transition hover:bg-[color:var(--zen-accent)] hover:text-white"
                         >
-                          Sign up to see AI insights
+                          Sign up
                         </button>
                       </div>
                     </div>
@@ -2332,9 +2933,11 @@ export default function GameAnalyzerPage() {
                                   </span>
                                 </div>
 
-                                <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
-                                  {singleInsights.narration.one_liner}
-                                </p>
+                                {shouldShowResultSummaryOneLiner && (
+                                  <p className="text-[15px] leading-7 text-[color:var(--zen-text)]">
+                                    {singleInsights.narration.one_liner}
+                                  </p>
+                                )}
                                 <div className="flex flex-wrap gap-2">
                                   <span className="text-[11px] px-2 py-1 border border-[color:var(--zen-border)] text-[color:var(--zen-muted)] bg-white/5">
                                     Decisive phase: {singleInsights.narration.labels.decisive_phase}
@@ -2437,6 +3040,41 @@ export default function GameAnalyzerPage() {
                             </p>
                           </div>
                         )}
+                      </div>
+                    )}
+
+                    {shouldShowLessonConsentCard && (
+                      <div className="zen-surface-flat p-4 md:p-5 border border-[color:var(--zen-border)] space-y-3">
+                        <h3 className="text-base font-semibold text-[color:var(--zen-text)]">
+                          Get tailored chess lessons by email
+                        </h3>
+                        <p className="text-sm text-[color:var(--zen-muted)]">
+                          Based on your game-analysis gaps, we can send focused lessons to help you
+                          improve.
+                        </p>
+                        {lessonConsentError && (
+                          <p className="text-sm text-[color:var(--zen-danger)]">
+                            {lessonConsentError}
+                          </p>
+                        )}
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void saveLessonConsentDecision("consented")}
+                            disabled={lessonConsentSaving}
+                            className="zen-pill px-4 py-2 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {lessonConsentSaving ? "Saving..." : "Yes, send lessons"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void saveLessonConsentDecision("declined")}
+                            disabled={lessonConsentSaving}
+                            className="rounded-lg border border-[color:var(--zen-border)] px-4 py-2 text-sm font-medium text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            No thanks
+                          </button>
+                        </div>
                       </div>
                     )}
                   </>
