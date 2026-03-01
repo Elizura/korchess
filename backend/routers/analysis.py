@@ -182,6 +182,7 @@ async def run_analysis_background(
     username: str,
     game_id: str,
     pgn: str,
+    opening_ply_count: int | None,
     depth: int,
     multipv: int,
     site: str,
@@ -197,7 +198,13 @@ async def run_analysis_background(
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: run_full_analysis(pgn, depth, multipv, FULL_ANALYSIS_TIME_MS)
+            lambda: run_full_analysis(
+                pgn,
+                depth,
+                multipv,
+                FULL_ANALYSIS_TIME_MS,
+                opening_ply_count=opening_ply_count,
+            )
         )
         full_analysis = {
             "moves": result["moves"],
@@ -704,6 +711,7 @@ async def run_full_analysis_endpoint(
             username,
             game_id,
             game["pgn"],
+            game.get("opening_ply_count"),
             depth,
             multipv,
             site,
