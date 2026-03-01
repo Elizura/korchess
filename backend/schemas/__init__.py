@@ -1,6 +1,6 @@
 """Pydantic request/response models for the API."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -103,6 +103,21 @@ class GameResponse(BaseModel):
     lichess_url: str
     eco: str | None
     opening_name: str | None
+    opening_ply_count: int | None = None
+
+
+ReviewTag = Literal[
+    "book",
+    "brilliant",
+    "great",
+    "best",
+    "excellent",
+    "good",
+    "inaccuracy",
+    "mistake",
+    "miss",
+    "blunder",
+]
 
 
 class AnalysisResult(BaseModel):
@@ -147,6 +162,7 @@ class MoveEvaluation(BaseModel):
     time_spent_seconds: int | None = None
     time_source: str | None = None
     tactical: dict | None = None
+    review_tag: ReviewTag | None = None
 
 
 class FullAnalysisSummary(BaseModel):
@@ -168,6 +184,11 @@ class FullAnalysisMeta(BaseModel):
     time_per_position_ms: int
     total_time_ms: int
     positions_analyzed: int
+    unique_positions_analyzed: int | None = None
+    position_workers: int | None = None
+    review_counts_white: dict[str, int] | None = None
+    review_counts_black: dict[str, int] | None = None
+    review_labels_version: str | None = None
 
 
 class FullAnalysisResult(BaseModel):
@@ -191,6 +212,30 @@ class AIInsightsResponse(BaseModel):
     insights: dict | None = None
     created_at: str | None = None
     detail: str | None = None
+
+
+LessonConsentDecision = Literal["consented", "declined"]
+LessonConsentState = Literal["consented", "declined", "unknown"]
+LessonConsentSource = Literal["game_ai_summary"]
+LessonConsentChannel = Literal["email_lessons"]
+
+
+class LessonConsentRequest(BaseModel):
+    """Request to record a lesson-consent decision."""
+    decision: LessonConsentDecision
+    source: LessonConsentSource
+    site: Literal["lichess", "chesscom"] | None = None
+    site_game_id: str | None = None
+    analysis_depth: int | None = Field(default=None, ge=1, le=40)
+    analysis_multipv: int | None = Field(default=None, ge=1, le=8)
+
+
+class LessonConsentResponse(BaseModel):
+    """Current lesson-consent status for a user."""
+    channel: LessonConsentChannel
+    state: LessonConsentState
+    consented: bool
+    last_decision_at: str | None = None
 
 
 class SingleGameInsightsResponse(BaseModel):
