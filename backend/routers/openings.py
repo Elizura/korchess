@@ -35,6 +35,7 @@ async def get_openings_report(
     """
     Get aggregated opening statistics for a user.
     Returns top N openings by games played (default 10).
+    Returns an empty list when no games match the selected filters.
     Supports filtering by color, time control, and site.
     Site can be 'lichess', 'chesscom', or 'all'.
     """
@@ -46,12 +47,6 @@ async def get_openings_report(
 
     user_id = get_public_user_id_for_username(conn, username)
     stats = get_openings_stats(conn, user_id, username, color, time_class, site, limit)
-
-    if not stats:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No games found for user '{username}' with the specified filters."
-        )
 
     return [OpeningStats(**s) for s in stats]
 
