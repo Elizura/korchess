@@ -4,9 +4,8 @@ import React, { useMemo, useRef, useEffect } from "react";
 import {
   MoveTree,
   MoveNode,
-  MoveClassification,
-  getClassificationColor,
-  getClassificationSymbol,
+  ReviewTag,
+  toReviewTag,
   plyToMoveNumber,
 } from "@/lib/moveTree";
 
@@ -18,22 +17,60 @@ interface MoveListProps {
   maxHeight?: number;
 }
 
-// Classification background colors (light tint)
-function getClassificationBg(classification?: MoveClassification): string {
-  switch (classification) {
+function getReviewTag(node: MoveNode): ReviewTag | undefined {
+  return node.reviewTag ?? toReviewTag(undefined, node.classification, node.cpLoss);
+}
+
+function getReviewTagBg(reviewTag?: ReviewTag): string {
+  switch (reviewTag) {
+    case "book":
+      return "bg-cyan-500/18";
+    case "brilliant":
+      return "bg-teal-500/15";
+    case "great":
+      return "bg-sky-500/15";
     case "best":
     case "excellent":
       return "bg-emerald-500/15";
     case "good":
-      return "bg-emerald-500/10";
+      return "bg-lime-500/12";
     case "inaccuracy":
-      return "bg-yellow-500/15";
+      return "bg-amber-500/26";
     case "mistake":
-      return "bg-orange-500/15";
+      return "bg-orange-600/30";
+    case "miss":
+      return "bg-red-500/16";
     case "blunder":
-      return "bg-red-500/15";
+      return "bg-red-600/28";
     default:
       return "";
+  }
+}
+
+function getReviewTagBadgeClass(reviewTag?: ReviewTag): string {
+  switch (reviewTag) {
+    case "book":
+      return "border-cyan-300/55 bg-cyan-500/20 text-cyan-100";
+    case "brilliant":
+      return "border-teal-300/45 bg-teal-500/20 text-teal-100";
+    case "great":
+      return "border-sky-300/45 bg-sky-500/22 text-sky-100";
+    case "best":
+      return "border-emerald-300/45 bg-emerald-500/20 text-emerald-100";
+    case "excellent":
+      return "border-green-300/40 bg-green-500/18 text-green-100";
+    case "good":
+      return "border-lime-300/40 bg-lime-500/16 text-lime-100";
+    case "inaccuracy":
+      return "border-amber-300/60 bg-amber-500/26 text-amber-50";
+    case "mistake":
+      return "border-orange-400/65 bg-orange-600/30 text-orange-50";
+    case "miss":
+      return "border-rose-300/45 bg-rose-500/20 text-rose-100";
+    case "blunder":
+      return "border-red-500/70 bg-red-600/35 text-red-50";
+    default:
+      return "border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] text-[color:var(--zen-muted)]";
   }
 }
 
@@ -46,11 +83,10 @@ interface MoveButtonProps {
 
 function MoveButton({ node, isSelected, onClick, showMoveNumber }: MoveButtonProps) {
   const { moveNumber, isWhite } = plyToMoveNumber(node.ply);
-  const annotation = getClassificationSymbol(node.classification);
-  const colorClass = getClassificationColor(node.classification);
+  const reviewTag = getReviewTag(node);
   const bgClass = isSelected
     ? "bg-[color:var(--zen-accent)] text-white"
-    : getClassificationBg(node.classification);
+    : getReviewTagBg(reviewTag);
 
   return (
     <button
@@ -67,10 +103,7 @@ function MoveButton({ node, isSelected, onClick, showMoveNumber }: MoveButtonPro
           {moveNumber}.{!isWhite && ".."}
         </span>
       )}
-      <span className={isSelected ? "" : `text-[color:var(--zen-text)] ${colorClass}`}>{node.san}</span>
-      {annotation && (
-        <span className={`ml-0.5 ${isSelected ? "" : `text-[color:var(--zen-text)] ${colorClass}`}`}>{annotation}</span>
-      )}
+      <span className={isSelected ? "text-white" : "text-[color:var(--zen-text)]"}>{node.san}</span>
     </button>
   );
 }
@@ -243,14 +276,14 @@ export default function MoveList({
     >
       <div className="space-y-0.5">
         {movePairs.map((pair) => (
-          <div key={pair.moveNumber} className="flex items-start">
+          <div key={pair.moveNumber} className="flex items-start gap-x-1">
             {/* Move number */}
             <div className="w-8 flex-shrink-0 text-[color:var(--zen-muted)] text-right pr-2">
               {pair.moveNumber}.
             </div>
             
             {/* White move */}
-            <div className="w-24 flex-shrink-0" data-selected={pair.white?.id === currentId}>
+            <div className="w-[7.5rem] flex-shrink-0" data-selected={pair.white?.id === currentId}>
               {pair.white && (
                 <MoveButton
                   node={pair.white}
@@ -261,7 +294,7 @@ export default function MoveList({
             </div>
             
             {/* Black move */}
-            <div className="w-24 flex-shrink-0" data-selected={pair.black?.id === currentId}>
+            <div className="w-[7.5rem] flex-shrink-0" data-selected={pair.black?.id === currentId}>
               {pair.black && (
                 <MoveButton
                   node={pair.black}

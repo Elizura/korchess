@@ -68,6 +68,18 @@ export type MoveClassification =
   | 'mistake' 
   | 'blunder';
 
+export type ReviewTag =
+  | "book"
+  | "brilliant"
+  | "great"
+  | "best"
+  | "excellent"
+  | "good"
+  | "inaccuracy"
+  | "mistake"
+  | "miss"
+  | "blunder";
+
 export interface MoveNode {
   id: string;                        // Unique ID (e.g., "root", "0", "0-1", "0-1-0")
   fen: string;                       // Position FEN
@@ -80,6 +92,7 @@ export interface MoveNode {
   
   // Classification
   classification?: MoveClassification;
+  reviewTag?: ReviewTag;
   cpLoss?: number;                   // Centipawn loss vs best move
   tactical?: TacticalAnnotation;
   
@@ -150,7 +163,8 @@ export function addMove(
   classification?: MoveClassification,
   cpLoss?: number,
   bestMove?: { uci: string; san: string },
-  tactical?: TacticalAnnotation
+  tactical?: TacticalAnnotation,
+  reviewTag?: ReviewTag
 ): MoveTree {
   const currentNode = tree.nodes.get(tree.currentId);
   if (!currentNode) return tree;
@@ -179,6 +193,7 @@ export function addMove(
     ply: currentNode.ply + 1,
     eval: evalData,
     classification,
+    reviewTag,
     cpLoss,
     tactical,
     bestMove,
@@ -434,11 +449,13 @@ export function buildTreeFromAnalysis(
     best_move_san?: string | null;
     pv?: string[];
     classification?: string | null;
+    review_tag?: string | null;
     cp_loss?: number | null;
     multi_pv?: Array<{ cp?: number; mate?: number; depth?: number; pv: string[] }>;
     tactical?: TacticalAnnotation | null;
   }>,
-  startFen?: string
+  startFen?: string,
+  openingPlyCount?: number | null,
 ): MoveTree {
   // Use first move's fen_before as start position if available
   const initialFen = startFen || (moves.length > 0 ? moves[0].fen_before : undefined);
@@ -478,6 +495,15 @@ export function buildTreeFromAnalysis(
       uci: move.best_move_uci,
       san: move.best_move_san,
     } : undefined;
+    const fallbackBook =
+      typeof openingPlyCount === "number" &&
+      openingPlyCount > 0 &&
+      (move.ply + 1) <= openingPlyCount
+        ? "book"
+        : undefined;
+    const reviewTag =
+      fallbackBook ??
+      toReviewTag(move.review_tag, move.classification, move.cp_loss ?? undefined);
     
     tree = addMove(
       tree,
@@ -488,7 +514,8 @@ export function buildTreeFromAnalysis(
       move.classification as MoveClassification | undefined,
       move.cp_loss ?? undefined,
       bestMove,
-      move.tactical ?? undefined
+      move.tactical ?? undefined,
+      reviewTag
     );
   }
   
@@ -569,4 +596,49 @@ export function getClassificationSymbol(classification?: MoveClassification): st
     default:
       return '';
   }
+}
+
+const REVIEW_TAG_SET = new Set<ReviewTag>([
+  "book",
+  "brilliant",
+  "great",
+  "best",
+  "excellent",
+  "good",
+  "inaccuracy",
+  "mistake",
+  "miss",
+  "blunder",
+]);
+
+export function toReviewTag(
+  reviewTag?: string | null,
+  classification?: string | null,
+  cpLoss?: number | null,
+): ReviewTag | undefined {
+  if (reviewTag) {
+    const normalized = reviewTag.toLowerCase();
+    if (REVIEW_TAG_SET.has(normalized as ReviewTag)) {
+      return normalized as ReviewTag;
+    }
+  }
+
+  if (classification) {
+    const normalized = classification.toLowerCase();
+    if (REVIEW_TAG_SET.has(normalized as ReviewTag)) {
+      return normalized as ReviewTag;
+    }
+  }
+
+  if (typeof cpLoss === "number" && Number.isFinite(cpLoss)) {
+    const loss = Math.abs(cpLoss);
+    if (loss === 0) return "best";
+    if (loss < 10) return "excellent";
+    if (loss < 30) return "good";
+    if (loss < 100) return "inaccuracy";
+    if (loss < 300) return "mistake";
+    return "blunder";
+  }
+
+  return undefined;
 }
