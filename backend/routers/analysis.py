@@ -236,7 +236,7 @@ async def run_analysis_background(
                     "site": site,
                     "depth": depth,
                     "multipv": multipv,
-                    "username_hash": username_hash,
+                    "username": username_hash,
                     "total_time_ms": full_analysis["meta"].get("total_time_ms"),
                     "positions_analyzed": full_analysis["meta"].get("positions_analyzed"),
                     "time_per_position_ms": full_analysis["meta"].get("time_per_position_ms"),
@@ -264,7 +264,7 @@ async def run_analysis_background(
                     "site": site,
                     "depth": depth,
                     "multipv": multipv,
-                    "username_hash": username_hash,
+                    "username": username_hash,
                     "reason": str(e),
                 },
             )
@@ -331,7 +331,7 @@ async def run_analysis_endpoint(
         request=request,
         properties={
             "site": site,
-            "username_hash": username_hash,
+            "username": username_hash,
         },
     )
 
@@ -345,7 +345,7 @@ async def run_analysis_endpoint(
             request=request,
             properties={
                 "site": site,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "cached": True,
             },
         )
@@ -365,7 +365,7 @@ async def run_analysis_endpoint(
             request=request,
             properties={
                 "site": site,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": "Game not found",
             },
         )
@@ -380,7 +380,7 @@ async def run_analysis_endpoint(
             request=request,
             properties={
                 "site": site,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": "Game has no PGN",
             },
         )
@@ -397,7 +397,7 @@ async def run_analysis_endpoint(
             request=request,
             properties={
                 "site": site,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": f"Analysis failed: {str(e)}",
             },
         )
@@ -419,7 +419,7 @@ async def run_analysis_endpoint(
         request=request,
         properties={
             "site": site,
-            "username_hash": username_hash,
+            "username": username_hash,
             "cached": False,
         },
     )
@@ -583,7 +583,7 @@ async def run_full_analysis_endpoint(
             "depth": depth,
             "multipv": multipv,
             "force": force,
-            "username_hash": username_hash,
+            "username": username_hash,
         },
     )
 
@@ -603,7 +603,7 @@ async def run_full_analysis_endpoint(
                     "depth": depth,
                     "multipv": multipv,
                     "force": force,
-                    "username_hash": username_hash,
+                    "username": username_hash,
                     "cached": True,
                 },
             )
@@ -633,7 +633,7 @@ async def run_full_analysis_endpoint(
                     "site": site,
                     "depth": depth,
                     "multipv": multipv,
-                    "username_hash": username_hash,
+                    "username": username_hash,
                     "reason": "Server busy",
                 },
             )
@@ -660,7 +660,7 @@ async def run_full_analysis_endpoint(
                 "site": site,
                 "depth": depth,
                 "multipv": multipv,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": "Game not found",
             },
         )
@@ -679,7 +679,7 @@ async def run_full_analysis_endpoint(
                 "site": site,
                 "depth": depth,
                 "multipv": multipv,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": "Game has no PGN",
             },
         )
@@ -699,7 +699,7 @@ async def run_full_analysis_endpoint(
             "depth": depth,
             "multipv": multipv,
             "force": force,
-            "username_hash": username_hash,
+            "username": username_hash,
         },
     )
     conn.commit()
@@ -822,7 +822,7 @@ async def request_ai_insights_endpoint(
             "multipv": multipv,
             "force": force,
             "quota_unlimited_email": unlimited_ai_quota,
-            "username_hash": username_hash,
+            "username": username_hash,
         },
     )
 
@@ -862,7 +862,7 @@ async def request_ai_insights_endpoint(
                 "site": site,
                 "depth": depth,
                 "multipv": multipv,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": "Deep analysis missing",
             },
         )
@@ -890,7 +890,7 @@ async def request_ai_insights_endpoint(
                     "site": site,
                     "depth": depth,
                     "multipv": multipv,
-                    "username_hash": username_hash,
+                    "username": username_hash,
                     "reason": "Daily quota exceeded",
                 },
             )
@@ -916,7 +916,7 @@ async def request_ai_insights_endpoint(
                 "site": site,
                 "depth": depth,
                 "multipv": multipv,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": "Game not found",
             },
         )
@@ -965,7 +965,7 @@ async def request_ai_insights_endpoint(
                 "site": site,
                 "depth": depth,
                 "multipv": multipv,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": f"Gemini error: {err}",
             },
         )
@@ -1001,7 +1001,7 @@ async def request_ai_insights_endpoint(
                 "site": site,
                 "depth": depth,
                 "multipv": multipv,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "reason": "Gemini unavailable",
             },
         )
@@ -1041,7 +1041,7 @@ async def request_ai_insights_endpoint(
             "site": site,
             "depth": depth,
             "multipv": multipv,
-            "username_hash": username_hash,
+            "username": username_hash,
         },
     )
     conn.commit()

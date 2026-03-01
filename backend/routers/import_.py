@@ -66,7 +66,7 @@ async def _maybe_return_existing_import(
         properties={
             "site": site,
             "max_games": max_games,
-            "username_hash": username_hash,
+            "username": username_hash,
             "imported": existing_games,
             "skipped": 0,
             "cache_hit": True,
@@ -115,7 +115,7 @@ async def import_lichess_games(
         properties={
             "site": "lichess",
             "max_games": max_games,
-            "username_hash": username_hash,
+            "username": username_hash,
             "is_authenticated": bool(current_user),
         },
     )
@@ -146,7 +146,7 @@ async def import_lichess_games(
             properties={
                 "site": "lichess",
                 "max_games": max_games,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "status_code": e.status_code,
                 "reason": e.message,
             },
@@ -168,7 +168,7 @@ async def import_lichess_games(
             properties={
                 "site": "lichess",
                 "max_games": max_games,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "status_code": 404,
                 "reason": "No rated games found",
             },
@@ -191,7 +191,7 @@ async def import_lichess_games(
             properties={
                 "site": "lichess",
                 "max_games": max_games,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "status_code": 404,
                 "reason": "No games parsed from PGN",
             },
@@ -234,7 +234,7 @@ async def import_lichess_games(
         properties={
             "site": "lichess",
             "max_games": max_games,
-            "username_hash": username_hash,
+            "username": username_hash,
             "imported": imported,
             "skipped": skipped,
             "is_authenticated": bool(current_user),
@@ -295,7 +295,7 @@ async def import_chesscom_games(
         properties={
             "site": "chesscom",
             "max_games": max_games,
-            "username_hash": username_hash,
+            "username": username_hash,
             "is_authenticated": bool(current_user),
         },
     )
@@ -325,7 +325,7 @@ async def import_chesscom_games(
             properties={
                 "site": "chesscom",
                 "max_games": max_games,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "status_code": e.status_code,
                 "reason": e.message,
             },
@@ -347,7 +347,7 @@ async def import_chesscom_games(
             properties={
                 "site": "chesscom",
                 "max_games": max_games,
-                "username_hash": username_hash,
+                "username": username_hash,
                 "status_code": 404,
                 "reason": "No games found",
             },
@@ -392,7 +392,7 @@ async def import_chesscom_games(
         properties={
             "site": "chesscom",
             "max_games": max_games,
-            "username_hash": username_hash,
+            "username": username_hash,
             "imported": imported,
             "skipped": skipped,
             "is_authenticated": bool(current_user),
