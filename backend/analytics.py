@@ -16,14 +16,6 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import Request
 
-from db import (
-    insert_analytics_event,
-    link_analytics_identity,
-    upsert_analytics_identity,
-    upsert_analytics_session,
-)
-
-
 ANALYTICS_EVENT_VERSION = "v1"
 EVENT_NAME_RE = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9_]+){1,3}$")
 SENSITIVE_PROPERTY_KEYS = {
@@ -61,11 +53,12 @@ def _is_production_environment() -> bool:
 
 
 def _analytics_env_enabled() -> bool:
-    if ANALYTICS_ENABLED_ENV in {"1", "true", "yes", "on"}:
-        return True
+    # Never emit analytics outside production, regardless of explicit env toggles.
+    if not _is_production_environment():
+        return False
     if ANALYTICS_ENABLED_ENV in {"0", "false", "no", "off"}:
         return False
-    return _is_production_environment()
+    return True
 
 
 def _is_local_hostname(hostname: str) -> bool:
@@ -120,7 +113,7 @@ def hash_username(username: str | None) -> str | None:
     normalized = username.strip().lower()
     if not normalized:
         return None
-    return _hash_value(f"username:{normalized}")
+    return normalized
 
 
 def _extract_client_ip(request: Request | None) -> str | None:
@@ -280,10 +273,10 @@ def _sanitize_properties(properties: Any) -> dict[str, Any]:
             continue
         if "token" in lower_key or "password" in lower_key:
             continue
-        if lower_key == "username":
-            hashed = hash_username(str(value) if value is not None else None)
-            if hashed:
-                sanitized["username_hash"] = hashed
+        if lower_key in {"username_hash", "username"}:
+            username = hash_username(str(value) if value is not None else None)
+            if username:
+                sanitized["username"] = username
             continue
 
         sanitized[key_str] = value
@@ -367,31 +360,9 @@ async def build_enriched_event(
 
 
 def persist_enriched_event(conn, event: dict[str, Any]) -> None:
-    """Persist one enriched analytics event + identity/session aggregates."""
-    upsert_analytics_identity(
-        conn,
-        anonymous_id=event["anonymous_id"],
-        user_id=event.get("user_id"),
-        first_referrer_type=event.get("referrer_type"),
-        first_referrer_domain=event.get("referrer_domain"),
-    )
-
-    page_increment = 1 if event["event_name"] == "page.view" else 0
-    upsert_analytics_session(
-        conn,
-        session_id=event["session_id"],
-        anonymous_id=event["anonymous_id"],
-        user_id=event.get("user_id"),
-        occurred_at=event["occurred_at"],
-        page_increment=page_increment,
-        event_increment=1,
-        country=event.get("country"),
-        city=event.get("city"),
-        device_type=event.get("device_type"),
-        browser=event.get("browser"),
-    )
-
-    insert_analytics_event(conn, event)
+    """PostHog-only mode: skip all database analytics persistence."""
+    del conn
+    del event
 
 
 def _posthog_timestamp(value: Any) -> str:
@@ -594,7 +565,7 @@ async def track_server_event(
 
 
 def link_identity(conn, anonymous_id: str, user_id: str) -> None:
-    """Link anonymous and authenticated identities in analytics tables."""
-    if not _analytics_env_enabled():
-        return
-    link_analytics_identity(conn, anonymous_id=anonymous_id, user_id=user_id)
+    """PostHog-only mode: identity linkage is handled by mirrored $identify events."""
+    del conn
+    del anonymous_id
+    del user_id
