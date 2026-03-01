@@ -49,5 +49,6 @@ async def get_game(
         opponent=game["opponent"],
         lichess_url=game_url,
         eco=game.get("eco"),
-        opening_name=game.get("opening_name")
+        opening_name=game.get("opening_name"),
+        opening_ply_count=game.get("opening_ply_count"),
     )
