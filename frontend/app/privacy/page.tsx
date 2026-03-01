@@ -13,8 +13,7 @@ export default function PrivacyPage() {
           analytics records.
         </p>
         <p>
-          We do not collect raw game PGN, auth tokens, passwords, or raw chess usernames in analytics
-          event payloads.
+          We do not collect raw game PGN, auth tokens, or passwords in analytics event payloads.
         </p>
         <p>
           Analytics data is used for internal product and business intelligence purposes, including

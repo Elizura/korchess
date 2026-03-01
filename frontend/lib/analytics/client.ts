@@ -25,9 +25,10 @@ let inflight = false;
 let authToken: string | null = null;
 
 function envAnalyticsEnabled(): boolean {
-  if (ANALYTICS_ENV_FLAG === "true" || ANALYTICS_ENV_FLAG === "1") return true;
+  // Never enable client tracking outside production.
+  if (process.env.NODE_ENV !== "production") return false;
   if (ANALYTICS_ENV_FLAG === "false" || ANALYTICS_ENV_FLAG === "0") return false;
-  return process.env.NODE_ENV === "production";
+  return true;
 }
 
 function isLocalHostname(hostname: string): boolean {
