@@ -1196,6 +1196,14 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          <a
+            className="px-2.5 py-1.5 rounded-md border border-[color:var(--zen-border)] bg-transparent font-mono text-[11px] text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface)] transition-colors"
+            href="https://buymeacoffee.com/elisurfz7"
+            rel="noreferrer"
+            target="_blank"
+          >
+            Buy me a coffee
+          </a>
           {isAuthenticated ? (
             <>
               <button
