@@ -15,6 +15,24 @@ import {
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
+const getSessionStorageItem = (key: string): string | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const setSessionStorageItem = (key: string, value: string): void => {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures in privacy-restricted browsers/extensions.
+  }
+};
+
 function RegisterOnLogin() {
   const { data: session } = useSession();
 
@@ -44,7 +62,7 @@ function RegisterOnLogin() {
     }
 
     const key = `registered:${userId}`;
-    if (sessionStorage.getItem(key)) {
+    if (getSessionStorageItem(key)) {
       return;
     }
 
@@ -56,7 +74,7 @@ function RegisterOnLogin() {
     })
       .then(async (res) => {
         if (res.ok) {
-          sessionStorage.setItem(key, "1");
+          setSessionStorageItem(key, "1");
           const data = await res.json().catch(() => ({}));
           if (data?.created) {
             trackEvent("auth.registered", {
@@ -81,14 +99,14 @@ function RegisterOnLogin() {
     }
 
     const key = `analytics-linked:${userId}`;
-    if (sessionStorage.getItem(key)) {
+    if (getSessionStorageItem(key)) {
       return;
     }
 
     identifyAnalyticsUser(idToken)
       .then((ok) => {
         if (ok) {
-          sessionStorage.setItem(key, "1");
+          setSessionStorageItem(key, "1");
         }
       })
       .catch(() => {
