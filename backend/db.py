@@ -26,6 +26,7 @@ def get_connection() -> psycopg.Connection:
         autocommit=False,
         row_factory=dict_row,
         connect_timeout=5,
+        prepare_threshold=None,
     )
 
 
