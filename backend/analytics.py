@@ -491,7 +491,6 @@ async def mirror_events_to_posthog(events: list[dict[str, Any]]) -> None:
 
 
 async def ingest_client_events(
-    conn,
     *,
     raw_events: list[dict[str, Any]],
     request: Request | None,
@@ -504,7 +503,6 @@ async def ingest_client_events(
     enriched_events: list[dict[str, Any]] = []
     for raw_event in raw_events:
         enriched = await build_enriched_event(raw_event, request=request, user_id=user_id)
-        persist_enriched_event(conn, enriched)
         enriched_events.append(enriched)
     return enriched_events
 

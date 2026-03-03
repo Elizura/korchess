@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import psycopg
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
+from dependencies import get_db
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 
@@ -60,16 +62,13 @@ def get_optional_user(
 
 def get_registered_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
+    conn: psycopg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     """Verify token and require that the user is registered."""
     user = get_current_user(credentials)
-    from db import get_connection, get_user_by_id
+    from db import get_user_by_id
 
-    conn = get_connection()
-    try:
-        existing = get_user_by_id(conn, user["id"])
-    finally:
-        conn.close()
+    existing = get_user_by_id(conn, user["id"])
 
     if not existing:
         raise HTTPException(

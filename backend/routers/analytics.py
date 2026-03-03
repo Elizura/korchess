@@ -28,21 +28,17 @@ async def ingest_events_endpoint(
     body: AnalyticsEventsIngestRequest,
     background_tasks: BackgroundTasks,
     request: Request,
-    conn: psycopg.Connection = Depends(get_db),
     current_user: dict | None = Depends(get_optional_user),
 ):
     """Ingest a batch of product analytics events."""
     try:
         enriched = await ingest_client_events(
-            conn,
             raw_events=[event.model_dump() for event in body.events],
             request=request,
             user_id=current_user["id"] if current_user else None,
         )
     except AnalyticsValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-    conn.commit()
 
     if enriched:
         background_tasks.add_task(mirror_events_to_posthog, enriched)
