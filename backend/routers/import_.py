@@ -16,7 +16,7 @@ from db import (
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
-from insights import schedule_insights_refresh
+from insights import get_insights_state, schedule_insights_refresh
 
 from schemas import ImportRequest, ImportResponse, ImportHistoryResponse, ImportHistoryItem
 from dependencies import get_db
@@ -24,6 +24,7 @@ from auth import get_optional_user, get_registered_user
 
 router = APIRouter(tags=["import"])
 logger = logging.getLogger(__name__)
+INSIGHTS_CACHE_HIT_REFRESH_STATUSES = {"missing", "stale", "failed"}
 
 
 async def _maybe_return_existing_import(
@@ -74,6 +75,31 @@ async def _maybe_return_existing_import(
         },
     )
     conn.commit()
+
+    # Cache-hit imports should only trigger insights refresh when the snapshot is absent/stale/failed.
+    try:
+        refresh_targets: list[tuple[str, bool, bool]] = [
+            (public_user_id, False, False),
+        ]
+        if current_user and current_user["id"] != public_user_id:
+            refresh_targets.append((current_user["id"], True, True))
+
+        for target_user_id, allow_deep, allow_llm in refresh_targets:
+            state = get_insights_state(target_user_id, username, "all")
+            lifecycle_status = str(state.get("lifecycle_status") or "missing").lower()
+            if lifecycle_status not in INSIGHTS_CACHE_HIT_REFRESH_STATUSES:
+                continue
+            schedule_insights_refresh(
+                user_id=target_user_id,
+                username=username,
+                site="all",
+                reason="import_cache_hit",
+                allow_deep=allow_deep,
+                allow_llm=allow_llm,
+                source_user_id=public_user_id,
+            )
+    except Exception as exc:
+        logger.warning("Failed to schedule insights refresh after cached %s import: %s", site, exc)
 
     return ImportResponse(
         username=username,
