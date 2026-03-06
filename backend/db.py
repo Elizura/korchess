@@ -142,6 +142,12 @@ def init_db() -> None:
         ON games(user_id, site, username)
         """
     )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_games_user_username_played_at_id
+        ON games(user_id, username, played_at DESC NULLS LAST, id DESC)
+        """
+    )
 
     cursor.execute(
         """
@@ -180,19 +186,6 @@ def init_db() -> None:
 
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_analysis_user
-        ON analysis(user_id)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_analysis_lookup
-        ON analysis(user_id, site, site_game_id)
-        """
-    )
-
-    cursor.execute(
-        """
         CREATE TABLE IF NOT EXISTS full_analysis (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -223,19 +216,6 @@ def init_db() -> None:
 
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_full_analysis_user
-        ON full_analysis(user_id)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_full_analysis_lookup
-        ON full_analysis(user_id, site, site_game_id, depth, multipv)
-        """
-    )
-
-    cursor.execute(
-        """
         CREATE TABLE IF NOT EXISTS analysis_jobs (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -248,13 +228,6 @@ def init_db() -> None:
             UNIQUE(user_id, site, site_game_id, depth, multipv),
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_analysis_jobs_lookup
-        ON analysis_jobs(user_id, site_game_id, depth, multipv)
         """
     )
 
@@ -301,13 +274,6 @@ def init_db() -> None:
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_ai_game_insights_lookup
-        ON ai_game_insights(user_id, site, site_game_id, depth, multipv)
-        """
-    )
-
-    cursor.execute(
-        """
         CREATE TABLE IF NOT EXISTS ai_insights_requests (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -324,8 +290,9 @@ def init_db() -> None:
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_ai_insights_requests_user_day_status
-        ON ai_insights_requests(user_id, requested_at, status)
+        CREATE INDEX IF NOT EXISTS idx_ai_insights_requests_success_user_time
+        ON ai_insights_requests(user_id, requested_at)
+        WHERE status = 'gemini_success'
         """
     )
     cursor.execute(
@@ -385,6 +352,12 @@ def init_db() -> None:
         )
         """
     )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_opening_moves_ply_uci_opening
+        ON opening_moves(ply_index, uci, opening_id)
+        """
+    )
 
     cursor.execute(
         """
@@ -410,8 +383,9 @@ def init_db() -> None:
 
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_insight_jobs_lookup
-        ON insight_jobs(user_id, username, site, status, updated_at DESC)
+        CREATE INDEX IF NOT EXISTS idx_insight_jobs_active_user_site_updated
+        ON insight_jobs(user_id, username, site, updated_at DESC)
+        WHERE status IN ('queued', 'running')
         """
     )
 
@@ -465,12 +439,16 @@ def init_db() -> None:
         """
     )
 
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_player_insights_lookup
-        ON player_insights(user_id, username, site, updated_at DESC)
-        """
-    )
+    # Drop redundant/legacy indexes replaced by constraints or better-targeted indexes.
+    cursor.execute("DROP INDEX IF EXISTS idx_analysis_user")
+    cursor.execute("DROP INDEX IF EXISTS idx_analysis_lookup")
+    cursor.execute("DROP INDEX IF EXISTS idx_full_analysis_user")
+    cursor.execute("DROP INDEX IF EXISTS idx_full_analysis_lookup")
+    cursor.execute("DROP INDEX IF EXISTS idx_analysis_jobs_lookup")
+    cursor.execute("DROP INDEX IF EXISTS idx_ai_game_insights_lookup")
+    cursor.execute("DROP INDEX IF EXISTS idx_ai_insights_requests_user_day_status")
+    cursor.execute("DROP INDEX IF EXISTS idx_insight_jobs_lookup")
+    cursor.execute("DROP INDEX IF EXISTS idx_player_insights_lookup")
 
     # PostHog-only analytics mode:
     # remove legacy first-party analytics storage artifacts.
@@ -670,6 +648,8 @@ def get_openings_stats(
     opening_key_expr = _opening_key_expr_sql("g", "o")
     opening_label_expr = _opening_label_expr_sql("g", "o")
 
+    canonical_username = username.strip().lower()
+
     query = f"""
         SELECT
             {opening_key_expr} as opening_key,
@@ -680,9 +660,9 @@ def get_openings_stats(
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
-        WHERE g.user_id = %s AND LOWER(g.username) = LOWER(%s)
+        WHERE g.user_id = %s AND g.username = %s
     """
-    params: list = [user_id, username]
+    params: list = [user_id, canonical_username]
 
     if site and site != "all":
         query += " AND g.site = %s"
@@ -820,7 +800,7 @@ def get_import_status(
         """
         SELECT imported, skipped, max_games, imported_at
         FROM imports
-        WHERE user_id = %s AND LOWER(username) = %s AND site = %s
+        WHERE user_id = %s AND username = %s AND site = %s
         """,
         (user_id, canonical_username, site),
     )
@@ -830,7 +810,7 @@ def get_import_status(
         """
         SELECT COUNT(*) as total
         FROM games
-        WHERE user_id = %s AND LOWER(username) = %s AND site = %s
+        WHERE user_id = %s AND username = %s AND site = %s
         """,
         (user_id, canonical_username, site),
     )
@@ -892,7 +872,7 @@ def get_games_by_opening(
 
     base_where_conditions = [
         "g.user_id = %s",
-        "LOWER(g.username) = %s",
+        "g.username = %s",
         "g.site_game_id IS NOT NULL",
         "g.site_game_id != ''",
     ]
@@ -977,9 +957,8 @@ def get_games_by_opening(
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
         WHERE {games_where_clause}
-        ORDER BY 
-            CASE WHEN g.played_at IS NULL THEN 1 ELSE 0 END,
-            g.played_at DESC,
+        ORDER BY
+            g.played_at DESC NULLS LAST,
             g.id DESC
         LIMIT %s OFFSET %s
     """
@@ -1056,6 +1035,8 @@ def get_variations_stats(
             }
         ]
 
+    canonical_username = username.strip().lower()
+
     query = """
         SELECT 
             COALESCE(o.variation_key, 'unknown') as variation_key,
@@ -1066,10 +1047,10 @@ def get_variations_stats(
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
-        WHERE g.user_id = %s AND LOWER(g.username) = LOWER(%s)
+        WHERE g.user_id = %s AND g.username = %s
           AND o.opening_key = %s
     """
-    params: list = [user_id, username, opening_key]
+    params: list = [user_id, canonical_username, opening_key]
 
     if site and site != "all":
         query += " AND g.site = %s"
@@ -1127,7 +1108,7 @@ def get_game_by_id(
         SELECT site, site_game_id, played_at, color, result, opponent, 
                opening_name, opening_ply_count, pgn, eco
         FROM games
-        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s AND site = %s
+        WHERE user_id = %s AND username = %s AND site_game_id = %s AND site = %s
         """,
         (user_id, username.strip().lower(), site_game_id, site),
     )
@@ -1150,7 +1131,7 @@ def get_analysis(
         """
         SELECT result_json, created_at, engine_name, engine_version
         FROM analysis
-        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s AND site = %s
+        WHERE user_id = %s AND username = %s AND site_game_id = %s AND site = %s
         """,
         (user_id, username.strip().lower(), site_game_id, site),
     )
@@ -1219,7 +1200,7 @@ def get_full_analysis(
         """
         SELECT moves_json, summary_json, meta_json, insights_json, created_at
         FROM full_analysis
-        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s 
+        WHERE user_id = %s AND username = %s AND site_game_id = %s
         AND depth = %s AND multipv = %s AND site = %s
         """,
         (user_id, username.strip().lower(), site_game_id, depth, multipv, site),
@@ -1295,7 +1276,7 @@ def save_full_analysis_insights(
         UPDATE full_analysis
         SET insights_json = %s
         WHERE user_id = %s
-          AND LOWER(username) = %s
+          AND username = %s
           AND site_game_id = %s
           AND depth = %s
           AND multipv = %s
@@ -1329,7 +1310,7 @@ def get_ai_game_insights(
         SELECT insights_json, source, created_at, updated_at
         FROM ai_game_insights
         WHERE user_id = %s
-          AND LOWER(username) = %s
+          AND username = %s
           AND site_game_id = %s
           AND depth = %s
           AND multipv = %s
@@ -1642,7 +1623,7 @@ def get_analysis_job(
         """
         SELECT id, site, site_game_id, username, depth, multipv, created_at
         FROM analysis_jobs
-        WHERE user_id = %s AND LOWER(username) = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
+        WHERE user_id = %s AND username = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
         """,
         (user_id, username.strip().lower(), site_game_id, depth, multipv, site),
     )
@@ -1720,7 +1701,7 @@ def get_active_insight_job(
                started_at, finished_at, updated_at, meta_json
         FROM insight_jobs
         WHERE user_id = %s
-          AND LOWER(username) = %s
+          AND username = %s
           AND site = %s
           AND status IN ('queued', 'running')
         ORDER BY updated_at DESC
@@ -1867,7 +1848,7 @@ def get_insight_game_features(
         SELECT site, site_game_id, feature_version, analysis_tier,
                light_json, deep_json, created_at, updated_at
         FROM insight_game_features
-        WHERE user_id = %s AND LOWER(username) = %s
+        WHERE user_id = %s AND username = %s
     """
     params: list = [user_id, username.strip().lower()]
 
@@ -1903,7 +1884,7 @@ def get_games_for_insights(
         SELECT site, site_game_id, played_at, time_class, color, result, eco,
                opening_name, opponent, white_elo, black_elo, pgn
         FROM games
-        WHERE user_id = %s AND LOWER(username) = %s
+        WHERE user_id = %s AND username = %s
     """
     params: list = [user_id, username.strip().lower()]
     if site != "all":
@@ -1912,8 +1893,7 @@ def get_games_for_insights(
 
     query += """
         ORDER BY
-            CASE WHEN played_at IS NULL THEN 1 ELSE 0 END,
-            played_at DESC,
+            played_at DESC NULLS LAST,
             id DESC
         LIMIT %s
     """
@@ -1992,7 +1972,7 @@ def get_player_insights(
                coverage_json, features_json, fact_map_json, narrative_json,
                source_job_id, created_at, updated_at
         FROM player_insights
-        WHERE user_id = %s AND LOWER(username) = %s AND site = %s
+        WHERE user_id = %s AND username = %s AND site = %s
         """,
         (user_id, username.strip().lower(), site),
     )
