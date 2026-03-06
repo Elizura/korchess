@@ -133,6 +133,7 @@ async def import_lichess_games(
         raise HTTPException(status_code=400, detail="Username is required.")
 
     username_hash = hash_username(username)
+    # why await here?
     await track_server_event(
         conn,
         event_name="import.start",
