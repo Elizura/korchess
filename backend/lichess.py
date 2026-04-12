@@ -23,21 +23,26 @@ class LichessAPIError(Exception):
         super().__init__(self.message)
 
 
-def fetch_lichess_pgn(username: str, max_games: int = 1000) -> str:
+def fetch_lichess_pgn(username: str, max_games: int = 1000, since: int | None = None) -> str:
     """
     Fetch games for a user from Lichess as PGN text.
     Handles rate limiting with Retry-After header.
+
+    Args:
+        since: Milliseconds since epoch. Only fetch games played after this timestamp.
     """
     url = f"{LICHESS_API_BASE}/games/user/{username}"
     headers = {
         "Accept": "application/x-chess-pgn",
     }
-    params = {
+    params: dict = {
         "rated": "true",
         "opening": "true",
         "clocks": "true",
         "max": max_games,
     }
+    if since is not None:
+        params["since"] = since
 
     def make_request() -> httpx.Response:
         with httpx.Client(timeout=60.0) as client:

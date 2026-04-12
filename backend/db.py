@@ -159,11 +159,21 @@ def init_db() -> None:
             skipped INTEGER NOT NULL,
             max_games INTEGER NOT NULL,
             imported_at TEXT NOT NULL,
+            last_synced_at TIMESTAMPTZ,
             PRIMARY KEY (user_id, site, username),
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
     )
+
+    cursor.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'imports' AND column_name = 'last_synced_at'
+        """
+    )
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE imports ADD COLUMN last_synced_at TIMESTAMPTZ")
 
     cursor.execute(
         """
@@ -717,23 +727,25 @@ def upsert_import_status(
     skipped: int,
     max_games: int,
     imported_at: str,
+    last_synced_at: str | None = None,
 ) -> None:
     """Record import status for a user."""
     cursor = conn.cursor()
     canonical_username = username.strip().lower()
     cursor.execute(
         """
-        INSERT INTO imports 
-        (user_id, username, site, imported, skipped, max_games, imported_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO imports
+        (user_id, username, site, imported, skipped, max_games, imported_at, last_synced_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (user_id, site, username)
         DO UPDATE SET
             imported = EXCLUDED.imported,
             skipped = EXCLUDED.skipped,
             max_games = EXCLUDED.max_games,
-            imported_at = EXCLUDED.imported_at
+            imported_at = EXCLUDED.imported_at,
+            last_synced_at = EXCLUDED.last_synced_at
         """,
-        (user_id, canonical_username, site, imported, skipped, max_games, imported_at),
+        (user_id, canonical_username, site, imported, skipped, max_games, imported_at, last_synced_at),
     )
 
 
@@ -792,29 +804,64 @@ def get_import_status(
     username: str,
     site: str = "lichess",
 ) -> dict:
-    """Get last import status + total games count for a user."""
+    """Get last import status + total games count for a user.
+
+    When site="all", aggregates across all sites: sums games, uses the most
+    recent imported_at / last_synced_at, and sums imported/skipped.
+    """
     cursor = conn.cursor()
     canonical_username = username.strip().lower()
 
-    cursor.execute(
-        """
-        SELECT imported, skipped, max_games, imported_at
-        FROM imports
-        WHERE user_id = %s AND username = %s AND site = %s
-        """,
-        (user_id, canonical_username, site),
-    )
-    import_row = cursor.fetchone()
+    if site and site != "all":
+        cursor.execute(
+            """
+            SELECT imported, skipped, max_games, imported_at, last_synced_at
+            FROM imports
+            WHERE user_id = %s AND username = %s AND site = %s
+            """,
+            (user_id, canonical_username, site),
+        )
+        import_row = cursor.fetchone()
 
-    cursor.execute(
-        """
-        SELECT COUNT(*) as total
-        FROM games
-        WHERE user_id = %s AND username = %s AND site = %s
-        """,
-        (user_id, canonical_username, site),
-    )
-    total_row = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT COUNT(*) as total
+            FROM games
+            WHERE user_id = %s AND username = %s AND site = %s
+            """,
+            (user_id, canonical_username, site),
+        )
+        total_row = cursor.fetchone()
+    else:
+        cursor.execute(
+            """
+            SELECT SUM(imported) as imported, SUM(skipped) as skipped,
+                   MAX(max_games) as max_games,
+                   MAX(imported_at) as imported_at,
+                   MAX(last_synced_at) as last_synced_at
+            FROM imports
+            WHERE user_id = %s AND username = %s
+            """,
+            (user_id, canonical_username),
+        )
+        import_row = cursor.fetchone()
+        if import_row and import_row["imported"] is None:
+            import_row = None
+
+        cursor.execute(
+            """
+            SELECT COUNT(*) as total
+            FROM games
+            WHERE user_id = %s AND username = %s
+            """,
+            (user_id, canonical_username),
+        )
+        total_row = cursor.fetchone()
+
+    last_synced_at = None
+    if import_row and import_row["last_synced_at"]:
+        raw = import_row["last_synced_at"]
+        last_synced_at = raw.isoformat() if hasattr(raw, "isoformat") else str(raw)
 
     return {
         "username": username,
@@ -822,6 +869,7 @@ def get_import_status(
         "last_imported": import_row["imported"] if import_row else None,
         "last_skipped": import_row["skipped"] if import_row else None,
         "total_games": total_row["total"] if total_row else 0,
+        "last_synced_at": last_synced_at,
     }
 
 
