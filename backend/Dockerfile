@@ -14,9 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Environment variables
-ENV DATABASE_URL=postgresql://postgres.ojqpxvnbiavcdtvdialb:BGwvXUguK2SYGFM3@aws-1-eu-west-1.pooler.supabase.com:6543/postgres
-
 # Expose port
 EXPOSE 8000
 
