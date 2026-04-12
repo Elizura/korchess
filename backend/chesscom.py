@@ -35,8 +35,27 @@ class ChesscomAPIError(Exception):
         super().__init__(self.message)
 
 
-def fetch_chesscom_games(username: str, max_games: int = 200, conn: psycopg.Connection | None = None) -> list[dict]:
+def _archive_url_year_month(archive_url: str) -> tuple[int, int] | None:
+    """Extract (year, month) from a Chess.com archive URL like .../games/2024/03."""
+    match = re.search(r'/games/(\d{4})/(\d{2})$', archive_url)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None
 
+
+def fetch_chesscom_games(
+    username: str,
+    max_games: int = 200,
+    conn: psycopg.Connection | None = None,
+    since: datetime | None = None,
+) -> list[dict]:
+    """
+    Fetch games from Chess.com for a user.
+
+    Args:
+        since: Only fetch archives from this month onwards. Games within the
+               boundary month are deduplicated by upsert_game at the DB level.
+    """
     headers = {
         "User-Agent": USER_AGENT,
     }
@@ -73,13 +92,22 @@ def fetch_chesscom_games(username: str, max_games: int = 200, conn: psycopg.Conn
 
     # 2. Fetch games from archives (newest first)
     archive_urls.reverse()  # Newest archives first
-    
+
+    since_ym: tuple[int, int] | None = None
+    if since is not None:
+        since_ym = (since.year, since.month)
+
     all_games = []
     target_lower = username.strip().lower()
     
     for archive_url in archive_urls:
         if len(all_games) >= max_games:
             break
+
+        if since_ym is not None:
+            ym = _archive_url_year_month(archive_url)
+            if ym is not None and ym < since_ym:
+                break
         
         # Add delay between requests to respect rate limits
         time.sleep(1)

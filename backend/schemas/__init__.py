@@ -6,9 +6,9 @@ from pydantic import BaseModel, Field
 
 
 class ImportRequest(BaseModel):
-    """Request body for importing Lichess games."""
+    """Request body for importing games."""
     username: str = Field(..., min_length=1, max_length=50)
-    max_games: int = Field(default=200, ge=1, le=500)
+    max_games: int = Field(default=2000, ge=1, le=10000)
 
 
 class ImportResponse(BaseModel):
@@ -16,6 +16,7 @@ class ImportResponse(BaseModel):
     username: str
     imported: int
     skipped: int
+    is_sync: bool = False
 
 
 class ImportHistoryItem(BaseModel):
@@ -48,6 +49,7 @@ class ImportStatusResponse(BaseModel):
     last_imported: int | None
     last_skipped: int | None
     total_games: int
+    last_synced_at: str | None = None
 
 
 class GameDetail(BaseModel):

@@ -55,6 +55,7 @@ interface ImportResponse {
   username: string;
   imported: number;
   skipped: number;
+  is_sync: boolean;
 }
 
 interface ImportStatus {
@@ -63,6 +64,7 @@ interface ImportStatus {
   last_imported: number | null;
   last_skipped: number | null;
   total_games: number;
+  last_synced_at: string | null;
 }
 
 interface ImportHistoryItem {
@@ -577,7 +579,6 @@ export default function DashboardPage() {
     trackEvent("import.start", {
       properties: {
         site: "lichess",
-        max_games: 200,
       },
     });
 
@@ -593,7 +594,7 @@ export default function DashboardPage() {
       const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/lichess`, {
         method: "POST",
         headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
-        body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
+        body: JSON.stringify({ username: trimmedUsername }),
       });
 
       if (!importResponse.ok) {
@@ -684,7 +685,6 @@ export default function DashboardPage() {
     trackEvent("import.start", {
       properties: {
         site: "chesscom",
-        max_games: 200,
       },
     });
 
@@ -700,7 +700,7 @@ export default function DashboardPage() {
       const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/chesscom`, {
         method: "POST",
         headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
-        body: JSON.stringify({ username: trimmedUsername, max_games: 200 }),
+        body: JSON.stringify({ username: trimmedUsername }),
       });
 
       if (!importResponse.ok) {
@@ -1278,7 +1278,9 @@ export default function DashboardPage() {
                 disabled={loading || !lichessUsername.trim()}
                 className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                {loading ? "Importing..." : "Import"}
+                {loading
+                  ? (importStatus?.total_games ? "Syncing..." : "Importing...")
+                  : (importStatus?.total_games ? "Sync" : "Import")}
               </button>
             </div>
           </div>
@@ -1307,7 +1309,9 @@ export default function DashboardPage() {
                 disabled={loading || !chesscomUsername.trim()}
                 className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                {loading ? "Importing..." : "Import"}
+                {loading
+                  ? (importStatus?.total_games ? "Syncing..." : "Importing...")
+                  : (importStatus?.total_games ? "Sync" : "Import")}
               </button>
             </div>
           </div>
@@ -1355,7 +1359,9 @@ export default function DashboardPage() {
           <div className="mt-4 zen-surface-flat px-4 py-3">
             <p className="text-sm">
               <span className="text-[color:var(--zen-success)] font-semibold">
-                Imported {importResult.imported}
+                {importResult.is_sync
+                  ? `Synced ${importResult.imported} new game${importResult.imported !== 1 ? "s" : ""}`
+                  : `Imported ${importResult.imported} game${importResult.imported !== 1 ? "s" : ""}`}
               </span>{" "}
               <span className="text-[color:var(--zen-muted)]">
                 for <span className="text-[color:var(--zen-text)] font-medium">{importResult.username}</span>
@@ -1384,16 +1390,14 @@ export default function DashboardPage() {
               {importStatus.total_games > 0 && (
                 <>
                   {" "}
-                  (last import:{" "}
-                  {new Date(importStatus.imported_at).toLocaleString("en-US", {
+                  ({importStatus.last_synced_at ? "last sync" : "last import"}:{" "}
+                  {new Date(importStatus.last_synced_at || importStatus.imported_at!).toLocaleString("en-US", {
                     year: "numeric",
                     month: "short",
                     day: "numeric",
                     hour: "2-digit",
                     minute: "2-digit",
                   })}
-                  {/* {importStatus.last_imported === 0 &&
-                    `, imported: 0, skipped: ${importStatus.last_skipped}`} */}
                   )
                 </>
               )}

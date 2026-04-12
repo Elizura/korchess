@@ -16,7 +16,7 @@ from db import (
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
-from insights import get_insights_state, schedule_insights_refresh
+from insights import schedule_insights_refresh
 
 from schemas import ImportRequest, ImportResponse, ImportHistoryResponse, ImportHistoryItem
 from dependencies import get_db
@@ -24,88 +24,71 @@ from auth import get_optional_user, get_registered_user
 
 router = APIRouter(tags=["import"])
 logger = logging.getLogger(__name__)
-INSIGHTS_CACHE_HIT_REFRESH_STATUSES = {"missing", "stale", "failed"}
 
 
-async def _maybe_return_existing_import(
-    *,
-    conn: psycopg.Connection,
-    current_user: dict | None,
-    http_request: Request,
-    username: str,
-    site: str,
-    max_games: int,
-    username_hash: str | None,
-) -> ImportResponse | None:
-    """Short-circuit import when games already exist for username+site."""
-    public_user_id = ensure_public_user_for_username(conn, username)
-    existing = get_import_status(conn, public_user_id, username, site)
-    existing_games = int(existing.get("total_games") or 0)
+def _datetime_to_lichess_ms(dt: datetime) -> int:
+    """Convert a datetime to milliseconds since epoch (Lichess API format)."""
+    return int(dt.timestamp() * 1000)
 
-    if existing_games <= 0:
+
+def _parse_synced_at(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
         return None
 
-    # Keep signed-in import history/status useful even when reusing existing public data.
+
+def _record_import_status(
+    conn: psycopg.Connection,
+    public_user_id: str,
+    current_user: dict | None,
+    username: str,
+    site: str,
+    imported: int,
+    skipped: int,
+    max_games: int,
+    imported_at: str,
+    last_synced_at: str,
+) -> None:
+    """Write import status for the public user and optionally the signed-in user."""
+    upsert_import_status(
+        conn, public_user_id, username, site,
+        imported, skipped, max_games, imported_at,
+        last_synced_at=last_synced_at,
+    )
     if current_user:
-        imported_at = existing.get("imported_at") or datetime.now(timezone.utc).isoformat()
         upsert_import_status(
-            conn,
-            current_user["id"],
-            username,
-            site,
-            int(existing.get("last_imported") or existing_games),
-            int(existing.get("last_skipped") or 0),
-            max_games,
-            imported_at,
+            conn, current_user["id"], username, site,
+            imported, skipped, max_games, imported_at,
+            last_synced_at=last_synced_at,
         )
 
-    await track_server_event(
-        conn,
-        event_name="import.success",
-        user_id=current_user["id"] if current_user else None,
-        request=http_request,
-        properties={
-            "site": site,
-            "max_games": max_games,
-            "username": username_hash,
-            "imported": existing_games,
-            "skipped": 0,
-            "cache_hit": True,
-            "is_authenticated": bool(current_user),
-        },
-    )
-    conn.commit()
 
-    # Cache-hit imports should only trigger insights refresh when the snapshot is absent/stale/failed.
+def _schedule_insights(
+    public_user_id: str, current_user: dict | None, username: str, site: str,
+) -> None:
     try:
-        refresh_targets: list[tuple[str, bool, bool]] = [
-            (public_user_id, False, False),
-        ]
-        if current_user and current_user["id"] != public_user_id:
-            refresh_targets.append((current_user["id"], True, True))
-
-        for target_user_id, allow_deep, allow_llm in refresh_targets:
-            state = get_insights_state(target_user_id, username, "all")
-            lifecycle_status = str(state.get("lifecycle_status") or "missing").lower()
-            if lifecycle_status not in INSIGHTS_CACHE_HIT_REFRESH_STATUSES:
-                continue
+        schedule_insights_refresh(
+            user_id=public_user_id,
+            username=username,
+            site="all",
+            reason="import",
+            allow_deep=False,
+            allow_llm=False,
+            source_user_id=public_user_id,
+        )
+        if current_user:
             schedule_insights_refresh(
-                user_id=target_user_id,
+                user_id=current_user["id"],
                 username=username,
                 site="all",
-                reason="import_cache_hit",
-                allow_deep=allow_deep,
-                allow_llm=allow_llm,
+                reason="import",
                 source_user_id=public_user_id,
             )
     except Exception as exc:
-        logger.warning("Failed to schedule insights refresh after cached %s import: %s", site, exc)
-
-    return ImportResponse(
-        username=username,
-        imported=existing_games,
-        skipped=0,
-    )
+        logger.warning("Failed to schedule insights refresh after %s import: %s", site, exc)
 
 
 @router.get("/history", response_model=ImportHistoryResponse)
@@ -133,7 +116,16 @@ async def import_lichess_games(
         raise HTTPException(status_code=400, detail="Username is required.")
 
     username_hash = hash_username(username)
-    # why await here?
+    public_user_id = ensure_public_user_for_username(conn, username)
+    existing = get_import_status(conn, public_user_id, username, "lichess")
+    existing_games = int(existing.get("total_games") or 0)
+    last_synced_at = _parse_synced_at(existing.get("last_synced_at"))
+    is_sync = existing_games > 0 and last_synced_at is not None
+
+    since_ms: int | None = None
+    if is_sync and last_synced_at is not None:
+        since_ms = _datetime_to_lichess_ms(last_synced_at)
+
     await track_server_event(
         conn,
         event_name="import.start",
@@ -144,26 +136,12 @@ async def import_lichess_games(
             "max_games": max_games,
             "username": username_hash,
             "is_authenticated": bool(current_user),
+            "is_sync": is_sync,
         },
     )
 
-    existing_response = await _maybe_return_existing_import(
-        conn=conn,
-        current_user=current_user,
-        http_request=http_request,
-        username=username,
-        site="lichess",
-        max_games=max_games,
-        username_hash=username_hash,
-    )
-    print(existing_response is not None, "<<<<<<<<<<<<<<<")
-    if existing_response is not None:
-        return existing_response
-
-    public_user_id = ensure_public_user_for_username(conn, username)
-
     try:
-        pgn_text = fetch_lichess_pgn(username, max_games)
+        pgn_text = fetch_lichess_pgn(username, max_games, since=since_ms)
     except LichessAPIError as e:
         await track_server_event(
             conn,
@@ -186,7 +164,19 @@ async def import_lichess_games(
         else:
             raise HTTPException(status_code=502, detail=e.message)
 
+    now = datetime.now(timezone.utc)
+    imported_at = now.isoformat()
+    synced_at_value = now.isoformat()
+
     if not pgn_text.strip():
+        if is_sync:
+            _record_import_status(
+                conn, public_user_id, current_user, username, "lichess",
+                0, 0, max_games, imported_at, synced_at_value,
+            )
+            conn.commit()
+            return ImportResponse(username=username, imported=0, skipped=0, is_sync=True)
+
         await track_server_event(
             conn,
             event_name="import.failed",
@@ -210,6 +200,14 @@ async def import_lichess_games(
     games, skipped = parse_pgn_games(pgn_text, username, conn)
 
     if not games and skipped == 0:
+        if is_sync:
+            _record_import_status(
+                conn, public_user_id, current_user, username, "lichess",
+                0, 0, max_games, imported_at, synced_at_value,
+            )
+            conn.commit()
+            return ImportResponse(username=username, imported=0, skipped=0, is_sync=True)
+
         await track_server_event(
             conn,
             event_name="import.failed",
@@ -237,22 +235,11 @@ async def import_lichess_games(
             skipped += 1
     conn.commit()
 
-    imported_at = datetime.now(timezone.utc).isoformat()
-    upsert_import_status(
-        conn, public_user_id, username, "lichess",
-        imported, skipped, max_games, imported_at
+    _record_import_status(
+        conn, public_user_id, current_user, username, "lichess",
+        imported, skipped, max_games, imported_at, synced_at_value,
     )
-    if current_user:
-        upsert_import_status(
-            conn,
-            current_user["id"],
-            username,
-            "lichess",
-            imported,
-            skipped,
-            max_games,
-            imported_at,
-        )
+
     await track_server_event(
         conn,
         event_name="import.success",
@@ -265,35 +252,18 @@ async def import_lichess_games(
             "imported": imported,
             "skipped": skipped,
             "is_authenticated": bool(current_user),
+            "is_sync": is_sync,
         },
     )
     conn.commit()
 
-    try:
-        schedule_insights_refresh(
-            user_id=public_user_id,
-            username=username,
-            site="all",
-            reason="import",
-            allow_deep=False,
-            allow_llm=False,
-            source_user_id=public_user_id,
-        )
-        if current_user:
-            schedule_insights_refresh(
-                user_id=current_user["id"],
-                username=username,
-                site="all",
-                reason="import",
-                source_user_id=public_user_id,
-            )
-    except Exception as exc:
-        logger.warning("Failed to schedule insights refresh after Lichess import: %s", exc)
+    _schedule_insights(public_user_id, current_user, username, "lichess")
 
     return ImportResponse(
         username=username,
         imported=imported,
-        skipped=skipped
+        skipped=skipped,
+        is_sync=is_sync,
     )
 
 
@@ -304,16 +274,21 @@ async def import_chesscom_games(
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict | None = Depends(get_optional_user),
 ):
-    """
-    Import games from Chess.com for a user.
-    Fetches games via Chess.com API, parses, and stores in database.
-    """
+    """Import or sync games from Chess.com for a user."""
     username = request.username.strip()
     max_games = request.max_games
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
     username_hash = hash_username(username)
+    public_user_id = ensure_public_user_for_username(conn, username)
+    existing = get_import_status(conn, public_user_id, username, "chesscom")
+    existing_games = int(existing.get("total_games") or 0)
+    last_synced_at = _parse_synced_at(existing.get("last_synced_at"))
+    is_sync = existing_games > 0 and last_synced_at is not None
+
+    since_dt: datetime | None = last_synced_at if is_sync else None
+
     await track_server_event(
         conn,
         event_name="import.start",
@@ -324,25 +299,12 @@ async def import_chesscom_games(
             "max_games": max_games,
             "username": username_hash,
             "is_authenticated": bool(current_user),
+            "is_sync": is_sync,
         },
     )
 
-    existing_response = await _maybe_return_existing_import(
-        conn=conn,
-        current_user=current_user,
-        http_request=http_request,
-        username=username,
-        site="chesscom",
-        max_games=max_games,
-        username_hash=username_hash,
-    )
-    if existing_response is not None:
-        return existing_response
-
-    public_user_id = ensure_public_user_for_username(conn, username)
-
     try:
-        games = fetch_chesscom_games(username, max_games, conn)
+        games = fetch_chesscom_games(username, max_games, conn, since=since_dt)
     except ChesscomAPIError as e:
         await track_server_event(
             conn,
@@ -365,7 +327,19 @@ async def import_chesscom_games(
         else:
             raise HTTPException(status_code=502, detail=e.message)
 
+    now = datetime.now(timezone.utc)
+    imported_at = now.isoformat()
+    synced_at_value = now.isoformat()
+
     if not games:
+        if is_sync:
+            _record_import_status(
+                conn, public_user_id, current_user, username, "chesscom",
+                0, 0, max_games, imported_at, synced_at_value,
+            )
+            conn.commit()
+            return ImportResponse(username=username, imported=0, skipped=0, is_sync=True)
+
         await track_server_event(
             conn,
             event_name="import.failed",
@@ -395,22 +369,11 @@ async def import_chesscom_games(
             skipped += 1
     conn.commit()
 
-    imported_at = datetime.now(timezone.utc).isoformat()
-    upsert_import_status(
-        conn, public_user_id, username, "chesscom",
-        imported, skipped, max_games, imported_at
+    _record_import_status(
+        conn, public_user_id, current_user, username, "chesscom",
+        imported, skipped, max_games, imported_at, synced_at_value,
     )
-    if current_user:
-        upsert_import_status(
-            conn,
-            current_user["id"],
-            username,
-            "chesscom",
-            imported,
-            skipped,
-            max_games,
-            imported_at,
-        )
+
     await track_server_event(
         conn,
         event_name="import.success",
@@ -423,33 +386,16 @@ async def import_chesscom_games(
             "imported": imported,
             "skipped": skipped,
             "is_authenticated": bool(current_user),
+            "is_sync": is_sync,
         },
     )
     conn.commit()
 
-    try:
-        schedule_insights_refresh(
-            user_id=public_user_id,
-            username=username,
-            site="all",
-            reason="import",
-            allow_deep=False,
-            allow_llm=False,
-            source_user_id=public_user_id,
-        )
-        if current_user:
-            schedule_insights_refresh(
-                user_id=current_user["id"],
-                username=username,
-                site="all",
-                reason="import",
-                source_user_id=public_user_id,
-            )
-    except Exception as exc:
-        logger.warning("Failed to schedule insights refresh after Chess.com import: %s", exc)
+    _schedule_insights(public_user_id, current_user, username, "chesscom")
 
     return ImportResponse(
         username=username,
         imported=imported,
-        skipped=skipped
+        skipped=skipped,
+        is_sync=is_sync,
     )
