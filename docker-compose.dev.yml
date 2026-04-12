@@ -2,6 +2,22 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=korchess
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     volumes:
       - ./backend:/app
@@ -10,6 +26,9 @@ services:
     ports:
       - "8000:8000"
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      db:
+        condition: service_healthy
 
   frontend:
     build:
@@ -30,3 +49,4 @@ services:
 
 volumes:
   frontend-node-modules:
+  postgres-data:
