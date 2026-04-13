@@ -52,9 +52,16 @@ from insights_utils import (
     extract_clock_seconds,
     mean,
     phase_for_ply,
-    result_to_score,
     safe_parse_datetime,
     utc_now_iso,
+)
+from insights_aggregate import (
+    aggregate_light_features,
+    aggregate_deep_features,
+    compute_style_scores,
+    compute_opening_rankings,
+    build_coverage_metrics,
+    build_strengths_weaknesses,
 )
 
 _INSIGHTS_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_INSIGHTS)
@@ -541,176 +548,89 @@ def _build_deep_feature_with_cache(
 
 
 def _build_aggregate_features(
-    games: list[dict[str, Any]],
     feature_rows: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Aggregate per-game features into user-level insights artifacts."""
+    """Aggregate per-game features into user-level insights artifacts.
+    
+    Returns:
+        (features, coverage, fact_map) tuple for player insights.
+    """
     light_features = [row["light"] for row in feature_rows if row.get("light")]
     deep_features = [row["deep"] for row in feature_rows if row.get("deep")]
 
-    total_games = len(light_features)
-    wins = 0
-    draws = 0
-    losses = 0
+    # Aggregate light feature metrics
+    light_agg = aggregate_light_features(light_features)
+    total_games = light_agg["total_games"]
+    wins = light_agg["wins"]
+    draws = light_agg["draws"]
+    losses = light_agg["losses"]
+    by_time_class = light_agg["by_time_class"]
+    by_color = light_agg["by_color"]
+    openings = light_agg["openings"]
+    clock_games = light_agg["clock_games"]
+    low_time_games = light_agg["low_time_games"]
+    
+    overall_score_pct = round((mean(light_agg["overall_scores"]) * 100), 1) if light_agg["overall_scores"] else 0.0
+    low_time_score_pct = round((mean(light_agg["low_time_scores"]) * 100), 1) if light_agg["low_time_scores"] else None
 
-    by_time_class: dict[str, dict[str, float]] = {}
-    by_color: dict[str, dict[str, float]] = {}
-    openings: dict[str, dict[str, float]] = {}
-    early_capture_rates: list[float] = []
-    early_check_rates: list[float] = []
-    game_lengths: list[float] = []
-    clock_games = 0
-    low_time_games = 0
-    low_time_scores: list[float] = []
-    overall_scores: list[float] = []
+    # Aggregate deep feature metrics
+    deep_agg = aggregate_deep_features(deep_features)
+    phase_performance = deep_agg["phase_performance"]
+    theme_counts = deep_agg["theme_counts"]
+    total_user_moves_deep = deep_agg["total_user_moves_deep"]
+    total_blunders_deep = deep_agg["total_blunders_deep"]
+    total_low_time_blunders_deep = deep_agg["total_low_time_blunders_deep"]
+    total_blunders_with_clock_deep = deep_agg["total_blunders_with_clock_deep"]
+    total_low_time_moves_deep = deep_agg["total_low_time_moves_deep"]
+    total_moves_with_clock_deep = deep_agg["total_moves_with_clock_deep"]
 
-    for feature in light_features:
-        meta = feature.get("metadata", {})
-        result = meta.get("result") or "loss"
-        score = result_to_score(result)
-        overall_scores.append(score)
-        if result == "win":
-            wins += 1
-        elif result == "draw":
-            draws += 1
-        else:
-            losses += 1
+    # Compute opening rankings
+    best_openings, worst_openings = compute_opening_rankings(openings)
 
-        # by time class
-        tc = (meta.get("time_class") or "unknown").lower()
-        tc_item = by_time_class.setdefault(tc, {"games": 0, "score_sum": 0.0})
-        tc_item["games"] += 1
-        tc_item["score_sum"] += score
-
-        # by color
-        color = (meta.get("color") or "unknown").lower()
-        color_item = by_color.setdefault(color, {"games": 0, "score_sum": 0.0})
-        color_item["games"] += 1
-        color_item["score_sum"] += score
-
-        # by opening
-        opening = (meta.get("opening_name") or "Unknown").strip() or "Unknown"
-        opening_item = openings.setdefault(opening, {"games": 0, "score_sum": 0.0})
-        opening_item["games"] += 1
-        opening_item["score_sum"] += score
-
-        style_signals = feature.get("style_signals", {})
-        early_capture_rates.append(float(style_signals.get("early_capture_rate") or 0.0))
-        early_check_rates.append(float(style_signals.get("early_check_rate") or 0.0))
-        game_lengths.append(float(style_signals.get("avg_game_length") or 0.0))
-
-        time_pressure = feature.get("time_pressure", {})
-        if time_pressure.get("has_clock_data"):
-            clock_games += 1
-            low_time_rate = float(time_pressure.get("low_time_rate") or 0.0)
-            if low_time_rate > 0:
-                low_time_games += 1
-                low_time_scores.append(score)
-
-    overall_score_pct = round((mean(overall_scores) * 100), 1) if overall_scores else 0.0
-    low_time_score_pct = round((mean(low_time_scores) * 100), 1) if low_time_scores else None
-
-    phase_accum = {
-        "opening": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-        "middlegame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-        "endgame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-    }
-    theme_counts: dict[str, int] = {}
-    total_user_moves_deep = 0
-    total_blunders_deep = 0
-    total_low_time_blunders_deep = 0
-    total_blunders_with_clock_deep = 0
-    total_low_time_moves_deep = 0
-    total_moves_with_clock_deep = 0
-
-    for deep in deep_features:
-        quality = deep.get("quality", {})
-        total_user_moves_deep += int(quality.get("user_moves_analyzed") or 0)
-        deep_time_pressure = quality.get("time_pressure") or {}
-        total_low_time_blunders_deep += int(deep_time_pressure.get("blunders_low_time") or 0)
-        total_blunders_with_clock_deep += int(deep_time_pressure.get("blunders_total") or 0)
-        total_low_time_moves_deep += int(deep_time_pressure.get("user_moves_low_time") or 0)
-        total_moves_with_clock_deep += int(deep_time_pressure.get("user_moves_with_clock") or 0)
-
-        for phase_name, stats in (deep.get("phase_stats") or {}).items():
-            if phase_name not in phase_accum:
-                continue
-            moves_count = int(stats.get("moves") or 0)
-            avg_cp_loss = float(stats.get("avg_cp_loss") or 0.0)
-            phase_accum[phase_name]["moves"] += moves_count
-            phase_accum[phase_name]["cp_loss_sum"] += avg_cp_loss * moves_count
-            phase_accum[phase_name]["mistakes"] += int(stats.get("mistakes") or 0)
-            phase_accum[phase_name]["blunders"] += int(stats.get("blunders") or 0)
-            total_blunders_deep += int(stats.get("blunders") or 0)
-
-        for theme, count in (deep.get("theme_counts") or {}).items():
-            theme_counts[theme] = theme_counts.get(theme, 0) + int(count)
-
-    phase_performance: dict[str, dict[str, Any]] = {}
-    for phase_name, stats in phase_accum.items():
-        moves_count = stats["moves"]
-        avg_cp_loss = (stats["cp_loss_sum"] / moves_count) if moves_count > 0 else None
-        phase_performance[phase_name] = {
-            "moves": moves_count,
-            "avg_cp_loss": round(avg_cp_loss, 2) if avg_cp_loss is not None else None,
-            "mistakes": stats["mistakes"],
-            "blunders": stats["blunders"],
-            "mistake_rate": round((stats["mistakes"] / moves_count), 4) if moves_count > 0 else None,
-        }
-
-    opening_items = []
-    for name, stats in openings.items():
-        games_count = int(stats["games"])
-        score_pct = round((stats["score_sum"] / games_count) * 100, 1) if games_count > 0 else 0.0
-        opening_items.append({"opening": name, "games": games_count, "score_pct": score_pct})
-    opening_items.sort(key=lambda item: (item["score_pct"], item["games"]), reverse=True)
-    best_openings = opening_items[:3]
-    worst_openings = sorted(opening_items, key=lambda item: (item["score_pct"], -item["games"]))[:3]
-
+    # Compute style classification
     draw_rate = (draws / total_games) if total_games > 0 else 0.0
-    avg_early_capture = mean(early_capture_rates)
-    avg_early_check = mean(early_check_rates)
-    avg_game_len = mean(game_lengths)
+    avg_early_capture = mean(light_agg["early_capture_rates"])
+    avg_early_check = mean(light_agg["early_check_rates"])
+    avg_game_len = mean(light_agg["game_lengths"])
     blunder_rate = (total_blunders_deep / total_user_moves_deep) if total_user_moves_deep > 0 else 0.0
 
-    tactical_score = clamp01(avg_early_check * 1.8 + (theme_counts.get("tactical_oversight", 0) / max(1, len(deep_features))) * 0.2)
-    positional_score = clamp01((avg_game_len / 110.0) + draw_rate * 0.5 - avg_early_capture * 0.3)
-    aggressive_score = clamp01(avg_early_capture * 1.5 + avg_early_check * 1.2)
-    solid_score = clamp01((1.0 - blunder_rate) * 0.7 + draw_rate * 0.3)
+    style = compute_style_scores(
+        draw_rate=draw_rate,
+        avg_early_capture=avg_early_capture,
+        avg_early_check=avg_early_check,
+        avg_game_len=avg_game_len,
+        blunder_rate=blunder_rate,
+        theme_counts=theme_counts,
+        deep_game_count=len(deep_features),
+    )
 
-    primary = "tactical" if tactical_score >= positional_score else "positional"
-    secondary = "aggressive" if aggressive_score >= solid_score else "solid"
-    style_label = f"{secondary.capitalize()} {primary.capitalize()}"
-
+    # Sort themes by count
     theme_items = sorted(
         [{"theme": theme, "count": count} for theme, count in theme_counts.items()],
         key=lambda item: item["count"],
         reverse=True,
     )
 
-    coverage = {
-        "games_total": total_games,
-        "games_light": len(light_features),
-        "games_deep": len(deep_features),
-        "deep_coverage": round((len(deep_features) / total_games), 4) if total_games > 0 else 0.0,
-        "games_with_clock": clock_games,
-        "clock_coverage": round((clock_games / total_games), 4) if total_games > 0 else 0.0,
-        "games_with_time_pressure": low_time_games,
-        "has_enough_games": total_games >= MIN_BASELINE_GAMES,
-    }
-
-    confidence = clamp01(
-        coverage["deep_coverage"] * 0.45 + coverage["clock_coverage"] * 0.2 + min(total_games / 100.0, 1.0) * 0.35
+    # Build coverage metrics
+    coverage = build_coverage_metrics(
+        total_games=total_games,
+        light_count=len(light_features),
+        deep_count=len(deep_features),
+        clock_games=clock_games,
+        low_time_games=low_time_games,
     )
+    confidence = coverage["confidence"]
 
+    # Build fact map for grounded narrative
     fact_map: dict[str, dict[str, Any]] = {}
     overall_games_fact = add_fact(fact_map, "overall_games", "Games analyzed", total_games, "games")
     overall_score_fact = add_fact(fact_map, "overall_score_pct", "Overall score", overall_score_pct, "pct")
-    style_fact = add_fact(fact_map, "style_label", "Player style", style_label)
+    style_fact = add_fact(fact_map, "style_label", "Player style", style["label"])
     deep_cov_fact = add_fact(fact_map, "deep_coverage", "Deep analysis coverage", coverage["deep_coverage"], "ratio")
     clock_cov_fact = add_fact(fact_map, "clock_coverage", "Clock data coverage", coverage["clock_coverage"], "ratio")
     confidence_fact = add_fact(fact_map, "confidence", "Insights confidence", round(confidence, 3), "ratio")
 
+    # Phase facts
     phase_fact_ids: dict[str, str] = {}
     for phase_name, stats in phase_performance.items():
         if stats["avg_cp_loss"] is None:
@@ -723,163 +643,58 @@ def _build_aggregate_features(
             "cp",
         )
 
-    best_opening_fact_ids = []
-    for idx, item in enumerate(best_openings, start=1):
-        best_opening_fact_ids.append(
-            add_fact(
-                fact_map,
-                f"best_opening_{idx}",
-                f"Best opening #{idx}",
-                f"{item['opening']} ({item['score_pct']}% over {item['games']} games)",
-            )
-        )
+    # Opening facts
+    best_opening_fact_ids = [
+        add_fact(fact_map, f"best_opening_{idx}", f"Best opening #{idx}",
+                 f"{item['opening']} ({item['score_pct']}% over {item['games']} games)")
+        for idx, item in enumerate(best_openings, start=1)
+    ]
+    weak_opening_fact_ids = [
+        add_fact(fact_map, f"worst_opening_{idx}", f"Weak opening #{idx}",
+                 f"{item['opening']} ({item['score_pct']}% over {item['games']} games)")
+        for idx, item in enumerate(worst_openings, start=1)
+    ]
 
-    weak_opening_fact_ids = []
-    for idx, item in enumerate(worst_openings, start=1):
-        weak_opening_fact_ids.append(
-            add_fact(
-                fact_map,
-                f"worst_opening_{idx}",
-                f"Weak opening #{idx}",
-                f"{item['opening']} ({item['score_pct']}% over {item['games']} games)",
-            )
-        )
-
+    # Time pressure facts
     time_pressure_fact_ids: list[str] = []
     if low_time_score_pct is not None:
         time_pressure_fact_ids.append(
-            add_fact(
-                fact_map,
-                "low_time_score_pct",
-                "Score in low-time games",
-                low_time_score_pct,
-                "pct",
-            )
+            add_fact(fact_map, "low_time_score_pct", "Score in low-time games", low_time_score_pct, "pct")
         )
     blunders_under_pressure_pct: float | None = None
     if total_blunders_with_clock_deep > 0:
         blunders_under_pressure_pct = round(
-            (total_low_time_blunders_deep / total_blunders_with_clock_deep) * 100,
-            1,
+            (total_low_time_blunders_deep / total_blunders_with_clock_deep) * 100, 1
         )
         time_pressure_fact_ids.append(
-            add_fact(
-                fact_map,
-                "blunders_under_time_pressure_pct",
-                "Share of blunders under time pressure",
-                blunders_under_pressure_pct,
-                "pct",
-            )
+            add_fact(fact_map, "blunders_under_time_pressure_pct",
+                     "Share of blunders under time pressure", blunders_under_pressure_pct, "pct")
         )
 
-    top_phase = None
-    weak_phase = None
-    phase_with_data = [item for item in phase_performance.items() if item[1]["avg_cp_loss"] is not None]
-    if phase_with_data:
-        top_phase = min(phase_with_data, key=lambda item: float(item[1]["avg_cp_loss"] or 10_000))[0]
-        weak_phase = max(phase_with_data, key=lambda item: float(item[1]["avg_cp_loss"] or -1))[0]
+    # Build strengths, weaknesses, coaching focus
+    strengths, weaknesses, coaching_focus = build_strengths_weaknesses(
+        overall_score_pct=overall_score_pct,
+        total_games=total_games,
+        best_openings=best_openings,
+        worst_openings=worst_openings,
+        phase_performance=phase_performance,
+        low_time_score_pct=low_time_score_pct,
+        theme_items=theme_items,
+        fact_map=fact_map,
+        overall_games_fact=overall_games_fact,
+        overall_score_fact=overall_score_fact,
+        best_opening_fact_ids=best_opening_fact_ids,
+        weak_opening_fact_ids=weak_opening_fact_ids,
+        phase_fact_ids=phase_fact_ids,
+    )
 
-    strengths = [
-        {
-            "text": f"Overall score is {overall_score_pct:.1f}% across {total_games} games.",
-            "fact_ids": [overall_games_fact, overall_score_fact],
-        }
-    ]
-    if best_openings:
-        strengths.append(
-            {
-                "text": f"Best-performing opening cluster starts with {best_openings[0]['opening']}.",
-                "fact_ids": best_opening_fact_ids[:1],
-            }
-        )
-    if top_phase and top_phase in phase_fact_ids:
-        strengths.append(
-            {
-                "text": f"{top_phase.capitalize()} is your most stable phase by average centipawn loss.",
-                "fact_ids": [phase_fact_ids[top_phase]],
-            }
-        )
-
-    weaknesses = []
-    if worst_openings:
-        weaknesses.append(
-            {
-                "text": f"The toughest opening cluster starts with {worst_openings[0]['opening']}.",
-                "fact_ids": weak_opening_fact_ids[:1],
-            }
-        )
-    if weak_phase and weak_phase in phase_fact_ids:
-        weaknesses.append(
-            {
-                "text": f"{weak_phase.capitalize()} has your highest average centipawn loss.",
-                "fact_ids": [phase_fact_ids[weak_phase]],
-            }
-        )
-    if low_time_score_pct is not None:
-        delta = round(low_time_score_pct - overall_score_pct, 1)
-        delta_fact = add_fact(
-            fact_map,
-            "low_time_vs_overall_delta",
-            "Low-time score delta vs overall",
-            delta,
-            "pct",
-        )
-        if delta < 0:
-            weaknesses.append(
-                {
-                    "text": "Results drop under time pressure compared to your baseline.",
-                    "fact_ids": [delta_fact],
-                }
-            )
-        else:
-            strengths.append(
-                {
-                    "text": "You maintain or improve results in low-time situations.",
-                    "fact_ids": [delta_fact],
-                }
-            )
-
-    coaching_focus = []
-    if weak_phase and weak_phase in phase_fact_ids:
-        coaching_focus.append(
-            {
-                "text": f"Prioritize {weak_phase} drills to reduce average centipawn loss.",
-                "fact_ids": [phase_fact_ids[weak_phase]],
-            }
-        )
-    if worst_openings:
-        coaching_focus.append(
-            {
-                "text": f"Review plans in {worst_openings[0]['opening']} structures.",
-                "fact_ids": weak_opening_fact_ids[:1],
-            }
-        )
-    if theme_items:
-        theme = theme_items[0]
-        theme_fact = add_fact(
-            fact_map,
-            "top_theme",
-            "Most recurring mistake theme",
-            f"{theme['theme']} ({theme['count']})",
-        )
-        coaching_focus.append(
-            {
-                "text": f"Address recurring pattern: {theme['theme'].replace('_', ' ')}.",
-                "fact_ids": [theme_fact],
-            }
-        )
-
+    # Assemble final features payload
     features = {
         "version": FEATURE_VERSION,
         "computed_at": utc_now_iso(),
         "style": {
-            "label": style_label,
-            "scores": {
-                "tactical": round(tactical_score, 3),
-                "positional": round(positional_score, 3),
-                "aggressive": round(aggressive_score, 3),
-                "solid": round(solid_score, 3),
-            },
+            "label": style["label"],
+            "scores": style["scores"],
             "fact_ids": [style_fact],
         },
         "performance": {
@@ -895,9 +710,7 @@ def _build_aggregate_features(
                 {
                     "time_class": tc,
                     "games": int(stats["games"]),
-                    "score_pct": round((stats["score_sum"] / stats["games"]) * 100, 1)
-                    if stats["games"] > 0
-                    else 0.0,
+                    "score_pct": round((stats["score_sum"] / stats["games"]) * 100, 1) if stats["games"] > 0 else 0.0,
                 }
                 for tc, stats in sorted(by_time_class.items())
             ],
@@ -905,9 +718,7 @@ def _build_aggregate_features(
                 {
                     "color": color_name,
                     "games": int(stats["games"]),
-                    "score_pct": round((stats["score_sum"] / stats["games"]) * 100, 1)
-                    if stats["games"] > 0
-                    else 0.0,
+                    "score_pct": round((stats["score_sum"] / stats["games"]) * 100, 1) if stats["games"] > 0 else 0.0,
                 }
                 for color_name, stats in sorted(by_color.items())
             ],
@@ -929,9 +740,9 @@ def _build_aggregate_features(
             "fact_ids": time_pressure_fact_ids + [clock_cov_fact],
         },
         "recurring_themes": theme_items[:5],
-        "strengths": strengths[:4],
-        "weaknesses": weaknesses[:4],
-        "coaching_focus": coaching_focus[:4],
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "coaching_focus": coaching_focus,
         "confidence": {
             "value": round(confidence, 3),
             "fact_ids": [confidence_fact, deep_cov_fact, clock_cov_fact],
@@ -1325,7 +1136,7 @@ async def run_insights_pipeline(
             finally:
                 conn.close()
 
-            features, coverage, fact_map = _build_aggregate_features(games, stored_features)
+            features, coverage, fact_map = _build_aggregate_features(stored_features)
             narrative = build_narrative(features, fact_map, allow_llm=allow_llm)
 
             initial_status = "baseline_ready" if coverage.get("has_enough_games") else "not_enough_data"
@@ -1436,7 +1247,7 @@ async def run_insights_pipeline(
                 finally:
                     conn.close()
 
-                features, coverage, fact_map = _build_aggregate_features(games, stored_features)
+                features, coverage, fact_map = _build_aggregate_features(stored_features)
                 narrative = build_narrative(features, fact_map, allow_llm=allow_llm)
 
             await _save_snapshot(

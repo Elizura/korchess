@@ -89,6 +89,7 @@ def add_fact(
     value: Any,
     unit: str | None = None,
 ) -> str:
+    """Add a fact to the fact map with a unique ID, returning the final key used."""
     idx = 1
     candidate = fact_id
     while candidate in fact_map:
@@ -96,3 +97,15 @@ def add_fact(
         candidate = f"{fact_id}_{idx}"
     fact_map[candidate] = {"label": label, "value": value, "unit": unit}
     return candidate
+
+
+def cp_for_mover(cp_white: int | None, mover_is_white: bool) -> int | None:
+    """Convert white-perspective centipawn score to mover's perspective."""
+    if cp_white is None:
+        return None
+    return cp_white if mover_is_white else -cp_white
+
+
+def clamp(value: float, min_val: float, max_val: float) -> float:
+    """Clamp value to [min_val, max_val] range."""
+    return max(min_val, min(max_val, value))
