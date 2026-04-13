@@ -183,6 +183,95 @@ def aggregate_deep_features(
     }
 
 
+def aggregate_scan_features(
+    scan_rows: list[dict],
+) -> dict:
+    """Aggregate per-game quick-scan results into the same shape as deep aggregation.
+
+    Each row should contain a parsed 'problems' dict with keys:
+      - problems (list), move_stats (dict), summary (dict)
+    """
+    phase_accum = {
+        "opening": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
+        "middlegame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
+        "endgame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
+    }
+    theme_counts: dict[str, int] = {}
+    total_blunders = 0
+    total_mistakes = 0
+    total_inaccuracies = 0
+    total_user_moves = 0
+    games_scanned = 0
+
+    for row in scan_rows:
+        data = row.get("problems") or {}
+        summary = data.get("summary") or row.get("summary") or {}
+        move_stats = data.get("move_stats") or {}
+        problems_list = data.get("problems") or []
+
+        total_blunders += int(summary.get("blunders") or 0)
+        total_mistakes += int(summary.get("mistakes") or 0)
+        total_inaccuracies += int(summary.get("inaccuracies") or 0)
+        total_user_moves += int(move_stats.get("total_user_moves") or 0)
+        games_scanned += 1
+
+        phase_cp = move_stats.get("phase_cp_losses") or {}
+        for phase_name in ("opening", "middlegame", "endgame"):
+            losses = phase_cp.get(phase_name, [])
+            if not losses:
+                continue
+            phase_accum[phase_name]["moves"] += len(losses)
+            phase_accum[phase_name]["cp_loss_sum"] += sum(losses)
+
+        for problem in problems_list:
+            classification = problem.get("classification")
+            phase_name = problem.get("phase", "middlegame")
+            if phase_name in phase_accum:
+                if classification in ("mistake", "blunder"):
+                    phase_accum[phase_name]["mistakes"] += 1
+                if classification == "blunder":
+                    phase_accum[phase_name]["blunders"] += 1
+
+            tactic_type = problem.get("tactic_type")
+            if tactic_type:
+                theme_counts[tactic_type] = theme_counts.get(tactic_type, 0) + 1
+            for tt in problem.get("tactic_types") or []:
+                if tt and tt != tactic_type:
+                    theme_counts[tt] = theme_counts.get(tt, 0) + 1
+
+    phase_performance: dict[str, dict] = {}
+    for phase_name, stats in phase_accum.items():
+        moves_count = stats["moves"]
+        avg_cp = (stats["cp_loss_sum"] / moves_count) if moves_count > 0 else None
+        phase_performance[phase_name] = {
+            "moves": moves_count,
+            "avg_cp_loss": round(avg_cp, 2) if avg_cp is not None else None,
+            "mistakes": stats["mistakes"],
+            "blunders": stats["blunders"],
+            "mistake_rate": round(stats["mistakes"] / moves_count, 4) if moves_count > 0 else None,
+        }
+
+    theme_items = sorted(
+        [{"theme": t, "count": c} for t, c in theme_counts.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )
+
+    blunder_rate = (total_blunders / total_user_moves) if total_user_moves > 0 else 0.0
+
+    return {
+        "phase_performance": phase_performance,
+        "theme_counts": theme_counts,
+        "theme_items": theme_items,
+        "total_blunders": total_blunders,
+        "total_mistakes": total_mistakes,
+        "total_inaccuracies": total_inaccuracies,
+        "total_user_moves": total_user_moves,
+        "games_scanned": games_scanned,
+        "blunder_rate": round(blunder_rate, 4),
+    }
+
+
 def compute_style_scores(
     draw_rate: float,
     avg_early_capture: float,
