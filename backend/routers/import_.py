@@ -17,6 +17,7 @@ from db import (
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
 from chesscom import fetch_chesscom_games, ChesscomAPIError
 from insights import schedule_insights_refresh
+from quick_scan import schedule_quick_scan
 
 from schemas import ImportRequest, ImportResponse, ImportHistoryResponse, ImportHistoryItem
 from dependencies import get_db
@@ -75,7 +76,6 @@ def _schedule_insights(
             username=username,
             site="all",
             reason="import",
-            allow_deep=False,
             allow_llm=False,
             source_user_id=public_user_id,
         )
@@ -89,6 +89,11 @@ def _schedule_insights(
             )
     except Exception as exc:
         logger.warning("Failed to schedule insights refresh after %s import: %s", site, exc)
+
+    try:
+        schedule_quick_scan(public_user_id, username, site="all")
+    except Exception as exc:
+        logger.warning("Failed to schedule quick scan after %s import: %s", site, exc)
 
 
 @router.get("/history", response_model=ImportHistoryResponse)
