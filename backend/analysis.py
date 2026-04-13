@@ -5,7 +5,6 @@ import chess.engine
 import chess.pgn
 import io
 import math
-from typing import Optional
 
 STOCKFISH_PATH = "/usr/games/stockfish"
 TIME_PER_POSITION_MS = 150  # ~0.15s per position

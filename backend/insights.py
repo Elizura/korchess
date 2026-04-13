@@ -49,7 +49,6 @@ from insights_constants import (
 from insights_utils import (
     add_fact,
     clamp01,
-    clock_to_seconds,
     extract_clock_seconds,
     mean,
     phase_for_ply,

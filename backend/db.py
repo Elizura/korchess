@@ -4,7 +4,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -1202,8 +1202,6 @@ def save_analysis(
 ) -> None:
     """Save analysis result to cache."""
     cursor = conn.cursor()
-    from datetime import datetime, timezone
-
     created_at = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         """
@@ -1274,7 +1272,6 @@ def save_full_analysis(
 ) -> None:
     """Save full analysis result to cache."""
     cursor = conn.cursor()
-    from datetime import datetime, timezone
 
     created_at = datetime.now(timezone.utc).isoformat()
     cursor.execute(
@@ -1642,7 +1639,6 @@ def create_analysis_job(
     site: str,
 ) -> None:
     """Create a new analysis job record."""
-    from datetime import datetime, timezone
 
     cursor = conn.cursor()
     created_at = datetime.now(timezone.utc).isoformat()
@@ -1708,7 +1704,6 @@ def create_insight_job(
     meta: dict | None = None,
 ) -> None:
     """Create an insights background job."""
-    from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc).isoformat()
     cursor = conn.cursor()
@@ -1800,7 +1795,6 @@ def update_insight_job(
     meta: dict | None = None,
 ) -> None:
     """Update mutable fields of an insights job."""
-    from datetime import datetime, timezone
 
     fields = ["updated_at = %s"]
     params: list = [datetime.now(timezone.utc).isoformat()]
@@ -1847,7 +1841,6 @@ def upsert_insight_game_feature(
     deep: dict | None = None,
 ) -> None:
     """Insert or update per-game insight features."""
-    from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc).isoformat()
     analysis_tier = "deep" if deep else "light"
@@ -1965,7 +1958,6 @@ def upsert_player_insights(
     source_job_id: str | None = None,
 ) -> None:
     """Insert or update latest user-level insights snapshot."""
-    from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc).isoformat()
     cursor = conn.cursor()
