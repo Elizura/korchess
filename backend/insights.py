@@ -5,9 +5,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import math
-import os
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -30,101 +27,38 @@ from db import (
     upsert_player_insights,
 )
 from full_analysis import run_full_analysis
+from insights_constants import (
+    DEEP_ANALYSIS_BUDGET,
+    DEEP_ANALYSIS_CONCURRENCY,
+    DEEP_ANALYSIS_DEPTH,
+    DEEP_ANALYSIS_MULTIPV,
+    DEEP_ANALYSIS_TIME_MS,
+    FEATURE_VERSION,
+    LOW_TIME_FLOOR_SECONDS,
+    LOW_TIME_RATIO,
+    MAX_CONCURRENT_INSIGHTS,
+    MAX_GAMES_WINDOW,
+    MIN_BASELINE_GAMES,
+    NARRATIVE_API_KEY,
+    NARRATIVE_API_URL,
+    NARRATIVE_MODEL,
+    NARRATIVE_PROVIDER,
+    NARRATIVE_TIMEOUT_S,
+    NARRATIVE_VERSION,
+)
+from insights_utils import (
+    add_fact,
+    clamp01,
+    clock_to_seconds,
+    extract_clock_seconds,
+    mean,
+    phase_for_ply,
+    result_to_score,
+    safe_parse_datetime,
+    utc_now_iso,
+)
 
-
-FEATURE_VERSION = os.environ.get("INSIGHTS_FEATURE_VERSION", "1")
-NARRATIVE_VERSION = os.environ.get("INSIGHTS_NARRATIVE_VERSION", "1")
-MAX_GAMES_WINDOW = max(50, int(os.environ.get("INSIGHTS_MAX_GAMES", "500")))
-DEEP_ANALYSIS_BUDGET = max(0, int(os.environ.get("INSIGHTS_DEEP_BUDGET", "8")))
-DEEP_ANALYSIS_DEPTH = max(6, int(os.environ.get("INSIGHTS_DEEP_DEPTH", "14")))
-DEEP_ANALYSIS_MULTIPV = 1
-DEEP_ANALYSIS_TIME_MS = max(250, int(os.environ.get("INSIGHTS_DEEP_TIME_MS", "350")))
-DEEP_ANALYSIS_CONCURRENCY = max(1, int(os.environ.get("INSIGHTS_DEEP_CONCURRENCY", "2")))
-MAX_CONCURRENT_INSIGHTS = max(1, int(os.environ.get("MAX_CONCURRENT_INSIGHTS", "1")))
-LOW_TIME_RATIO = float(os.environ.get("INSIGHTS_LOW_TIME_RATIO", "0.1"))
-LOW_TIME_FLOOR_SECONDS = max(10, int(os.environ.get("INSIGHTS_LOW_TIME_FLOOR_SECONDS", "30")))
-MIN_BASELINE_GAMES = max(5, int(os.environ.get("INSIGHTS_MIN_GAMES", "12")))
-
-NARRATIVE_PROVIDER = os.environ.get("INSIGHTS_NARRATIVE_PROVIDER", "none").lower()
-NARRATIVE_API_URL = os.environ.get("INSIGHTS_NARRATIVE_API_URL", "").strip()
-NARRATIVE_API_KEY = os.environ.get("INSIGHTS_NARRATIVE_API_KEY", "").strip()
-NARRATIVE_MODEL = os.environ.get("INSIGHTS_NARRATIVE_MODEL", "").strip()
-NARRATIVE_TIMEOUT_S = max(5, int(os.environ.get("INSIGHTS_NARRATIVE_TIMEOUT_S", "30")))
-
-_CLOCK_RE = re.compile(r"\[%clk\s+([0-9:.]+)\]")
 _INSIGHTS_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_INSIGHTS)
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _safe_parse_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def _result_to_score(result: str | None) -> float:
-    if result == "win":
-        return 1.0
-    if result == "draw":
-        return 0.5
-    return 0.0
-
-
-def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, value))
-
-
-def _mean(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    return sum(values) / len(values)
-
-
-def _clock_to_seconds(raw_value: str | None) -> int | None:
-    if not raw_value:
-        return None
-    cleaned = raw_value.strip()
-    if not cleaned:
-        return None
-    parts = cleaned.split(":")
-    try:
-        if len(parts) == 3:
-            hours = int(parts[0])
-            minutes = int(parts[1])
-            seconds = float(parts[2])
-            return int(hours * 3600 + minutes * 60 + seconds)
-        if len(parts) == 2:
-            minutes = int(parts[0])
-            seconds = float(parts[1])
-            return int(minutes * 60 + seconds)
-    except ValueError:
-        return None
-    return None
-
-
-def _extract_clock_seconds(comment: str | None) -> int | None:
-    if not comment:
-        return None
-    match = _CLOCK_RE.search(comment)
-    if not match:
-        return None
-    return _clock_to_seconds(match.group(1))
-
-
-def _phase_for_ply(ply: int, opening_end_ply: int, endgame_start_ply: int | None) -> str:
-    if ply <= opening_end_ply:
-        return "opening"
-    if endgame_start_ply is not None and ply >= endgame_start_ply:
-        return "endgame"
-    return "middlegame"
 
 
 def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
@@ -133,7 +67,7 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
     result = game_row.get("result") or "loss"
     color = (game_row.get("color") or "white").lower()
     user_is_white = color == "white"
-    computed_at = _utc_now_iso()
+    computed_at = utc_now_iso()
 
     base = {
         "version": FEATURE_VERSION,
@@ -212,7 +146,7 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
                 user_early_checks += 1
 
         node = node.variation(0)
-        clock_seconds = _extract_clock_seconds(node.comment)
+        clock_seconds = extract_clock_seconds(node.comment)
         if is_user_move:
             user_move_count += 1
             if clock_seconds is not None:
@@ -221,6 +155,8 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
         non_king_pieces = sum(
             1 for piece in board.piece_map().values() if piece.piece_type != chess.KING
         )
+
+        # TODO: just non king pieces or non-king non-pawn moves 
         if endgame_start_ply is None and non_king_pieces <= 8:
             endgame_start_ply = ply
 
@@ -238,7 +174,7 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
     opening_end_ply = min(20, total_plies)
 
     for event in move_events:
-        event["phase"] = _phase_for_ply(event["ply"], opening_end_ply, endgame_start_ply)
+        event["phase"] = phase_for_ply(event["ply"], opening_end_ply, endgame_start_ply)
 
     if user_move_count <= 0:
         early_capture_rate = 0.0
@@ -266,6 +202,8 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
         "endgame_start_ply": endgame_start_ply,
         "total_plies": total_plies,
     }
+
+    # TODO: average_game_length is total_plies, which is not correct
     base["style_signals"] = {
         "early_capture_rate": round(early_capture_rate, 4),
         "early_check_rate": round(early_check_rate, 4),
@@ -310,7 +248,7 @@ def _select_deep_candidates(
         return []
 
     unresolved.sort(
-        key=lambda item: _safe_parse_datetime(item.get("played_at") or "") or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda item: safe_parse_datetime(item.get("played_at") or "") or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
 
@@ -391,7 +329,7 @@ def _extract_deep_game_features(
         if not is_user_move:
             continue
 
-        phase = _phase_for_ply(ply, opening_end_ply, endgame_start_ply)
+        phase = phase_for_ply(ply, opening_end_ply, endgame_start_ply)
         classification = move.get("classification") or "unknown"
         cp_loss = move.get("cp_loss")
 
@@ -474,11 +412,11 @@ def _extract_deep_game_features(
     return {
         "version": FEATURE_VERSION,
         "analysis_tier": "deep",
-        "computed_at": _utc_now_iso(),
+        "computed_at": utc_now_iso(),
         "engine_meta": deep_analysis.get("meta") or {},
         "quality": {
             "user_moves_analyzed": len(cp_losses),
-            "avg_cp_loss": round(_mean(cp_losses), 2) if cp_losses else None,
+            "avg_cp_loss": round(mean(cp_losses), 2) if cp_losses else None,
             "blunder_rate": round(
                 sum(1 for artifact in move_artifacts if artifact.get("classification") == "blunder")
                 / len(cp_losses),
@@ -486,7 +424,7 @@ def _extract_deep_game_features(
             )
             if cp_losses
             else None,
-            "avg_cp_loss_low_time": round(_mean(low_time_cp_losses), 2) if low_time_cp_losses else None,
+            "avg_cp_loss_low_time": round(mean(low_time_cp_losses), 2) if low_time_cp_losses else None,
             "time_pressure": {
                 "user_moves_with_clock": user_moves_with_clock,
                 "user_moves_low_time": user_moves_low_time,
@@ -603,22 +541,6 @@ def _build_deep_feature_with_cache(
     return _extract_deep_game_features(game, light_feature, full_analysis)
 
 
-def _add_fact(
-    fact_map: dict[str, dict[str, Any]],
-    fact_id: str,
-    label: str,
-    value: Any,
-    unit: str | None = None,
-) -> str:
-    idx = 1
-    candidate = fact_id
-    while candidate in fact_map:
-        idx += 1
-        candidate = f"{fact_id}_{idx}"
-    fact_map[candidate] = {"label": label, "value": value, "unit": unit}
-    return candidate
-
-
 def _build_aggregate_features(
     games: list[dict[str, Any]],
     feature_rows: list[dict[str, Any]],
@@ -646,7 +568,7 @@ def _build_aggregate_features(
     for feature in light_features:
         meta = feature.get("metadata", {})
         result = meta.get("result") or "loss"
-        score = _result_to_score(result)
+        score = result_to_score(result)
         overall_scores.append(score)
         if result == "win":
             wins += 1
@@ -655,16 +577,19 @@ def _build_aggregate_features(
         else:
             losses += 1
 
+        # by time class
         tc = (meta.get("time_class") or "unknown").lower()
         tc_item = by_time_class.setdefault(tc, {"games": 0, "score_sum": 0.0})
         tc_item["games"] += 1
         tc_item["score_sum"] += score
 
+        # by color
         color = (meta.get("color") or "unknown").lower()
         color_item = by_color.setdefault(color, {"games": 0, "score_sum": 0.0})
         color_item["games"] += 1
         color_item["score_sum"] += score
 
+        # by opening
         opening = (meta.get("opening_name") or "Unknown").strip() or "Unknown"
         opening_item = openings.setdefault(opening, {"games": 0, "score_sum": 0.0})
         opening_item["games"] += 1
@@ -683,8 +608,8 @@ def _build_aggregate_features(
                 low_time_games += 1
                 low_time_scores.append(score)
 
-    overall_score_pct = round((_mean(overall_scores) * 100), 1) if overall_scores else 0.0
-    low_time_score_pct = round((_mean(low_time_scores) * 100), 1) if low_time_scores else None
+    overall_score_pct = round((mean(overall_scores) * 100), 1) if overall_scores else 0.0
+    low_time_score_pct = round((mean(low_time_scores) * 100), 1) if low_time_scores else None
 
     phase_accum = {
         "opening": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
@@ -744,15 +669,15 @@ def _build_aggregate_features(
     worst_openings = sorted(opening_items, key=lambda item: (item["score_pct"], -item["games"]))[:3]
 
     draw_rate = (draws / total_games) if total_games > 0 else 0.0
-    avg_early_capture = _mean(early_capture_rates)
-    avg_early_check = _mean(early_check_rates)
-    avg_game_len = _mean(game_lengths)
+    avg_early_capture = mean(early_capture_rates)
+    avg_early_check = mean(early_check_rates)
+    avg_game_len = mean(game_lengths)
     blunder_rate = (total_blunders_deep / total_user_moves_deep) if total_user_moves_deep > 0 else 0.0
 
-    tactical_score = _clamp01(avg_early_check * 1.8 + (theme_counts.get("tactical_oversight", 0) / max(1, len(deep_features))) * 0.2)
-    positional_score = _clamp01((avg_game_len / 110.0) + draw_rate * 0.5 - avg_early_capture * 0.3)
-    aggressive_score = _clamp01(avg_early_capture * 1.5 + avg_early_check * 1.2)
-    solid_score = _clamp01((1.0 - blunder_rate) * 0.7 + draw_rate * 0.3)
+    tactical_score = clamp01(avg_early_check * 1.8 + (theme_counts.get("tactical_oversight", 0) / max(1, len(deep_features))) * 0.2)
+    positional_score = clamp01((avg_game_len / 110.0) + draw_rate * 0.5 - avg_early_capture * 0.3)
+    aggressive_score = clamp01(avg_early_capture * 1.5 + avg_early_check * 1.2)
+    solid_score = clamp01((1.0 - blunder_rate) * 0.7 + draw_rate * 0.3)
 
     primary = "tactical" if tactical_score >= positional_score else "positional"
     secondary = "aggressive" if aggressive_score >= solid_score else "solid"
@@ -775,23 +700,23 @@ def _build_aggregate_features(
         "has_enough_games": total_games >= MIN_BASELINE_GAMES,
     }
 
-    confidence = _clamp01(
+    confidence = clamp01(
         coverage["deep_coverage"] * 0.45 + coverage["clock_coverage"] * 0.2 + min(total_games / 100.0, 1.0) * 0.35
     )
 
     fact_map: dict[str, dict[str, Any]] = {}
-    overall_games_fact = _add_fact(fact_map, "overall_games", "Games analyzed", total_games, "games")
-    overall_score_fact = _add_fact(fact_map, "overall_score_pct", "Overall score", overall_score_pct, "pct")
-    style_fact = _add_fact(fact_map, "style_label", "Player style", style_label)
-    deep_cov_fact = _add_fact(fact_map, "deep_coverage", "Deep analysis coverage", coverage["deep_coverage"], "ratio")
-    clock_cov_fact = _add_fact(fact_map, "clock_coverage", "Clock data coverage", coverage["clock_coverage"], "ratio")
-    confidence_fact = _add_fact(fact_map, "confidence", "Insights confidence", round(confidence, 3), "ratio")
+    overall_games_fact = add_fact(fact_map, "overall_games", "Games analyzed", total_games, "games")
+    overall_score_fact = add_fact(fact_map, "overall_score_pct", "Overall score", overall_score_pct, "pct")
+    style_fact = add_fact(fact_map, "style_label", "Player style", style_label)
+    deep_cov_fact = add_fact(fact_map, "deep_coverage", "Deep analysis coverage", coverage["deep_coverage"], "ratio")
+    clock_cov_fact = add_fact(fact_map, "clock_coverage", "Clock data coverage", coverage["clock_coverage"], "ratio")
+    confidence_fact = add_fact(fact_map, "confidence", "Insights confidence", round(confidence, 3), "ratio")
 
     phase_fact_ids: dict[str, str] = {}
     for phase_name, stats in phase_performance.items():
         if stats["avg_cp_loss"] is None:
             continue
-        phase_fact_ids[phase_name] = _add_fact(
+        phase_fact_ids[phase_name] = add_fact(
             fact_map,
             f"{phase_name}_avg_cp_loss",
             f"{phase_name.capitalize()} avg cp loss",
@@ -802,7 +727,7 @@ def _build_aggregate_features(
     best_opening_fact_ids = []
     for idx, item in enumerate(best_openings, start=1):
         best_opening_fact_ids.append(
-            _add_fact(
+            add_fact(
                 fact_map,
                 f"best_opening_{idx}",
                 f"Best opening #{idx}",
@@ -813,7 +738,7 @@ def _build_aggregate_features(
     weak_opening_fact_ids = []
     for idx, item in enumerate(worst_openings, start=1):
         weak_opening_fact_ids.append(
-            _add_fact(
+            add_fact(
                 fact_map,
                 f"worst_opening_{idx}",
                 f"Weak opening #{idx}",
@@ -824,7 +749,7 @@ def _build_aggregate_features(
     time_pressure_fact_ids: list[str] = []
     if low_time_score_pct is not None:
         time_pressure_fact_ids.append(
-            _add_fact(
+            add_fact(
                 fact_map,
                 "low_time_score_pct",
                 "Score in low-time games",
@@ -839,7 +764,7 @@ def _build_aggregate_features(
             1,
         )
         time_pressure_fact_ids.append(
-            _add_fact(
+            add_fact(
                 fact_map,
                 "blunders_under_time_pressure_pct",
                 "Share of blunders under time pressure",
@@ -893,7 +818,7 @@ def _build_aggregate_features(
         )
     if low_time_score_pct is not None:
         delta = round(low_time_score_pct - overall_score_pct, 1)
-        delta_fact = _add_fact(
+        delta_fact = add_fact(
             fact_map,
             "low_time_vs_overall_delta",
             "Low-time score delta vs overall",
@@ -932,7 +857,7 @@ def _build_aggregate_features(
         )
     if theme_items:
         theme = theme_items[0]
-        theme_fact = _add_fact(
+        theme_fact = add_fact(
             fact_map,
             "top_theme",
             "Most recurring mistake theme",
@@ -947,7 +872,7 @@ def _build_aggregate_features(
 
     features = {
         "version": FEATURE_VERSION,
-        "computed_at": _utc_now_iso(),
+        "computed_at": utc_now_iso(),
         "style": {
             "label": style_label,
             "scores": {
@@ -1292,7 +1217,7 @@ async def run_insights_pipeline(
     source_user_id: str | None = None,
 ) -> None:
     """Run tiered insights processing for a user."""
-    started_at = _utc_now_iso()
+    started_at = utc_now_iso()
     source_owner_id = source_user_id or user_id
     async with _INSIGHTS_SEMAPHORE:
         conn = get_connection()
@@ -1325,7 +1250,7 @@ async def run_insights_pipeline(
             if not games:
                 empty_features = {
                     "version": FEATURE_VERSION,
-                    "computed_at": _utc_now_iso(),
+                    "computed_at": utc_now_iso(),
                     "style": {"label": "Insufficient Data", "scores": {}},
                     "performance": {"overall": {"games": 0, "score_pct": 0.0}},
                     "time_pressure": {},
@@ -1364,7 +1289,7 @@ async def run_insights_pipeline(
                         job_id,
                         status="completed",
                         stage="complete",
-                        finished_at=_utc_now_iso(),
+                        finished_at=utc_now_iso(),
                     )
                     conn.commit()
                 finally:
@@ -1425,7 +1350,7 @@ async def run_insights_pipeline(
                         job_id,
                         status="completed",
                         stage="complete",
-                        finished_at=_utc_now_iso(),
+                        finished_at=utc_now_iso(),
                     )
                     conn.commit()
                 finally:
@@ -1534,7 +1459,7 @@ async def run_insights_pipeline(
                     job_id,
                     status="completed",
                     stage="complete",
-                    finished_at=_utc_now_iso(),
+                    finished_at=utc_now_iso(),
                 )
                 conn.commit()
             finally:
@@ -1548,7 +1473,7 @@ async def run_insights_pipeline(
                     status="failed",
                     stage="failed",
                     error=str(exc),
-                    finished_at=_utc_now_iso(),
+                    finished_at=utc_now_iso(),
                 )
                 conn.commit()
             finally:
