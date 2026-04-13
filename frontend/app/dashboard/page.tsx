@@ -81,7 +81,7 @@ interface InsightsClaim {
 interface InsightsProfile {
   username: string;
   site: string;
-  lifecycle_status: "missing" | "queued" | "baseline_ready" | "enriching" | "complete" | "stale" | "not_enough_data" | "failed";
+  lifecycle_status: "missing" | "queued" | "baseline_ready" | "complete" | "stale" | "not_enough_data" | "failed";
   feature_version: string;
   narrative_version: string;
   updated_at: string | null;
@@ -161,6 +161,30 @@ interface InsightsProfile {
     status: string;
     stage: string;
   } | null;
+  scan_progress?: {
+    status: "queued" | "running" | "completed" | "failed";
+    done: number;
+    total: number;
+  } | null;
+  problem_spotter?: {
+    total_problems: number;
+    by_theme: Array<{ theme: string; label?: string; count: number }>;
+    by_phase: Record<string, number>;
+    by_classification: { blunders: number; mistakes: number };
+    recent_problems: Array<{
+      site?: string;
+      site_game_id?: string;
+      ply: number;
+      san: string;
+      classification: string;
+      cp_loss: number;
+      phase: string;
+      tactic_type: string | null;
+      tactic_types: string[];
+      played_at?: string | null;
+      opponent?: string | null;
+    }>;
+  } | null;
 }
 
 type ColorFilter = "white" | "black";
@@ -179,8 +203,14 @@ type DashboardImportHistoryCacheData = {
 const INSIGHTS_ACTIVE_STATUSES = new Set<InsightsProfile["lifecycle_status"]>([
   "queued",
   "baseline_ready",
-  "enriching",
 ]);
+
+const shouldKeepPolling = (data: InsightsProfile | null): boolean => {
+  if (!data) return false;
+  if (INSIGHTS_ACTIVE_STATUSES.has(data.lifecycle_status)) return true;
+  const scanStatus = data.scan_progress?.status;
+  return scanStatus === "queued" || scanStatus === "running";
+};
 
 // Helper to parse opening name
 const parseOpeningName = (fullName: string) => {
@@ -207,13 +237,26 @@ const formatPhaseLabel = (phaseKey: string): string => {
 const humanizeTheme = (theme: string): string => {
   const normalized = theme.trim().toLowerCase();
   if (!normalized) return "Recurring decision errors";
-  if (normalized === "opening_blunder") return "costly opening mistakes";
-  if (normalized === "middlegame_blunder") return "middlegame blunders";
-  if (normalized === "endgame_blunder") return "endgame conversion errors";
-  if (normalized === "tactical_oversight") return "missed tactical details";
-  if (normalized === "hanging_piece") return "hanging pieces";
-  if (normalized === "missed_tactic") return "missed tactics";
-  return normalized.replace(/_/g, " ");
+  const map: Record<string, string> = {
+    opening_blunder: "costly opening mistakes",
+    middlegame_blunder: "middlegame blunders",
+    endgame_blunder: "endgame conversion errors",
+    tactical_oversight: "missed tactical details",
+    hanging_piece: "hanging pieces",
+    missed_tactic: "missed tactics",
+    fork: "missed forks",
+    double_attack: "missed double attacks",
+    skewer: "missed skewers",
+    forced_mate: "forced mates found",
+    missed_forced_mate: "missed forced mates",
+    pin: "missed pins",
+    discovered_attack: "missed discovered attacks",
+    critical_inaccuracy: "critical inaccuracies",
+    conversion_miss: "conversion misses",
+    defensive_slip: "defensive slips",
+    small_technique_error: "small technique errors",
+  };
+  return map[normalized] || normalized.replace(/_/g, " ");
 };
 
 export default function DashboardPage() {
@@ -258,6 +301,8 @@ export default function DashboardPage() {
   const [insightsRefreshing, setInsightsRefreshing] = useState(false);
   const [reportRefreshing, setReportRefreshing] = useState(false);
   const [reportRefreshNotice, setReportRefreshNotice] = useState<string | null>(null);
+  const [problemsPage, setProblemsPage] = useState(0);
+  const PROBLEMS_PER_PAGE = 10;
 
   const importHistory = useMemo(() => {
     if (isAuthenticated) {
@@ -306,6 +351,7 @@ export default function DashboardPage() {
   }, [isAuthenticated, authUserId]);
 
   useEffect(() => {
+    setProblemsPage(0);
     if (!currentUsername) {
       setInsights(null);
       return;
@@ -323,8 +369,7 @@ export default function DashboardPage() {
       const cachedData = cached?.data || null;
       const cachedLifecycleStatus = cachedData?.lifecycle_status;
       const shouldPollCached =
-        cachedLifecycleStatus !== undefined &&
-        INSIGHTS_ACTIVE_STATUSES.has(cachedLifecycleStatus);
+        cachedData !== null && shouldKeepPolling(cachedData);
       const shouldFetch =
         force ||
         !cached ||
@@ -349,8 +394,7 @@ export default function DashboardPage() {
         if (cancelled) return;
         setInsights(data);
         setCached<InsightsProfile | null>(cacheKey, data);
-        const lifecycleStatus = data?.lifecycle_status;
-        if (lifecycleStatus && INSIGHTS_ACTIVE_STATUSES.has(lifecycleStatus)) {
+        if (shouldKeepPolling(data)) {
           timer = setTimeout(() => {
             void loadInsights();
           }, 8000);
@@ -937,21 +981,29 @@ export default function DashboardPage() {
 
   const insightsStatusLabel = useMemo(() => {
     const statusValue = insights?.lifecycle_status;
+    const scanStatus = insights?.scan_progress?.status;
     if (!statusValue) return "Unavailable";
     if (statusValue === "queued") return "Queued";
+    if (
+      (statusValue === "baseline_ready" || statusValue === "complete") &&
+      (scanStatus === "queued" || scanStatus === "running")
+    ) {
+      const done = insights?.scan_progress?.done ?? 0;
+      const total = insights?.scan_progress?.total ?? 0;
+      return total > 0 ? `Scanning games (${done}/${total})` : "Scanning games...";
+    }
     if (statusValue === "baseline_ready") return "Baseline ready";
-    if (statusValue === "enriching") return "Refining";
     if (statusValue === "complete") return "Complete";
     if (statusValue === "not_enough_data") return "Not enough data";
     if (statusValue === "stale") return "Stale";
     if (statusValue === "failed") return "Failed";
     return "Unavailable";
-  }, [insights?.lifecycle_status]);
+  }, [insights?.lifecycle_status, insights?.scan_progress]);
 
   const coachingSummaryReady = useMemo(() => {
     if (!insights) return false;
     const statusValue = insights.lifecycle_status;
-    if (statusValue !== "complete" && statusValue !== "stale") return false;
+    if (statusValue !== "complete" && statusValue !== "stale" && statusValue !== "baseline_ready") return false;
     const games = insights.features?.performance?.overall?.games || 0;
     return games > 0;
   }, [insights]);
@@ -1531,6 +1583,259 @@ export default function DashboardPage() {
                 </ul>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Problem Spotter section */}
+        {currentUsername && insights?.problem_spotter && insights.problem_spotter.total_problems > 0 && (
+          <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                  Tactical Analysis
+                </p>
+                <h3 className="text-2xl sm:text-3xl font-semibold text-[color:var(--zen-text)] mt-1">
+                  Problem Spotter
+                </h3>
+              </div>
+              {insights.scan_progress && (
+                <span className="zen-pill px-4 py-2 text-sm text-[color:var(--zen-muted)]">
+                  {insights.scan_progress.status === "running" || insights.scan_progress.status === "queued"
+                    ? `Scanned ${insights.scan_progress.done}/${insights.scan_progress.total} games`
+                    : `${insights.scan_progress.total} games scanned`}
+                </span>
+              )}
+            </div>
+
+            {/* Classification summary pills */}
+            <div className="flex flex-wrap gap-3 mb-8">
+              {(() => {
+                const cls = insights.problem_spotter.by_classification;
+                return (
+                  <>
+                    {cls.blunders > 0 && (
+                      <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-red-500/10 text-red-400 border border-red-500/20">
+                        {cls.blunders} blunder{cls.blunders !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {cls.mistakes > 0 && (
+                      <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                        {cls.mistakes} mistake{cls.mistakes !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* By Theme grid */}
+              {insights.problem_spotter.by_theme.length > 0 && (
+                <div className="zen-surface p-6 rounded-xl border border-[color:var(--zen-border)]">
+                  <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-4">
+                    By Tactic Type
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {insights.problem_spotter.by_theme.slice(0, 8).map((item) => (
+                      <div
+                        key={item.theme}
+                        className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-bg)]"
+                      >
+                        <span className="text-sm text-[color:var(--zen-text)] truncate">
+                          {humanizeTheme(item.theme)}
+                        </span>
+                        <span className="text-sm font-semibold text-[color:var(--zen-accent)] shrink-0">
+                          {item.count}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* By Phase breakdown */}
+              {(() => {
+                const phases = insights.problem_spotter.by_phase;
+                const total = Object.values(phases).reduce((s, n) => s + n, 0);
+                if (total === 0) return null;
+                return (
+                  <div className="zen-surface p-6 rounded-xl border border-[color:var(--zen-border)]">
+                    <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-4">
+                      Problems by Phase
+                    </p>
+                    <div className="space-y-4">
+                      {(["opening", "middlegame", "endgame"] as const).map((phase) => {
+                        const count = phases[phase] || 0;
+                        const pct = total > 0 ? (count / total) * 100 : 0;
+                        return (
+                          <div key={phase}>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-sm text-[color:var(--zen-text)] capitalize">{phase}</span>
+                              <span className="text-sm font-medium text-[color:var(--zen-muted)]">{count}</span>
+                            </div>
+                            <div className="w-full h-2 rounded-full bg-[color:var(--zen-border)] overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-500"
+                                style={{
+                                  width: `${Math.max(pct, 2)}%`,
+                                  backgroundColor: phase === "opening"
+                                    ? "var(--zen-accent)"
+                                    : phase === "middlegame"
+                                      ? "var(--zen-warning, #f59e0b)"
+                                      : "var(--zen-danger, #ef4444)",
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Recent problems list */}
+            {insights.problem_spotter.recent_problems.length > 0 && (
+              <div className="mt-8">
+                {(() => {
+                  const allProblems = insights.problem_spotter.recent_problems;
+                  const totalProblems = allProblems.length;
+                  const totalPages = Math.ceil(totalProblems / PROBLEMS_PER_PAGE);
+                  const startIdx = problemsPage * PROBLEMS_PER_PAGE;
+                  const endIdx = Math.min(startIdx + PROBLEMS_PER_PAGE, totalProblems);
+                  const pageProblems = allProblems.slice(startIdx, endIdx);
+
+                  return (
+                    <>
+                      <div className="flex items-center justify-between mb-4">
+                        <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                          Recent Problems
+                        </p>
+                        {totalPages > 1 && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setProblemsPage((p) => Math.max(0, p - 1))}
+                              disabled={problemsPage === 0}
+                              className="px-3 py-1.5 text-xs font-medium rounded border border-[color:var(--zen-border)] text-[color:var(--zen-text)] hover:bg-[color:var(--zen-border)]/50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                            >
+                              Previous
+                            </button>
+                            <span className="text-xs text-[color:var(--zen-muted)]">
+                              {startIdx + 1}–{endIdx} of {totalProblems}
+                            </span>
+                            <button
+                              onClick={() => setProblemsPage((p) => Math.min(totalPages - 1, p + 1))}
+                              disabled={problemsPage >= totalPages - 1}
+                              className="px-3 py-1.5 text-xs font-medium rounded border border-[color:var(--zen-border)] text-[color:var(--zen-text)] hover:bg-[color:var(--zen-border)]/50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                            >
+                              Next
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        {pageProblems.map((problem, idx) => {
+                          const moveNum = Math.floor(problem.ply / 2) + 1;
+                          const isWhiteMove = problem.ply % 2 === 0;
+                          const moveLabel = `${moveNum}.${isWhiteMove ? "" : ".."} ${problem.san}`;
+                          const classificationColor =
+                            problem.classification === "blunder"
+                              ? "text-red-400"
+                              : problem.classification === "mistake"
+                                ? "text-orange-400"
+                                : "text-yellow-400";
+                          const gameUrl = problem.site && problem.site_game_id
+                            ? `/game/${problem.site}/${currentUsername}/${problem.site_game_id}`
+                            : null;
+
+                          return (
+                            <div
+                              key={`problem-${startIdx + idx}`}
+                              className="flex flex-wrap items-center gap-3 px-4 py-3 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-bg)]"
+                            >
+                              <span className="font-mono text-sm font-semibold text-[color:var(--zen-text)] min-w-[80px]">
+                                {moveLabel}
+                              </span>
+                              <span className={`text-xs font-bold uppercase tracking-wider ${classificationColor}`}>
+                                {problem.classification}
+                              </span>
+                              {problem.tactic_type && (
+                                <span className="px-2 py-0.5 text-xs rounded bg-[color:var(--zen-accent)]/10 text-[color:var(--zen-accent)] border border-[color:var(--zen-accent)]/20">
+                                  {humanizeTheme(problem.tactic_type)}
+                                </span>
+                              )}
+                              <span className="text-xs text-[color:var(--zen-muted)] capitalize">{problem.phase}</span>
+                              <span className="text-xs text-[color:var(--zen-muted)]">−{problem.cp_loss}cp</span>
+                              {problem.opponent && (
+                                <span className="text-xs text-[color:var(--zen-muted)]">vs {problem.opponent}</span>
+                              )}
+                              <div className="flex-1" />
+                              {gameUrl && (
+                                <a
+                                  href={gameUrl}
+                                  className="text-xs text-[color:var(--zen-accent)] hover:underline"
+                                >
+                                  View game
+                                </a>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {totalPages > 1 && (
+                        <div className="flex justify-center mt-4">
+                          <div className="flex items-center gap-1">
+                            {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => {
+                              let pageNum = i;
+                              if (totalPages > 10) {
+                                if (problemsPage < 5) {
+                                  pageNum = i;
+                                } else if (problemsPage > totalPages - 6) {
+                                  pageNum = totalPages - 10 + i;
+                                } else {
+                                  pageNum = problemsPage - 4 + i;
+                                }
+                              }
+                              return (
+                                <button
+                                  key={pageNum}
+                                  onClick={() => setProblemsPage(pageNum)}
+                                  className={`w-8 h-8 text-xs font-medium rounded transition ${
+                                    problemsPage === pageNum
+                                      ? "bg-[color:var(--zen-accent)] text-white"
+                                      : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] hover:bg-[color:var(--zen-border)]/50"
+                                  }`}
+                                >
+                                  {pageNum + 1}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Scan in progress indicator */}
+            {insights.scan_progress && (insights.scan_progress.status === "running" || insights.scan_progress.status === "queued") && (
+              <div className="mt-6">
+                <div className="w-full h-1.5 rounded-full bg-[color:var(--zen-border)] overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-[color:var(--zen-accent)] transition-all duration-700"
+                    style={{
+                      width: `${insights.scan_progress.total > 0 ? Math.max((insights.scan_progress.done / insights.scan_progress.total) * 100, 3) : 5}%`,
+                    }}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-[color:var(--zen-muted)] text-center">
+                  Scanning games for tactical problems... Results update progressively.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
