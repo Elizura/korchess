@@ -8,6 +8,8 @@ from typing import Any
 
 import chess
 
+from insights_utils import cp_for_mover, clamp
+
 _PIECE_CP = {
     chess.PAWN: 100,
     chess.KNIGHT: 320,
@@ -47,8 +49,6 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
 
 
 @dataclass(frozen=True)
@@ -140,12 +140,6 @@ def _normalize_line_uci(line_uci: list[str] | None, max_plies: int) -> list[str]
     return [uci for uci in (line_uci or []) if isinstance(uci, str)][:max_plies]
 
 
-def _cp_for_mover(cp_white: int | None, mover_is_white: bool) -> int | None:
-    if cp_white is None:
-        return None
-    return cp_white if mover_is_white else -cp_white
-
-
 def _mate_against_mover(eval_payload: dict[str, Any] | None, mover_is_white: bool) -> int | None:
     if not isinstance(eval_payload, dict):
         return None
@@ -208,8 +202,8 @@ def _force_score_from_multipv(multi_pv: list[dict[str, Any]] | None, mover_is_wh
         if (not mover_is_white) and first_mate < 0:
             return not (isinstance(second_mate, int) and second_mate < 0)
 
-    first_cp = _cp_for_mover(first.get("cp"), mover_is_white)
-    second_cp = _cp_for_mover(second.get("cp"), mover_is_white)
+    first_cp = cp_for_mover(first.get("cp"), mover_is_white)
+    second_cp = cp_for_mover(second.get("cp"), mover_is_white)
     if first_cp is None or second_cp is None:
         return False
     return (first_cp - second_cp) >= 200
@@ -291,10 +285,10 @@ def _material_from_line(
 
 def _severity_score(cp_loss: int | None, mate_against: int | None) -> float:
     if mate_against is not None:
-        return 1.0 if mate_against <= 2 else _clamp(0.85 + (0.15 * (1 / mate_against)), 0.85, 1.0)
+        return 1.0 if mate_against <= 2 else clamp(0.85 + (0.15 * (1 / mate_against)), 0.85, 1.0)
     if cp_loss is None:
         return 0.5
-    return _clamp(cp_loss / 500.0, 0.2, 0.98)
+    return clamp(cp_loss / 500.0, 0.2, 0.98)
 
 
 def _should_analyze(

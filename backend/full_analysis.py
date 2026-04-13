@@ -12,13 +12,16 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
-from dataclasses import dataclass
 
 from tactical_detection import detect_tactical_annotation
+from insights_utils import cp_for_mover
 
+# Engine configuration
 STOCKFISH_PATH = "/usr/games/stockfish"
 DEFAULT_DEPTH = 18
 DEFAULT_TIME_MS = 1000  # ~0.2s per position
+
+# Worker/thread configuration based on CPU count
 _CPU_COUNT = max(1, os.cpu_count() or 1)
 FULL_ANALYSIS_POSITION_WORKERS = max(
     1,
@@ -30,45 +33,14 @@ FULL_ANALYSIS_ENGINE_THREADS = max(
 )
 FULL_ANALYSIS_ENGINE_HASH_MB = max(16, int(os.environ.get("FULL_ANALYSIS_ENGINE_HASH_MB", "128")))
 
+# PGN comment parsing patterns
 _CLOCK_RE = re.compile(r"\[%clk\s+([0-9:.]+)\]")
 _ELAPSED_RE = re.compile(r"\[%emt\s+([0-9:.]+)\]")
+
+# Thread-local engine instances for safe concurrent access
 _ENGINE_LOCAL = threading.local()
 _ENGINE_REGISTRY_LOCK = threading.Lock()
 _ENGINE_REGISTRY: set[chess.engine.SimpleEngine] = set()
-
-
-@dataclass
-class EvalScore:
-    """Engine evaluation score."""
-    cp: Optional[int] = None  # Centipawns
-    mate: Optional[int] = None  # Mate in N (positive = winning for side to move)
-    depth: int = 0
-
-
-@dataclass
-class MoveEvaluation:
-    """Evaluation for a single move."""
-    ply: int
-    san: str
-    uci: str
-    fen_before: str
-    fen_after: str
-    eval_before: Optional[dict] = None  # EvalScore as dict
-    eval_after: Optional[dict] = None
-    best_move_uci: Optional[str] = None
-    best_move_san: Optional[str] = None
-    pv: list[str] = None  # Principal variation
-    classification: Optional[str] = None  # best/excellent/good/inaccuracy/mistake/blunder
-    cp_loss: Optional[int] = None  # Centipawn loss vs best move
-    tactical: Optional[dict] = None
-    clock_seconds: Optional[int] = None
-    time_spent_seconds: Optional[int] = None
-    time_source: Optional[str] = None  # clock|elapsed|inferred|missing
-    review_tag: Optional[str] = None
-
-    def __post_init__(self):
-        if self.pv is None:
-            self.pv = []
 
 
 def classify_move(cp_loss: Optional[int]) -> Optional[str]:
@@ -116,12 +88,6 @@ def _empty_review_counts() -> dict[str, int]:
     return {tag: 0 for tag in REVIEW_TAG_ORDER}
 
 
-def _cp_for_mover(cp_white: int | None, mover_is_white: bool) -> int | None:
-    if cp_white is None:
-        return None
-    return cp_white if mover_is_white else -cp_white
-
-
 def _is_tactical_miss(tactical: dict[str, Any] | None, cp_loss: int | None) -> bool:
     if not isinstance(tactical, dict):
         return False
@@ -155,8 +121,8 @@ def _derive_review_tag(
     if isinstance(opening_ply_count, int) and opening_ply_count > 0 and (ply + 1) <= opening_ply_count:
         return "book"
 
-    eval_before_for_mover = _cp_for_mover(eval_before_cp, mover_is_white)
-    eval_after_for_mover = _cp_for_mover(eval_after_cp, mover_is_white)
+    eval_before_for_mover = cp_for_mover(eval_before_cp, mover_is_white)
+    eval_after_for_mover = cp_for_mover(eval_after_cp, mover_is_white)
     delta_cp_for_mover: int | None = None
     if eval_before_for_mover is not None and eval_after_for_mover is not None:
         delta_cp_for_mover = eval_after_for_mover - eval_before_for_mover
@@ -456,6 +422,7 @@ def _normalize_analysis_payload(info: Any, depth: int) -> tuple[dict[str, Any], 
 
 
 def _extract_eval_components(main_info: dict[str, Any], depth: int) -> tuple[dict[str, Any] | None, int, list[str], chess.Move | None]:
+    """Extract evaluation components from engine analysis info."""
     pv_moves = main_info.get("pv", []) if isinstance(main_info, dict) else []
     pv_uci = [move.uci() for move in pv_moves[:8]]
     best_move = pv_moves[0] if pv_moves else None
@@ -468,6 +435,90 @@ def _extract_eval_components(main_info: dict[str, Any], depth: int) -> tuple[dic
         eval_dict = None
         eval_cp = 0
     return eval_dict, eval_cp, pv_uci, best_move if isinstance(best_move, chess.Move) else None
+
+
+def _extract_move_timing(
+    comment: str | None,
+    actor_is_white: bool,
+    previous_clock_white: int | None,
+    previous_clock_black: int | None,
+) -> tuple[int | None, int | None, str, int | None, int | None]:
+    """Extract timing information from a move's PGN comment.
+    
+    Returns:
+        (clock_seconds, time_spent_seconds, time_source, updated_previous_white, updated_previous_black)
+    """
+    clock_seconds = _extract_tag_seconds(comment, _CLOCK_RE)
+    elapsed_seconds = _extract_tag_seconds(comment, _ELAPSED_RE)
+    
+    previous_clock = previous_clock_white if actor_is_white else previous_clock_black
+    inferred_spent: int | None = None
+    
+    # Try to infer time spent from clock delta
+    if elapsed_seconds is None and clock_seconds is not None and previous_clock is not None:
+        delta = previous_clock - clock_seconds
+        if delta >= 0:
+            inferred_spent = int(delta)
+    
+    # Update clock tracking
+    new_previous_white = previous_clock_white
+    new_previous_black = previous_clock_black
+    if clock_seconds is not None:
+        if actor_is_white:
+            new_previous_white = clock_seconds
+        else:
+            new_previous_black = clock_seconds
+    
+    # Determine time source and actual time spent
+    time_spent_seconds = elapsed_seconds if elapsed_seconds is not None else inferred_spent
+    if elapsed_seconds is not None:
+        time_source = "elapsed"
+    elif inferred_spent is not None:
+        time_source = "inferred"
+    elif clock_seconds is not None:
+        time_source = "clock"
+    else:
+        time_source = "missing"
+    
+    return clock_seconds, time_spent_seconds, time_source, new_previous_white, new_previous_black
+
+
+def _compute_cp_loss(
+    move_uci: str,
+    best_move_uci: str | None,
+    eval_before_dict: dict | None,
+    eval_after_dict: dict | None,
+    eval_before_cp: int,
+    eval_after_cp: int,
+    side_to_move: chess.Color,
+) -> int | None:
+    """Compute centipawn loss for a move compared to best move."""
+    # If move matches best move, no loss
+    if best_move_uci and move_uci == best_move_uci:
+        return 0
+    
+    # If we have eval data, compute loss
+    if eval_before_dict and eval_after_dict:
+        if side_to_move == chess.WHITE:
+            cp_loss = eval_before_cp - eval_after_cp
+        else:
+            cp_loss = eval_after_cp - eval_before_cp
+        return max(0, cp_loss)
+    
+    return None
+
+
+def _calc_accuracy(losses: list[int]) -> int:
+    """Calculate accuracy percentage from centipawn losses.
+    
+    Uses exponential decay formula: accuracy = 100 * e^(-avg_loss/250)
+    """
+    if not losses:
+        return 100
+    clamped = [min(loss, 600) for loss in losses]
+    avg_loss = sum(clamped) / len(clamped)
+    accuracy = 100 * math.exp(-avg_loss / 250)
+    return round(max(0, min(100, accuracy)))
 
 
 def run_full_analysis(
@@ -522,38 +573,18 @@ def run_full_analysis(
     move_records: list[dict[str, Any]] = []
     position_fens: list[str] = [current_board.fen()]
 
+    # Phase 1: Parse moves and extract timing info
     for ply, move in enumerate(moves_list):
         fen_before = current_board.fen()
         side_to_move = current_board.turn
 
         node = move_nodes[ply] if ply < len(move_nodes) else None
         comment = node.comment if node else None
-        clock_seconds = _extract_tag_seconds(comment, _CLOCK_RE)
-        elapsed_seconds = _extract_tag_seconds(comment, _ELAPSED_RE)
-
         actor_is_white = side_to_move == chess.WHITE
-        previous_clock = previous_clock_white if actor_is_white else previous_clock_black
-        inferred_spent: int | None = None
-        if elapsed_seconds is None and clock_seconds is not None and previous_clock is not None:
-            delta = previous_clock - clock_seconds
-            if delta >= 0:
-                inferred_spent = int(delta)
 
-        if clock_seconds is not None:
-            if actor_is_white:
-                previous_clock_white = clock_seconds
-            else:
-                previous_clock_black = clock_seconds
-
-        time_spent_seconds = elapsed_seconds if elapsed_seconds is not None else inferred_spent
-        if elapsed_seconds is not None:
-            time_source = "elapsed"
-        elif inferred_spent is not None:
-            time_source = "inferred"
-        elif clock_seconds is not None:
-            time_source = "clock"
-        else:
-            time_source = "missing"
+        # Extract timing from PGN comments
+        clock_seconds, time_spent_seconds, time_source, previous_clock_white, previous_clock_black = \
+            _extract_move_timing(comment, actor_is_white, previous_clock_white, previous_clock_black)
 
         move_san = current_board.san(move)
         move_uci = move.uci()
@@ -561,20 +592,19 @@ def run_full_analysis(
         fen_after = current_board.fen()
         position_fens.append(fen_after)
 
-        move_records.append(
-            {
-                "ply": ply,
-                "fen_before": fen_before,
-                "fen_after": fen_after,
-                "side_to_move": side_to_move,
-                "move_san": move_san,
-                "move_uci": move_uci,
-                "clock_seconds": clock_seconds,
-                "time_spent_seconds": time_spent_seconds,
-                "time_source": time_source,
-            }
-        )
+        move_records.append({
+            "ply": ply,
+            "fen_before": fen_before,
+            "fen_after": fen_after,
+            "side_to_move": side_to_move,
+            "move_san": move_san,
+            "move_uci": move_uci,
+            "clock_seconds": clock_seconds,
+            "time_spent_seconds": time_spent_seconds,
+            "time_source": time_source,
+        })
 
+    # Phase 2: Run Stockfish analysis on all positions
     position_infos, unique_positions_analyzed = _analyse_positions_for_game(
         position_fens,
         depth,
@@ -582,6 +612,7 @@ def run_full_analysis(
         multipv,
     )
 
+    # Phase 3: Build move evaluations by combining position analysis with move data
     for record in move_records:
         ply = record["ply"]
         fen_before = record["fen_before"]
@@ -607,16 +638,13 @@ def run_full_analysis(
         next_main_info, _ = _normalize_analysis_payload(next_info, depth)
         eval_after_dict, eval_after_cp, pv_after_uci, _ = _extract_eval_components(next_main_info, depth)
 
-        if best_move_uci and move_uci == best_move_uci:
-            cp_loss = 0
-        elif eval_before_dict and eval_after_dict:
-            if side_to_move == chess.WHITE:
-                cp_loss = eval_before_cp - eval_after_cp
-            else:
-                cp_loss = eval_after_cp - eval_before_cp
-            cp_loss = max(0, cp_loss)
-        else:
-            cp_loss = None
+        # Compute centipawn loss
+        cp_loss = _compute_cp_loss(
+            move_uci, best_move_uci,
+            eval_before_dict, eval_after_dict,
+            eval_before_cp, eval_after_cp,
+            side_to_move
+        )
 
         classification = classify_move(cp_loss)
         eval_before_cp_for_review = eval_before_cp if eval_before_dict is not None else None
@@ -685,16 +713,9 @@ def run_full_analysis(
 
         move_evaluations.append(move_eval)
 
-    def calc_accuracy(losses: list[int]) -> int:
-        if not losses:
-            return 100
-        clamped = [min(loss, 600) for loss in losses]
-        avg_loss = sum(clamped) / len(clamped)
-        accuracy = 100 * math.exp(-avg_loss / 250)
-        return round(max(0, min(100, accuracy)))
-
-    accuracy_white = calc_accuracy(white_cp_losses)
-    accuracy_black = calc_accuracy(black_cp_losses)
+    # Phase 4: Compute summary statistics
+    accuracy_white = _calc_accuracy(white_cp_losses)
+    accuracy_black = _calc_accuracy(black_cp_losses)
 
     opening_ply = min(20, len(move_evaluations))
     if opening_ply > 0 and move_evaluations:

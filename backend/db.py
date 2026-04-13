@@ -1,41 +1,33 @@
-"""Database initialization and helper functions for Korchess (Postgres)."""
+"""Database initialization and helper functions for Korchess (Postgres).
+
+This module contains:
+- Schema initialization (init_db)
+- User management (upsert_user, get_user_by_id, etc.)
+- Game management (upsert_game, get_games_by_opening, etc.)
+- Analysis caching (save_analysis, get_full_analysis, etc.)
+- Insights storage (player_insights, insight_jobs, etc.)
+- Import tracking (imports table)
+
+For connection utilities, see db_connection.py.
+"""
 
 import json
-import os
 import re
 from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
-from psycopg.rows import dict_row
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-PUBLIC_USER_ID_PREFIX = "public:"
-LESSON_CONSENT_CHANNEL_EMAIL = "email_lessons"
-LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY = "game_ai_summary"
-LESSON_CONSENT_DECISIONS = frozenset({"consented", "declined"})
-RAW_OPENING_KEY_PREFIX = "raw__"
-
-
-def get_connection() -> psycopg.Connection:
-    """Get a database connection."""
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set.")
-    return psycopg.connect(
-        DATABASE_URL,
-        autocommit=False,
-        row_factory=dict_row,
-        connect_timeout=5,
-        prepare_threshold=None,
-    )
-
-
-def public_user_id_for_username(username: str) -> str:
-    """Build canonical public owner ID for shared username-scoped data."""
-    canonical_username = username.strip().lower()
-    if not canonical_username:
-        raise ValueError("Username is required.")
-    return f"{PUBLIC_USER_ID_PREFIX}{canonical_username}"
+# Re-export core connection utilities for backwards compatibility
+from db_connection import (
+    get_connection,
+    public_user_id_for_username,
+    PUBLIC_USER_ID_PREFIX,
+    LESSON_CONSENT_CHANNEL_EMAIL,
+    LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY,
+    LESSON_CONSENT_DECISIONS,
+    RAW_OPENING_KEY_PREFIX,
+)
 
 
 def get_public_user_id_for_username(conn: psycopg.Connection, username: str) -> str:
