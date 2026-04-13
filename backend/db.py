@@ -441,6 +441,56 @@ def init_db() -> None:
         """
     )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scan_jobs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            site TEXT NOT NULL,
+            status TEXT NOT NULL,
+            total_games INTEGER NOT NULL,
+            games_done INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_scan_jobs_active
+        ON scan_jobs(user_id, username, site, updated_at DESC)
+        WHERE status IN ('queued', 'running')
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS game_quick_scans (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            site TEXT NOT NULL,
+            site_game_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            problems_json TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE(user_id, site, site_game_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_game_quick_scans_user
+        ON game_quick_scans(user_id, username, site)
+        """
+    )
+
     # Drop redundant/legacy indexes replaced by constraints or better-targeted indexes.
     cursor.execute("DROP INDEX IF EXISTS idx_analysis_user")
     cursor.execute("DROP INDEX IF EXISTS idx_analysis_lookup")
@@ -2017,3 +2067,255 @@ def get_player_insights(
     data["fact_map"] = json.loads(data.get("fact_map_json") or "{}")
     data["narrative"] = json.loads(data.get("narrative_json") or "{}")
     return data
+
+
+# ---------------------------------------------------------------------------
+# Quick-scan job & result helpers
+# ---------------------------------------------------------------------------
+
+
+def create_scan_job(
+    conn: psycopg.Connection,
+    job_id: str,
+    user_id: str,
+    username: str,
+    site: str,
+    total_games: int,
+) -> None:
+    """Insert a new quick-scan background job."""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO scan_jobs
+        (id, user_id, username, site, status, total_games, games_done,
+         created_at, updated_at)
+        VALUES (%s, %s, %s, %s, 'queued', %s, 0, %s, %s)
+        """,
+        (job_id, user_id, username.strip().lower(), site, total_games, now, now),
+    )
+
+
+def update_scan_job(
+    conn: psycopg.Connection,
+    job_id: str,
+    *,
+    status: str | None = None,
+    games_done: int | None = None,
+    error: str | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> None:
+    """Update mutable fields of a scan job."""
+    fields = ["updated_at = %s"]
+    params: list = [datetime.now(timezone.utc).isoformat()]
+    if status is not None:
+        fields.append("status = %s")
+        params.append(status)
+    if games_done is not None:
+        fields.append("games_done = %s")
+        params.append(games_done)
+    if error is not None:
+        fields.append("error = %s")
+        params.append(error)
+    if started_at is not None:
+        fields.append("started_at = %s")
+        params.append(started_at)
+    if finished_at is not None:
+        fields.append("finished_at = %s")
+        params.append(finished_at)
+    params.append(job_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"UPDATE scan_jobs SET {', '.join(fields)} WHERE id = %s",
+        params,
+    )
+
+
+def get_active_scan_job(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> dict | None:
+    """Get the latest active scan job for a user."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, status, total_games, games_done, error,
+               created_at, started_at, finished_at, updated_at
+        FROM scan_jobs
+        WHERE user_id = %s AND username = %s AND site = %s
+          AND status IN ('queued', 'running')
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (user_id, username.strip().lower(), site),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_scan_job(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> dict | None:
+    """Get the most recent scan job (any status) for a user."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, status, total_games, games_done, error,
+               created_at, started_at, finished_at, updated_at
+        FROM scan_jobs
+        WHERE user_id = %s AND username = %s AND site = %s
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (user_id, username.strip().lower(), site),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def upsert_game_quick_scan(
+    conn: psycopg.Connection,
+    user_id: str,
+    site: str,
+    site_game_id: str,
+    username: str,
+    problems_json: str,
+    summary_json: str,
+) -> None:
+    """Save or update one game's quick-scan results."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO game_quick_scans
+        (user_id, site, site_game_id, username, problems_json, summary_json)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, site, site_game_id)
+        DO UPDATE SET
+            problems_json = EXCLUDED.problems_json,
+            summary_json = EXCLUDED.summary_json,
+            scanned_at = now()
+        """,
+        (user_id, site, site_game_id, username.strip().lower(),
+         problems_json, summary_json),
+    )
+
+
+def get_scanned_game_ids(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> set[tuple[str, str]]:
+    """Return set of (site, site_game_id) already scanned for the user."""
+    cursor = conn.cursor()
+    query = """
+        SELECT site, site_game_id
+        FROM game_quick_scans
+        WHERE user_id = %s AND username = %s
+    """
+    params: list = [user_id, username.strip().lower()]
+    if site != "all":
+        query += " AND site = %s"
+        params.append(site)
+    cursor.execute(query, params)
+    return {(row["site"], row["site_game_id"]) for row in cursor.fetchall()}
+
+
+def get_quick_scan_results(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> list[dict]:
+    """Fetch all quick-scan results for aggregation."""
+    cursor = conn.cursor()
+    query = """
+        SELECT site, site_game_id, problems_json, summary_json, scanned_at
+        FROM game_quick_scans
+        WHERE user_id = %s AND username = %s
+    """
+    params: list = [user_id, username.strip().lower()]
+    if site != "all":
+        query += " AND site = %s"
+        params.append(site)
+    cursor.execute(query, params)
+    rows = []
+    for row in cursor.fetchall():
+        data = dict(row)
+        data["problems"] = json.loads(data.get("problems_json") or "{}") 
+        data["summary"] = json.loads(data.get("summary_json") or "{}")
+        rows.append(data)
+    return rows
+
+
+def get_quick_scan_problem_spotter(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+    recent_limit: int = 500,
+) -> dict:
+    """Build aggregated problem-spotter data from all quick-scan results.
+    
+    Only includes blunders and mistakes (not inaccuracies) in the problems list.
+    """
+    results = get_quick_scan_results(conn, user_id, username, site)
+
+    by_theme: dict[str, int] = {}
+    by_phase: dict[str, int] = {"opening": 0, "middlegame": 0, "endgame": 0}
+    total_blunders = 0
+    total_mistakes = 0
+    all_problems: list[dict] = []
+
+    for row in results:
+        problems_data = row.get("problems") or {}
+        problems_list = problems_data.get("problems", [])
+        summary = problems_data.get("summary") or row.get("summary") or {}
+
+        total_blunders += int(summary.get("blunders") or 0)
+        total_mistakes += int(summary.get("mistakes") or 0)
+
+        for problem in problems_list:
+            classification = problem.get("classification")
+            # Only include blunders and mistakes, skip inaccuracies
+            if classification not in ("blunder", "mistake"):
+                continue
+
+            tactic_type = problem.get("tactic_type")
+            if tactic_type:
+                by_theme[tactic_type] = by_theme.get(tactic_type, 0) + 1
+
+            phase = problem.get("phase", "middlegame")
+            if phase in by_phase:
+                by_phase[phase] += 1
+
+            all_problems.append({
+                **problem,
+                "site": row["site"],
+                "site_game_id": row["site_game_id"],
+            })
+
+    all_problems.sort(key=lambda p: p.get("cp_loss", 0), reverse=True)
+
+    theme_items = sorted(
+        [{"theme": t, "count": c} for t, c in by_theme.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )
+
+    return {
+        "total_problems": total_blunders + total_mistakes,
+        "by_theme": theme_items,
+        "by_phase": by_phase,
+        "by_classification": {
+            "blunders": total_blunders,
+            "mistakes": total_mistakes,
+        },
+        "recent_problems": all_problems[:recent_limit],
+    }
