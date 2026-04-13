@@ -4,7 +4,12 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import get_optional_user
-from db import ensure_public_user_for_username, get_public_user_id_for_username
+from db import (
+    ensure_public_user_for_username,
+    get_latest_scan_job,
+    get_public_user_id_for_username,
+    get_quick_scan_problem_spotter,
+)
 from dependencies import get_db, validate_site
 from insights import get_insights_state, schedule_insights_refresh
 from schemas import InsightsProfileResponse, InsightsRequest
@@ -12,12 +17,16 @@ from schemas import InsightsProfileResponse, InsightsRequest
 router = APIRouter(tags=["insights"])
 
 
-def _build_profile_response(state: dict) -> InsightsProfileResponse:
+def _build_profile_response(state: dict, conn: psycopg.Connection) -> InsightsProfileResponse:
     snapshot = state.get("snapshot") or {}
     active_job = state.get("active_job")
+    username = state["username"]
+    site = state["site"]
+    user_id = state.get("user_id") or ""
+
     response_payload = {
-        "username": state["username"],
-        "site": state["site"],
+        "username": username,
+        "site": site,
         "lifecycle_status": state["lifecycle_status"],
         "feature_version": state["feature_version"],
         "narrative_version": state["narrative_version"],
@@ -26,6 +35,8 @@ def _build_profile_response(state: dict) -> InsightsProfileResponse:
         "features": snapshot.get("features"),
         "narrative": snapshot.get("narrative"),
         "active_job": None,
+        "scan_progress": None,
+        "problem_spotter": None,
     }
     if active_job:
         response_payload["active_job"] = {
@@ -37,6 +48,19 @@ def _build_profile_response(state: dict) -> InsightsProfileResponse:
             "created_at": active_job.get("created_at"),
             "updated_at": active_job.get("updated_at"),
         }
+
+    scan_job = get_latest_scan_job(conn, user_id, username, site)
+    if scan_job:
+        response_payload["scan_progress"] = {
+            "status": scan_job["status"],
+            "done": scan_job.get("games_done", 0),
+            "total": scan_job.get("total_games", 0),
+        }
+
+    problem_data = get_quick_scan_problem_spotter(conn, user_id, username, site)
+    if problem_data and problem_data.get("total_problems", 0) > 0:
+        response_payload["problem_spotter"] = problem_data
+
     return InsightsProfileResponse(**response_payload)
 
 
@@ -56,7 +80,8 @@ async def get_insights_profile(
     public_user_id = get_public_user_id_for_username(conn, username)
     user_id = current_user["id"] if current_user else public_user_id
     state = get_insights_state(user_id, username, site)
-    return _build_profile_response(state)
+    state["user_id"] = user_id
+    return _build_profile_response(state, conn)
 
 
 @router.post("/insights/profile", response_model=InsightsProfileResponse)
@@ -73,7 +98,6 @@ async def refresh_insights_profile(
 
     public_user_id = ensure_public_user_for_username(conn, username)
     user_id = current_user["id"] if current_user else public_user_id
-    allow_deep = bool(current_user)
     allow_llm = bool(current_user)
 
     schedule_insights_refresh(
@@ -82,10 +106,10 @@ async def refresh_insights_profile(
         site=site,
         reason="manual_refresh",
         force=request.force,
-        allow_deep=allow_deep,
         allow_llm=allow_llm,
         source_user_id=public_user_id,
     )
 
     state = get_insights_state(user_id, username, site)
-    return _build_profile_response(state)
+    state["user_id"] = user_id
+    return _build_profile_response(state, conn)

@@ -309,6 +309,37 @@ class InsightsJobStatus(BaseModel):
     updated_at: str | None = None
 
 
+class QuickScanProgress(BaseModel):
+    """Progress of a background quick-scan job."""
+    status: str  # "queued" | "running" | "completed" | "failed"
+    done: int = 0
+    total: int = 0
+
+
+class QuickScanProblemItem(BaseModel):
+    """A single tactical problem detected by the quick scan."""
+    site: str | None = None
+    site_game_id: str | None = None
+    ply: int
+    san: str
+    classification: str | None = None
+    cp_loss: int
+    phase: str
+    tactic_type: str | None = None
+    tactic_types: list[str] = []
+    played_at: str | None = None
+    opponent: str | None = None
+
+
+class ProblemSpotterData(BaseModel):
+    """Aggregated tactical problem data for the dashboard."""
+    total_problems: int = 0
+    by_theme: list[dict] = []
+    by_phase: dict[str, int] = {}
+    by_classification: dict[str, int] = {}
+    recent_problems: list[dict] = []
+
+
 class InsightsProfileResponse(BaseModel):
     """Current AI insights state for a user."""
     username: str
@@ -321,6 +352,8 @@ class InsightsProfileResponse(BaseModel):
     features: dict | None = None
     narrative: dict | None = None
     active_job: InsightsJobStatus | None = None
+    scan_progress: QuickScanProgress | None = None
+    problem_spotter: ProblemSpotterData | None = None
 
 
 class AnalyticsEventItem(BaseModel):

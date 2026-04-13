@@ -229,7 +229,6 @@ class CachedImportInsightsRefreshTest(unittest.TestCase):
             username="MagnusCarlsen",
             site="all",
             reason="import_cache_hit",
-            allow_deep=False,
             allow_llm=False,
             source_user_id="public:magnuscarlsen",
         )
@@ -282,7 +281,6 @@ class CachedImportInsightsRefreshTest(unittest.TestCase):
                     username="MagnusCarlsen",
                     site="all",
                     reason="import_cache_hit",
-                    allow_deep=False,
                     allow_llm=False,
                     source_user_id="public:magnuscarlsen",
                 ),
@@ -291,7 +289,6 @@ class CachedImportInsightsRefreshTest(unittest.TestCase):
                     username="MagnusCarlsen",
                     site="all",
                     reason="import_cache_hit",
-                    allow_deep=True,
                     allow_llm=True,
                     source_user_id="public:magnuscarlsen",
                 ),
@@ -379,7 +376,6 @@ class CachedImportInsightsRefreshTest(unittest.TestCase):
             username="MagnusCarlsen",
             site="all",
             reason="import_cache_hit",
-            allow_deep=True,
             allow_llm=True,
             source_user_id="public:magnuscarlsen",
         )
