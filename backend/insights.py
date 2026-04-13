@@ -28,8 +28,6 @@ from db import (
 )
 from full_analysis import run_full_analysis
 from insights_constants import (
-    DEEP_ANALYSIS_BUDGET,
-    DEEP_ANALYSIS_CONCURRENCY,
     DEEP_ANALYSIS_DEPTH,
     DEEP_ANALYSIS_MULTIPV,
     DEEP_ANALYSIS_TIME_MS,
@@ -1022,7 +1020,6 @@ async def run_insights_pipeline(
     user_id: str,
     username: str,
     site: str = "all",
-    allow_deep: bool = True,
     allow_llm: bool = True,
     source_user_id: str | None = None,
 ) -> None:
@@ -1167,89 +1164,6 @@ async def run_insights_pipeline(
                     conn.close()
                 return
 
-            deep_candidates = []
-            if allow_deep:
-                deep_candidates = _select_deep_candidates(games, stored_features, DEEP_ANALYSIS_BUDGET)
-            if deep_candidates:
-                conn = get_connection()
-                try:
-                    update_insight_job(conn, job_id, status="running", stage="deep")
-                    conn.commit()
-                finally:
-                    conn.close()
-
-                await _save_snapshot(
-                    user_id=user_id,
-                    username=username,
-                    site=site,
-                    status="enriching",
-                    coverage=coverage,
-                    features=features,
-                    fact_map=fact_map,
-                    narrative=narrative,
-                    source_job_id=job_id,
-                )
-
-                light_by_key = {
-                    (row["site"], row["site_game_id"]): row.get("light", {})
-                    for row in stored_features
-                }
-
-                deep_slots = asyncio.Semaphore(DEEP_ANALYSIS_CONCURRENCY)
-
-                async def _process_deep_candidate(game: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
-                    async with deep_slots:
-                        try:
-                            key = (game["site"], game["site_game_id"])
-                            light_feature = light_by_key.get(key) or await asyncio.to_thread(extract_light_game_features, game)
-                            deep_feature = await asyncio.to_thread(
-                                _build_deep_feature_with_cache,
-                                game,
-                                light_feature,
-                                source_owner_id=source_owner_id,
-                                username=username,
-                            )
-                            return game, light_feature, deep_feature
-                        except Exception:
-                            # Keep pipeline resilient: one failed deep sample should not fail the entire profile.
-                            return None
-
-                deep_tasks = [asyncio.create_task(_process_deep_candidate(game)) for game in deep_candidates]
-                deep_results = await asyncio.gather(*deep_tasks)
-                valid_results = [item for item in deep_results if item is not None]
-                if valid_results:
-                    conn = get_connection()
-                    try:
-                        for game, light_feature, deep_feature in valid_results:
-                            upsert_insight_game_feature(
-                                conn,
-                                user_id=user_id,
-                                username=username,
-                                site=game["site"],
-                                site_game_id=game["site_game_id"],
-                                feature_version=FEATURE_VERSION,
-                                light=light_feature,
-                                deep=deep_feature,
-                            )
-                        conn.commit()
-                    finally:
-                        conn.close()
-
-                conn = get_connection()
-                try:
-                    stored_features = get_insight_game_features(
-                        conn,
-                        user_id=user_id,
-                        username=username,
-                        site=site,
-                        feature_version=FEATURE_VERSION,
-                    )
-                finally:
-                    conn.close()
-
-                features, coverage, fact_map = _build_aggregate_features(stored_features)
-                narrative = build_narrative(features, fact_map, allow_llm=allow_llm)
-
             await _save_snapshot(
                 user_id=user_id,
                 username=username,
@@ -1296,7 +1210,6 @@ def schedule_insights_refresh(
     site: str = "all",
     reason: str = "manual_refresh",
     force: bool = False,
-    allow_deep: bool = True,
     allow_llm: bool = True,
     source_user_id: str | None = None,
 ) -> dict[str, Any]:
@@ -1326,7 +1239,6 @@ def schedule_insights_refresh(
             feature_version=FEATURE_VERSION,
             meta={
                 "window_size": MAX_GAMES_WINDOW,
-                "allow_deep": allow_deep,
                 "allow_llm": allow_llm,
                 "source_user_id": source_owner_id,
             },
@@ -1343,7 +1255,6 @@ def schedule_insights_refresh(
                 user_id,
                 canonical_username,
                 site,
-                allow_deep=allow_deep,
                 allow_llm=allow_llm,
                 source_user_id=source_owner_id,
             )
