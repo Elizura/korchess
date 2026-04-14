@@ -5,6 +5,7 @@ frontend/node_modules/
 # Build / output
 frontend/.next/
 frontend/out/
+*.tsbuildinfo
 *.pyc
 __pycache__/
 *.egg-info/
