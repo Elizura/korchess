@@ -194,6 +194,8 @@ type DashboardReportCacheData = {
   reportWhite: OpeningStats[] | null;
   reportBlack: OpeningStats[] | null;
   importStatus: ImportStatus | null;
+  lichessImportStatus: ImportStatus | null;
+  chesscomImportStatus: ImportStatus | null;
 };
 
 type DashboardImportHistoryCacheData = {
@@ -290,6 +292,8 @@ export default function DashboardPage() {
     useState<TimeClassFilter>("all");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
+  const [lichessImportStatus, setLichessImportStatus] = useState<ImportStatus | null>(null);
+  const [chesscomImportStatus, setChesscomImportStatus] = useState<ImportStatus | null>(null);
   const [profileUsername, setProfileUsername] = useState<string>("");
   const [profileAvatar, setProfileAvatar] = useState<string>("pawn");
   const [initialized, setInitialized] = useState(false);
@@ -444,18 +448,19 @@ export default function DashboardPage() {
     return (await response.json()) as OpeningStats[];
   };
 
-  const fetchImportStatus = async (user: string) => {
+  const fetchImportStatus = async (user: string, site: "all" | "lichess" | "chesscom" = "all") => {
     const response = await fetch(
-      `${API_BASE_URL}/api/v1/import-status/all/${encodeURIComponent(user)}`,
+      `${API_BASE_URL}/api/v1/import-status/${site}/${encodeURIComponent(user)}`,
       { headers: withTrackingHeaders(authHeaders) }
     );
     
     if (!response.ok) {
-      return null; // Silently handle - not critical
+      return null;
     }
     
     return response.json();
   };
+
 
   const fetchImportHistory = async () => {
     if (!session?.idToken) {
@@ -545,6 +550,8 @@ export default function DashboardPage() {
       setReport(cached.data.reportWhite || null);
       setReportBlack(cached.data.reportBlack || null);
       setImportStatus(cached.data.importStatus || null);
+      setLichessImportStatus(cached.data.lichessImportStatus || null);
+      setChesscomImportStatus(cached.data.chesscomImportStatus || null);
       setLoading(false);
       setError(null);
       setReportRefreshNotice(null);
@@ -563,18 +570,24 @@ export default function DashboardPage() {
     }
 
     try {
-      const [whiteReportData, blackReportData, statusData] = await Promise.all([
+      const [whiteReportData, blackReportData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
         fetchReport(user, "white", timeClass),
         fetchReport(user, "black", timeClass),
         fetchImportStatus(user),
+        fetchImportStatus(user, "lichess"),
+        fetchImportStatus(user, "chesscom"),
       ]);
       setReport(whiteReportData);
       setReportBlack(blackReportData);
       setImportStatus(statusData);
+      setLichessImportStatus(lichessStatus);
+      setChesscomImportStatus(chesscomStatus);
       setCached<DashboardReportCacheData>(cacheKey, {
         reportWhite: whiteReportData,
         reportBlack: blackReportData,
         importStatus: statusData,
+        lichessImportStatus: lichessStatus,
+        chesscomImportStatus: chesscomStatus,
       });
       setError(null);
       setReportRefreshNotice(null);
@@ -634,6 +647,11 @@ export default function DashboardPage() {
 
     const trimmedUsername = lichessUsername.trim();
 
+    if (!currentUsername || trimmedUsername.toLowerCase() !== currentUsername.toLowerCase()) {
+      setLichessImportStatus(null);
+      setChesscomImportStatus(null);
+    }
+
     try {
       const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/lichess`, {
         method: "POST",
@@ -686,21 +704,31 @@ export default function DashboardPage() {
           reportWhite: whiteReportData,
           reportBlack: blackReportData,
           importStatus: null,
+          lichessImportStatus: null,
+          chesscomImportStatus: null,
         },
       );
 
-      const status = await fetchImportStatus(trimmedUsername);
+      const [status, lichessStatus, chesscomStatus] = await Promise.all([
+        fetchImportStatus(trimmedUsername),
+        fetchImportStatus(trimmedUsername, "lichess"),
+        fetchImportStatus(trimmedUsername, "chesscom"),
+      ]);
       if (status) {
         setImportStatus(status);
-        setCached<DashboardReportCacheData>(
-          getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
-          {
-            reportWhite: whiteReportData,
-            reportBlack: blackReportData,
-            importStatus: status,
-          },
-        );
       }
+      setLichessImportStatus(lichessStatus);
+      setChesscomImportStatus(chesscomStatus);
+      setCached<DashboardReportCacheData>(
+        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
+        {
+          reportWhite: whiteReportData,
+          reportBlack: blackReportData,
+          importStatus: status,
+          lichessImportStatus: lichessStatus,
+          chesscomImportStatus: chesscomStatus,
+        },
+      );
       if (isAuthenticated) {
         void fetchImportHistory();
       }
@@ -739,6 +767,11 @@ export default function DashboardPage() {
     setImportResult(null);
 
     const trimmedUsername = chesscomUsername.trim();
+
+    if (!currentUsername || trimmedUsername.toLowerCase() !== currentUsername.toLowerCase()) {
+      setLichessImportStatus(null);
+      setChesscomImportStatus(null);
+    }
 
     try {
       const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/chesscom`, {
@@ -792,21 +825,31 @@ export default function DashboardPage() {
           reportWhite: whiteReportData,
           reportBlack: blackReportData,
           importStatus: null,
+          lichessImportStatus: null,
+          chesscomImportStatus: null,
         },
       );
 
-      const status = await fetchImportStatus(trimmedUsername);
+      const [status, lichessStatus, chesscomStatus] = await Promise.all([
+        fetchImportStatus(trimmedUsername),
+        fetchImportStatus(trimmedUsername, "lichess"),
+        fetchImportStatus(trimmedUsername, "chesscom"),
+      ]);
       if (status) {
         setImportStatus(status);
-        setCached<DashboardReportCacheData>(
-          getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
-          {
-            reportWhite: whiteReportData,
-            reportBlack: blackReportData,
-            importStatus: status,
-          },
-        );
       }
+      setLichessImportStatus(lichessStatus);
+      setChesscomImportStatus(chesscomStatus);
+      setCached<DashboardReportCacheData>(
+        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
+        {
+          reportWhite: whiteReportData,
+          reportBlack: blackReportData,
+          importStatus: status,
+          lichessImportStatus: lichessStatus,
+          chesscomImportStatus: chesscomStatus,
+        },
+      );
       if (isAuthenticated) {
         void fetchImportHistory();
       }
@@ -1330,9 +1373,13 @@ export default function DashboardPage() {
                 disabled={loading || !lichessUsername.trim()}
                 className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                {loading
-                  ? (importStatus?.total_games ? "Syncing..." : "Importing...")
-                  : (importStatus?.total_games ? "Sync" : "Import")}
+                {(() => {
+                  const isKnownUser = currentUsername && lichessUsername.trim().toLowerCase() === currentUsername.toLowerCase();
+                  const hasGames = isKnownUser && lichessImportStatus?.total_games;
+                  return loading
+                    ? (hasGames ? "Syncing..." : "Importing...")
+                    : (hasGames ? "Sync" : "Import");
+                })()}
               </button>
             </div>
           </div>
@@ -1361,9 +1408,13 @@ export default function DashboardPage() {
                 disabled={loading || !chesscomUsername.trim()}
                 className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                {loading
-                  ? (importStatus?.total_games ? "Syncing..." : "Importing...")
-                  : (importStatus?.total_games ? "Sync" : "Import")}
+                {(() => {
+                  const isKnownUser = currentUsername && chesscomUsername.trim().toLowerCase() === currentUsername.toLowerCase();
+                  const hasGames = isKnownUser && chesscomImportStatus?.total_games;
+                  return loading
+                    ? (hasGames ? "Syncing..." : "Importing...")
+                    : (hasGames ? "Sync" : "Import");
+                })()}
               </button>
             </div>
           </div>
