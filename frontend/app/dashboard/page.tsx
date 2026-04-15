@@ -261,6 +261,84 @@ const humanizeTheme = (theme: string): string => {
   return map[normalized] || normalized.replace(/_/g, " ");
 };
 
+const TACTIC_SPRITE_MAP: Record<string, string> = {
+  hanging_piece: "/tactics/hanging-piece.png",
+  fork: "/tactics/fork.png",
+  double_attack: "/tactics/double-attack.png",
+  skewer: "/tactics/skewer.png",
+  pin: "/tactics/skewer.png",
+  forced_mate: "/tactics/forced-mate.png",
+  missed_forced_mate: "/tactics/forced-mate.png",
+  discovered_attack: "/tactics/discovery-attack.png",
+};
+
+const TACTIC_CARD_LABEL: Record<string, string> = {
+  hanging_piece: "HANGING PIECES",
+  fork: "MISSED FORKS",
+  double_attack: "DOUBLE ATTACKS",
+  skewer: "MISSED SKEWERS",
+  pin: "PINS AND SKEWERS",
+  forced_mate: "FORCED MATES",
+  missed_forced_mate: "FORCED MATES MISSED",
+  discovered_attack: "DISCOVERY ATTACKS",
+  missed_tactic: "MISSED TACTICS",
+  tactical_oversight: "TACTICAL OVERSIGHT",
+  critical_inaccuracy: "CRITICAL INACCURACY",
+  conversion_miss: "CONVERSION MISS",
+  defensive_slip: "DEFENSIVE SLIPS",
+};
+
+const TACTIC_BLURB: Record<string, string> = {
+  hanging_piece: "Left a piece undefended, giving your opponent a free capture.",
+  fork: "Missed a move that attacks two pieces at once.",
+  double_attack: "Overlooked a move threatening two targets simultaneously.",
+  skewer: "Fell for an attack through a high-value piece to one behind it.",
+  pin: "Missed a pin holding a piece to your king or a more valuable target.",
+  forced_mate: "Had a forced checkmate sequence on the board.",
+  missed_forced_mate: "Missed a checkmate sequence that was available.",
+  discovered_attack: "Overlooked an attack revealed by moving a blocking piece.",
+  missed_tactic: "Had a tactical shot available but played something else.",
+  tactical_oversight: "Missed a concrete tactical detail in the position.",
+  critical_inaccuracy: "Played an imprecise move in a critical moment.",
+  conversion_miss: "Failed to convert a winning or clearly better position.",
+  defensive_slip: "Missed a defensive resource that could have held the position.",
+};
+
+function getTacticBorderClass(count: number, maxCount: number): string {
+  const ratio = maxCount > 0 ? count / maxCount : 0;
+  if (ratio >= 0.7 || count >= 15) return "tactical-card-red";
+  if (ratio >= 0.4 || count >= 8) return "tactical-card-orange";
+  return "tactical-card-cyan";
+}
+
+function TacticalCategoryCard({ theme, count, maxCount }: { theme: string; count: number; maxCount: number }) {
+  const normalized = theme.trim().toLowerCase();
+  const sprite = TACTIC_SPRITE_MAP[normalized];
+  const label = TACTIC_CARD_LABEL[normalized] || normalized.replace(/_/g, " ").toUpperCase();
+  const blurb = TACTIC_BLURB[normalized] || "A recurring pattern in your games.";
+  const borderClass = getTacticBorderClass(count, maxCount);
+
+  return (
+    <div className={`tactical-card ${borderClass}`}>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <span className="tactical-card-label">{label}</span>
+        {sprite && (
+          <img
+            src={sprite}
+            alt={humanizeTheme(theme)}
+            className="w-10 h-10 object-contain opacity-80"
+            loading="lazy"
+          />
+        )}
+      </div>
+      <span className="tactical-card-count mb-3">{String(count).padStart(2, "0")}</span>
+      <p className="text-base font-semibold leading-relaxed text-[color:var(--zen-muted)] mt-auto">
+        {blurb}
+      </p>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -1679,72 +1757,25 @@ export default function DashboardPage() {
               })()}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* By Theme grid */}
-              {insights.problem_spotter.by_theme.length > 0 && (
-                <div className="zen-surface p-6 rounded-xl border border-[color:var(--zen-border)]">
-                  <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-4">
-                    By Tactic Type
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    {insights.problem_spotter.by_theme.slice(0, 8).map((item) => (
-                      <div
+            {/* Tactical fail categories grid */}
+            {insights.problem_spotter.by_theme.length > 0 && (() => {
+              const themes = insights.problem_spotter.by_theme.slice(0, 6);
+              const maxCount = Math.max(...themes.map((t) => t.count), 1);
+              return (
+                <div className="mb-10">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {themes.map((item) => (
+                      <TacticalCategoryCard
                         key={item.theme}
-                        className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-bg)]"
-                      >
-                        <span className="text-sm text-[color:var(--zen-text)] truncate">
-                          {humanizeTheme(item.theme)}
-                        </span>
-                        <span className="text-sm font-semibold text-[color:var(--zen-accent)] shrink-0">
-                          {item.count}
-                        </span>
-                      </div>
+                        theme={item.theme}
+                        count={item.count}
+                        maxCount={maxCount}
+                      />
                     ))}
                   </div>
                 </div>
-              )}
-
-              {/* By Phase breakdown */}
-              {(() => {
-                const phases = insights.problem_spotter.by_phase;
-                const total = Object.values(phases).reduce((s, n) => s + n, 0);
-                if (total === 0) return null;
-                return (
-                  <div className="zen-surface p-6 rounded-xl border border-[color:var(--zen-border)]">
-                    <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-4">
-                      Problems by Phase
-                    </p>
-                    <div className="space-y-4">
-                      {(["opening", "middlegame", "endgame"] as const).map((phase) => {
-                        const count = phases[phase] || 0;
-                        const pct = total > 0 ? (count / total) * 100 : 0;
-                        return (
-                          <div key={phase}>
-                            <div className="flex items-center justify-between mb-1.5">
-                              <span className="text-sm text-[color:var(--zen-text)] capitalize">{phase}</span>
-                              <span className="text-sm font-medium text-[color:var(--zen-muted)]">{count}</span>
-                            </div>
-                            <div className="w-full h-2 rounded-full bg-[color:var(--zen-border)] overflow-hidden">
-                              <div
-                                className="h-full rounded-full transition-all duration-500"
-                                style={{
-                                  width: `${Math.max(pct, 2)}%`,
-                                  backgroundColor: phase === "opening"
-                                    ? "var(--zen-accent)"
-                                    : phase === "middlegame"
-                                      ? "var(--zen-warning, #f59e0b)"
-                                      : "var(--zen-danger, #ef4444)",
-                                }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
+              );
+            })()}
 
             {/* Recent problems list */}
             {insights.problem_spotter.recent_problems.length > 0 && (
