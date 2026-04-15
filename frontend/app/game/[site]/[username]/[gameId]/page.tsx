@@ -1589,7 +1589,7 @@ export default function GameAnalyzerPage() {
             if (initialPly !== null && initialPly >= 0) {
               const treePly = initialPly + 1;
               let targetId: string | null = null;
-              for (const node of tree.nodes.values()) {
+              for (const node of Array.from(tree.nodes.values())) {
                 if (node.ply === treePly) { targetId = node.id; break; }
               }
               tree = targetId ? navigateTo(tree, targetId) : goToStart(tree);
@@ -1676,7 +1676,7 @@ export default function GameAnalyzerPage() {
       
       if (initialPly !== null && initialPly >= 0) {
         const treePly = initialPly + 1;
-        for (const node of tree.nodes.values()) {
+        for (const node of Array.from(tree.nodes.values())) {
           if (node.ply === treePly) {
             tree = navigateTo(tree, node.id);
             break;
