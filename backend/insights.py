@@ -14,6 +14,8 @@ import chess.pgn
 import httpx
 
 from db import (
+    clear_insights_data,
+    clear_quick_scan_data,
     create_insight_job,
     get_active_insight_job,
     get_connection,
@@ -1022,6 +1024,7 @@ async def run_insights_pipeline(
     site: str = "all",
     allow_llm: bool = True,
     source_user_id: str | None = None,
+    trigger_quick_scan: bool = False,
 ) -> None:
     """Run tiered insights processing for a user."""
     started_at = utc_now_iso()
@@ -1188,6 +1191,14 @@ async def run_insights_pipeline(
                 conn.commit()
             finally:
                 conn.close()
+
+            if trigger_quick_scan:
+                from quick_scan import schedule_quick_scan
+                try:
+                    schedule_quick_scan(source_owner_id, username, site=site)
+                except Exception:
+                    pass
+
         except Exception as exc:  # pragma: no cover - last resort error path
             conn = get_connection()
             try:
@@ -1213,18 +1224,27 @@ def schedule_insights_refresh(
     allow_llm: bool = True,
     source_user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create an insights job if none is currently active, then schedule it."""
+    """Create an insights job if none is currently active, then schedule it.
+
+    When force=True, clears all existing insights, quick scan data, and stale
+    jobs so that everything is rebuilt from scratch.
+    """
     canonical_username = username.strip().lower()
     source_owner_id = source_user_id or user_id
     conn = get_connection()
     try:
-        active = get_active_insight_job(conn, user_id, canonical_username, site)
-        if active:
-            return {
-                "scheduled": False,
-                "force_requested": force,
-                "job": active,
-            }
+        if force:
+            clear_insights_data(conn, user_id, canonical_username, site)
+            clear_quick_scan_data(conn, user_id, canonical_username, site)
+            conn.commit()
+        else:
+            active = get_active_insight_job(conn, user_id, canonical_username, site)
+            if active:
+                return {
+                    "scheduled": False,
+                    "force_requested": force,
+                    "job": active,
+                }
 
         job_id = str(uuid.uuid4())
         create_insight_job(
@@ -1257,10 +1277,10 @@ def schedule_insights_refresh(
                 site,
                 allow_llm=allow_llm,
                 source_user_id=source_owner_id,
+                trigger_quick_scan=force,
             )
         )
     except RuntimeError:
-        # No active event loop: job is recorded as queued and can be resumed by API-triggered calls.
         pass
 
     return {
