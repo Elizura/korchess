@@ -298,12 +298,16 @@ def _should_analyze(
     mover_is_white: bool,
     multi_pv: list[dict[str, Any]] | None,
     cfg: TacticalConfig,
+    eval_before: dict[str, Any] | None = None,
 ) -> bool:
     mate_against = _mate_against_mover(eval_after, mover_is_white)
     if mate_against is not None and mate_against <= cfg.forced_mate_plies:
         return True
     best_line_mate, _ = _best_line_mate_for_mover(multi_pv, mover_is_white)
     if best_line_mate > 0 and best_line_mate <= cfg.forced_mate_plies:
+        return True
+    mate_for_mover = _mate_for_mover(eval_before, mover_is_white)
+    if mate_for_mover is not None and mate_for_mover <= cfg.forced_mate_plies:
         return True
 
     if not classification:
@@ -792,6 +796,70 @@ def _skewer_detector(
     }
 
 
+def _missed_mate_from_eval_before(
+    *,
+    board_before: chess.Board,
+    best_move_uci: str | None,
+    played_uci: str | None,
+    pv_before_uci: list[str] | None,
+    mover_color: chess.Color,
+    mover_is_white: bool,
+    eval_before: dict[str, Any] | None,
+    eval_after: dict[str, Any] | None,
+    cp_loss: int | None,
+    cfg: TacticalConfig,
+) -> dict[str, Any] | None:
+    """Detect missed checkmate using eval_before/eval_after when multi_pv is unavailable.
+
+    If eval_before shows mate-for-mover (positive mate for white when mover is white,
+    negative mate for black when mover is black) but eval_after no longer shows it,
+    the user missed a forced mate.
+    """
+    if not best_move_uci or (played_uci and best_move_uci == played_uci):
+        return None
+
+    mate_for_mover = _mate_for_mover(eval_before, mover_is_white)
+    if mate_for_mover is None or mate_for_mover > cfg.forced_mate_plies:
+        return None
+
+    mate_still_there = _mate_for_mover(eval_after, mover_is_white)
+    if mate_still_there is not None and mate_still_there <= mate_for_mover:
+        return None
+
+    best_move = _parse_uci_move(board_before, best_move_uci)
+    if best_move is None:
+        return None
+
+    try:
+        best_move_san = board_before.san(best_move)
+    except Exception:
+        best_move_san = None
+
+    pv_line = _normalize_line_uci(pv_before_uci, cfg.max_pv_plies)
+    material_outcome = _material_from_line(board_before, pv_line, mover_color, cfg.max_pv_plies)
+
+    return {
+        "tactic_detected": True,
+        "tactic_type": "MISSED_FORCED_MATE",
+        "tactic_types": ["MISSED_FORCED_MATE", "FORCED_MATE"],
+        "missed_move_uci": best_move_uci,
+        "missed_move_san": best_move_san,
+        "line_source": "best_line",
+        "material_outcome": material_outcome,
+        "mate_outcome": {
+            "is_mate_sequence": True,
+            "mate_in": mate_for_mover,
+            "side_delivering_mate": "white" if mover_color == chess.WHITE else "black",
+            "subtype": "missed_forcing_mate",
+        },
+        "is_forced": False,
+        "pv_uci": pv_line,
+        "severity_score": round(_severity_score(cp_loss, None), 3),
+        "confidence": 0.90,
+        "evidence": ["missed_forced_mate_from_eval_before", "mate_lost_after_move"],
+    }
+
+
 def detect_tactical_annotation(
     *,
     fen_before: str,
@@ -808,8 +876,6 @@ def detect_tactical_annotation(
     config: TacticalConfig | None = None,
 ) -> dict[str, Any]:
     """Return structured tactical annotation for one deep-analyzed move."""
-    del eval_before  # Reserved for future detectors.
-
     cfg = config or TacticalConfig.from_env()
     if not cfg.enabled:
         return {"tactic_detected": False}
@@ -819,7 +885,7 @@ def detect_tactical_annotation(
         return {"tactic_detected": False}
     mover_is_white = mover_color == chess.WHITE
 
-    if not _should_analyze(classification, cp_loss, eval_after, mover_is_white, multi_pv, cfg):
+    if not _should_analyze(classification, cp_loss, eval_after, mover_is_white, multi_pv, cfg, eval_before=eval_before):
         return {"tactic_detected": False}
 
     try:
@@ -854,6 +920,21 @@ def detect_tactical_annotation(
     )
     if missed_mate:
         return missed_mate
+
+    missed_mate_from_eval = _missed_mate_from_eval_before(
+        board_before=board_before,
+        best_move_uci=best_move_uci,
+        played_uci=played_uci,
+        pv_before_uci=pv_before_uci,
+        mover_color=mover_color,
+        mover_is_white=mover_is_white,
+        eval_before=eval_before,
+        eval_after=eval_after,
+        cp_loss=cp_loss,
+        cfg=cfg,
+    )
+    if missed_mate_from_eval:
+        return missed_mate_from_eval
 
     hanging = _hanging_piece_detector(
         board_before=board_before,
