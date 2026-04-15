@@ -19,6 +19,7 @@ import {
   buildDashboardInsightsCacheKey,
   clearAllCache,
   clearCacheByPrefix,
+  clearCacheKey,
   getCached,
   isFresh,
   setCached,
@@ -177,12 +178,12 @@ interface InsightsProfile {
       ply: number;
       san: string;
       classification: string;
-      cp_loss: number;
       phase: string;
       tactic_type: string | null;
       tactic_types: string[];
       played_at?: string | null;
       opponent?: string | null;
+      time_class?: string | null;
     }>;
   } | null;
 }
@@ -234,6 +235,18 @@ const formatWholePercent = (value: number | null | undefined): string | null => 
 const formatPhaseLabel = (phaseKey: string): string => {
   if (!phaseKey) return "Middlegame";
   return `${phaseKey.charAt(0).toUpperCase()}${phaseKey.slice(1).toLowerCase()}`;
+};
+
+const getTimeControlIcon = (timeClass: string | null | undefined): string | null => {
+  if (!timeClass) return null;
+  const normalized = timeClass.toLowerCase();
+  const iconMap: Record<string, string> = {
+    bullet: "/time-controls/bullet.png",
+    blitz: "/time-controls/blitz.png",
+    rapid: "/time-controls/rapid.png",
+    classical: "/time-controls/classical.png",
+  };
+  return iconMap[normalized] || null;
 };
 
 const humanizeTheme = (theme: string): string => {
@@ -311,7 +324,7 @@ function getTacticBorderClass(count: number, maxCount: number): string {
   return "tactical-card-cyan";
 }
 
-function TacticalCategoryCard({ theme, count, maxCount }: { theme: string; count: number; maxCount: number }) {
+function TacticalCategoryCard({ theme, count, maxCount, username }: { theme: string; count: number; maxCount: number; username: string }) {
   const normalized = theme.trim().toLowerCase();
   const sprite = TACTIC_SPRITE_MAP[normalized];
   const label = TACTIC_CARD_LABEL[normalized] || normalized.replace(/_/g, " ").toUpperCase();
@@ -319,7 +332,10 @@ function TacticalCategoryCard({ theme, count, maxCount }: { theme: string; count
   const borderClass = getTacticBorderClass(count, maxCount);
 
   return (
-    <div className={`tactical-card ${borderClass}`}>
+    <a
+      href={`/problems?user=${encodeURIComponent(username)}&theme=${encodeURIComponent(normalized)}`}
+      className={`tactical-card tactical-card-clickable ${borderClass} block no-underline`}
+    >
       <div className="flex items-start justify-between gap-2 mb-3">
         <span className="tactical-card-label">{label}</span>
         {sprite && (
@@ -335,7 +351,7 @@ function TacticalCategoryCard({ theme, count, maxCount }: { theme: string; count
       <p className="text-base font-semibold leading-relaxed text-[color:var(--zen-muted)] mt-auto">
         {blurb}
       </p>
-    </div>
+    </a>
   );
 }
 
@@ -383,8 +399,6 @@ export default function DashboardPage() {
   const [insightsRefreshing, setInsightsRefreshing] = useState(false);
   const [reportRefreshing, setReportRefreshing] = useState(false);
   const [reportRefreshNotice, setReportRefreshNotice] = useState<string | null>(null);
-  const [problemsPage, setProblemsPage] = useState(0);
-  const PROBLEMS_PER_PAGE = 10;
 
   const importHistory = useMemo(() => {
     if (isAuthenticated) {
@@ -433,7 +447,6 @@ export default function DashboardPage() {
   }, [isAuthenticated, authUserId]);
 
   useEffect(() => {
-    setProblemsPage(0);
     if (!currentUsername) {
       setInsights(null);
       return;
@@ -1000,20 +1013,42 @@ export default function DashboardPage() {
     try {
       const refreshed = await requestInsightsRefresh(currentUsername, true);
       if (refreshed) {
-        trackEvent("insights.refresh.completed", {
+        trackEvent("insights.refresh.triggered", {
           properties: {
             lifecycle_status: refreshed.lifecycle_status,
           },
         });
         setInsights(refreshed);
-        setCached<InsightsProfile | null>(
-          getDashboardInsightsCacheKey(currentUsername),
-          refreshed,
-        );
+        clearCacheKey(getDashboardInsightsCacheKey(currentUsername));
+
+        const pollUntilComplete = async () => {
+          let attempts = 0;
+          const maxAttempts = 120;
+          while (attempts < maxAttempts) {
+            await new Promise(r => setTimeout(r, 5000));
+            attempts++;
+            try {
+              const data = await fetchInsights(currentUsername);
+              setInsights(data);
+              setCached<InsightsProfile | null>(
+                getDashboardInsightsCacheKey(currentUsername),
+                data,
+              );
+              if (!shouldKeepPolling(data)) {
+                break;
+              }
+            } catch {
+              break;
+            }
+          }
+        };
+        pollUntilComplete().finally(() => setInsightsRefreshing(false));
+        return;
       }
-    } finally {
-      setInsightsRefreshing(false);
+    } catch {
+      // fall through
     }
+    setInsightsRefreshing(false);
   };
 
   const handleFilterChange = async (
@@ -1609,7 +1644,7 @@ export default function DashboardPage() {
                   disabled={insightsRefreshing || insightsLoading}
                   className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:text-[color:var(--zen-accent)] transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {insightsRefreshing ? "Refreshing..." : "Refresh AI"}
+                  {insightsRefreshing ? "Refreshing..." : "Refresh Insights"}
                 </button>
               </div>
             </div>
@@ -1727,32 +1762,17 @@ export default function DashboardPage() {
                   Problem Spotter
                 </h3>
               </div>
-              {insights.scan_progress && (
-                <span className="zen-pill px-4 py-2 text-sm text-[color:var(--zen-muted)]">
-                  {insights.scan_progress.status === "running" || insights.scan_progress.status === "queued"
-                    ? `Scanned ${insights.scan_progress.done}/${insights.scan_progress.total} games`
-                    : `${insights.scan_progress.total} games scanned`}
-                </span>
-              )}
             </div>
 
-            {/* Classification summary pills */}
-            <div className="flex flex-wrap gap-3 mb-8">
+            {/* Scan summary */}
+            <div className="mb-8">
               {(() => {
                 const cls = insights.problem_spotter.by_classification;
+                const gamesScanned = insights.scan_progress?.total || insights.coverage?.games_total || 0;
                 return (
-                  <>
-                    {cls.blunders > 0 && (
-                      <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-red-500/10 text-red-400 border border-red-500/20">
-                        {cls.blunders} blunder{cls.blunders !== 1 ? "s" : ""}
-                      </span>
-                    )}
-                    {cls.mistakes > 0 && (
-                      <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20">
-                        {cls.mistakes} mistake{cls.mistakes !== 1 ? "s" : ""}
-                      </span>
-                    )}
-                  </>
+                  <p className="text-base text-[color:var(--zen-muted)]">
+                    Scanned {gamesScanned} games and found {cls.blunders} tactical blunder{cls.blunders !== 1 ? "s" : ""}.
+                  </p>
                 );
               })()}
             </div>
@@ -1770,6 +1790,7 @@ export default function DashboardPage() {
                         theme={item.theme}
                         count={item.count}
                         maxCount={maxCount}
+                        username={currentUsername!}
                       />
                     ))}
                   </div>
@@ -1777,125 +1798,110 @@ export default function DashboardPage() {
               );
             })()}
 
-            {/* Recent problems list */}
+            {/* Recent problems list - Terminal style table */}
             {insights.problem_spotter.recent_problems.length > 0 && (
               <div className="mt-8">
                 {(() => {
-                  const allProblems = insights.problem_spotter.recent_problems;
-                  const totalProblems = allProblems.length;
-                  const totalPages = Math.ceil(totalProblems / PROBLEMS_PER_PAGE);
-                  const startIdx = problemsPage * PROBLEMS_PER_PAGE;
-                  const endIdx = Math.min(startIdx + PROBLEMS_PER_PAGE, totalProblems);
-                  const pageProblems = allProblems.slice(startIdx, endIdx);
+                  const blundersOnly = insights.problem_spotter.recent_problems.filter(p => p.classification === "blunder" && p.tactic_type);
+                  const recentBlunders = blundersOnly.slice(0, 6);
 
                   return (
                     <>
-                      <div className="flex items-center justify-between mb-4">
-                        <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
-                          Recent Problems
-                        </p>
-                        {totalPages > 1 && (
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => setProblemsPage((p) => Math.max(0, p - 1))}
-                              disabled={problemsPage === 0}
-                              className="px-3 py-1.5 text-xs font-medium rounded border border-[color:var(--zen-border)] text-[color:var(--zen-text)] hover:bg-[color:var(--zen-border)]/50 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                            >
-                              Previous
-                            </button>
-                            <span className="text-xs text-[color:var(--zen-muted)]">
-                              {startIdx + 1}–{endIdx} of {totalProblems}
-                            </span>
-                            <button
-                              onClick={() => setProblemsPage((p) => Math.min(totalPages - 1, p + 1))}
-                              disabled={problemsPage >= totalPages - 1}
-                              className="px-3 py-1.5 text-xs font-medium rounded border border-[color:var(--zen-border)] text-[color:var(--zen-text)] hover:bg-[color:var(--zen-border)]/50 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                            >
-                              Next
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        {pageProblems.map((problem, idx) => {
-                          const moveNum = Math.floor(problem.ply / 2) + 1;
-                          const isWhiteMove = problem.ply % 2 === 0;
-                          const moveLabel = `${moveNum}.${isWhiteMove ? "" : ".."} ${problem.san}`;
-                          const classificationColor =
-                            problem.classification === "blunder"
-                              ? "text-red-400"
-                              : problem.classification === "mistake"
-                                ? "text-orange-400"
-                                : "text-yellow-400";
-                          const gameUrl = problem.site && problem.site_game_id
-                            ? `/game/${problem.site}/${currentUsername}/${problem.site_game_id}`
-                            : null;
-
-                          return (
-                            <div
-                              key={`problem-${startIdx + idx}`}
-                              className="flex flex-wrap items-center gap-3 px-4 py-3 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-bg)]"
-                            >
-                              <span className="font-mono text-sm font-semibold text-[color:var(--zen-text)] min-w-[80px]">
-                                {moveLabel}
-                              </span>
-                              <span className={`text-xs font-bold uppercase tracking-wider ${classificationColor}`}>
-                                {problem.classification}
-                              </span>
-                              {problem.tactic_type && (
-                                <span className="px-2 py-0.5 text-xs rounded bg-[color:var(--zen-accent)]/10 text-[color:var(--zen-accent)] border border-[color:var(--zen-accent)]/20">
-                                  {humanizeTheme(problem.tactic_type)}
-                                </span>
-                              )}
-                              <span className="text-xs text-[color:var(--zen-muted)] capitalize">{problem.phase}</span>
-                              <span className="text-xs text-[color:var(--zen-muted)]">−{problem.cp_loss}cp</span>
-                              {problem.opponent && (
-                                <span className="text-xs text-[color:var(--zen-muted)]">vs {problem.opponent}</span>
-                              )}
-                              <div className="flex-1" />
-                              {gameUrl && (
-                                <a
-                                  href={gameUrl}
-                                  className="text-xs text-[color:var(--zen-accent)] hover:underline"
-                                >
-                                  View game
-                                </a>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {totalPages > 1 && (
-                        <div className="flex justify-center mt-4">
-                          <div className="flex items-center gap-1">
-                            {Array.from({ length: Math.min(totalPages, 10) }, (_, i) => {
-                              let pageNum = i;
-                              if (totalPages > 10) {
-                                if (problemsPage < 5) {
-                                  pageNum = i;
-                                } else if (problemsPage > totalPages - 6) {
-                                  pageNum = totalPages - 10 + i;
-                                } else {
-                                  pageNum = problemsPage - 4 + i;
-                                }
-                              }
-                              return (
-                                <button
-                                  key={pageNum}
-                                  onClick={() => setProblemsPage(pageNum)}
-                                  className={`w-8 h-8 text-xs font-medium rounded transition ${
-                                    problemsPage === pageNum
-                                      ? "bg-[color:var(--zen-accent)] text-white"
-                                      : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] hover:bg-[color:var(--zen-border)]/50"
-                                  }`}
-                                >
-                                  {pageNum + 1}
-                                </button>
-                              );
-                            })}
+                      {/* Terminal-style container - matching theme */}
+                      <div className="border-2 border-[#2d2d33] bg-[#1a1a1e] p-6 shadow-[0_0_20px_rgba(46,201,113,0.1)]">
+                        {/* Header */}
+                        <div className="flex items-center justify-between mb-6 pb-4 border-b border-[#2d2d33]">
+                          <div className="flex items-center gap-3">
+                            <span className="text-[#4ade80] text-lg">▌</span>
+                            <h3 className="text-lg font-bold uppercase tracking-wider text-[color:var(--zen-text)]">
+                              RECENT PROBLEMS
+                            </h3>
                           </div>
                         </div>
-                      )}
+
+                        {/* Table */}
+                        <div className="overflow-x-auto">
+                          <table className="w-full">
+                            <thead>
+                              <tr className="border-b border-[#2d2d33]">
+                                <th className="text-left py-4 px-4 text-sm font-bold uppercase tracking-wider text-[color:var(--zen-muted)]">
+                                  Date
+                                </th>
+                                <th className="text-left py-4 px-4 text-sm font-bold uppercase tracking-wider text-[color:var(--zen-muted)]">
+                                  Opponent
+                                </th>
+                                <th className="text-left py-4 px-4 text-sm font-bold uppercase tracking-wider text-[color:var(--zen-muted)]">
+                                  Time Control
+                                </th>
+                                <th className="text-left py-4 px-4 text-sm font-bold uppercase tracking-wider text-[color:var(--zen-muted)]">
+                                  Type
+                                </th>
+                                <th className="text-left py-4 px-4 text-sm font-bold uppercase tracking-wider text-[color:var(--zen-muted)]">
+                                  Phase
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {recentBlunders.map((problem, idx) => {
+                                const gameUrl = problem.site && problem.site_game_id
+                                  ? `/game/${problem.site}/${currentUsername}/${problem.site_game_id}?ply=${problem.ply}`
+                                  : null;
+
+                                return (
+                                  <tr
+                                    key={`problem-${idx}`}
+                                    onClick={() => gameUrl && router.push(gameUrl)}
+                                    className={`border-b border-[#2d2d33]/50 transition-all duration-200 ${
+                                      gameUrl 
+                                        ? "cursor-pointer hover:bg-[#2d2d33]/40 hover:border-[#4ade80]/50 hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(74,222,128,0.15)]" 
+                                        : ""
+                                    }`}
+                                  >
+                                    <td className="py-5 px-4">
+                                      <span className="text-base text-[color:var(--zen-muted)]">
+                                        {problem.played_at
+                                          ? new Date(problem.played_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                                          : "—"}
+                                      </span>
+                                    </td>
+                                    <td className="py-5 px-4">
+                                      <span className="text-base font-semibold text-[color:var(--zen-text)]">
+                                        {problem.opponent || "—"}
+                                      </span>
+                                    </td>
+                                    <td className="py-5 px-4">
+                                      <span className="inline-flex items-center gap-2 px-3 py-1 text-sm font-medium capitalize bg-[#2d2d33] text-[color:var(--zen-text)] border border-[#3d3d43]">
+                                        {getTimeControlIcon(problem.time_class) && (
+                                          <img 
+                                            src={getTimeControlIcon(problem.time_class)!} 
+                                            alt="" 
+                                            className="w-4 h-4"
+                                          />
+                                        )}
+                                        {problem.time_class || "—"}
+                                      </span>
+                                    </td>
+                                    <td className="py-5 px-4">
+                                      {problem.tactic_type ? (
+                                        <span className="inline-block px-4 py-1.5 text-sm font-medium bg-[#6d7dcf]/20 text-[#6d7dcf] border border-[#6d7dcf]/30">
+                                          {humanizeTheme(problem.tactic_type)}
+                                        </span>
+                                      ) : (
+                                        <span className="text-[color:var(--zen-muted)]">—</span>
+                                      )}
+                                    </td>
+                                    <td className="py-5 px-4">
+                                      <span className="text-base text-[color:var(--zen-muted)] capitalize">
+                                        {problem.phase}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
                     </>
                   );
                 })()}

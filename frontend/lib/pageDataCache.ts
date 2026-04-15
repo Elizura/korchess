@@ -95,6 +95,17 @@ export const isFresh = <T>(entry: CacheEntry<T> | null, ttlMs: number): boolean 
   return Date.now() - entry.storedAt <= ttlMs;
 };
 
+export const clearCacheKey = (key: string): void => {
+  memoryCache.delete(key);
+  const storage = getSessionStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(storageKey(key));
+  } catch {
+    // ignore storage failures
+  }
+};
+
 export const clearCacheByPrefix = (prefix: string): void => {
   for (const key of Array.from(memoryCache.keys())) {
     if (key.startsWith(prefix)) {
