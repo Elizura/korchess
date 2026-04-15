@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from "react";
 import { Chess } from "chess.js";
 import Link from "next/link";
@@ -620,9 +620,11 @@ const compactNarrationBullets = ({
 export default function GameAnalyzerPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const site = params.site as string;
   const username = decodeURIComponent(params.username as string);
   const gameId = params.gameId as string;
+  const initialPly = searchParams.get("ply") ? parseInt(searchParams.get("ply")!, 10) : null;
   const { data: session } = useSession();
 
   const authHeaders = useMemo((): Record<string, string> => {
@@ -1583,7 +1585,17 @@ export default function GameAnalyzerPage() {
               tempChess.move(move.san);
               tree = addMove(tree, move.san, move.lan, tempChess.fen());
             }
-            tree = goToStart(tree);
+            
+            if (initialPly !== null && initialPly >= 0) {
+              const treePly = initialPly + 1;
+              let targetId: string | null = null;
+              for (const node of tree.nodes.values()) {
+                if (node.ply === treePly) { targetId = node.id; break; }
+              }
+              tree = targetId ? navigateTo(tree, targetId) : goToStart(tree);
+            } else {
+              tree = goToStart(tree);
+            }
             setMoveTree(tree);
           } catch (e) {
             console.error("Failed to parse PGN:", e);
@@ -1660,7 +1672,18 @@ export default function GameAnalyzerPage() {
       setAnalysisStatus("completed");
 
       // Rebuild tree with analysis data
-      const tree = buildTreeFromAnalysis(data.analysis.moves, undefined, game?.opening_ply_count);
+      let tree = buildTreeFromAnalysis(data.analysis.moves, undefined, game?.opening_ply_count);
+      
+      if (initialPly !== null && initialPly >= 0) {
+        const treePly = initialPly + 1;
+        for (const node of tree.nodes.values()) {
+          if (node.ply === treePly) {
+            tree = navigateTo(tree, node.id);
+            break;
+          }
+        }
+      }
+      
       setMoveTree(tree);
       setReviewMode(false);
       setReviewCurrentPly(null);
@@ -1673,7 +1696,7 @@ export default function GameAnalyzerPage() {
     }
     setAnalyzing(false);
     analysisStartTime.current = null;
-  }, [game?.opening_ply_count]);
+  }, [game?.opening_ply_count, initialPly]);
 
   // Hydrate cached in-depth analysis on page load (does not start a new job)
   useEffect(() => {
