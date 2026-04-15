@@ -2227,22 +2227,92 @@ def get_scanned_game_ids(
     return {(row["site"], row["site_game_id"]) for row in cursor.fetchall()}
 
 
+def clear_quick_scan_data(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> None:
+    """Delete all quick scan results and jobs for a user so they can be re-scanned."""
+    canonical = username.strip().lower()
+    cursor = conn.cursor()
+
+    if site == "all":
+        cursor.execute(
+            "DELETE FROM game_quick_scans WHERE user_id = %s AND username = %s",
+            (user_id, canonical),
+        )
+        cursor.execute(
+            "DELETE FROM scan_jobs WHERE user_id = %s AND username = %s",
+            (user_id, canonical),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM game_quick_scans WHERE user_id = %s AND username = %s AND site = %s",
+            (user_id, canonical, site),
+        )
+        cursor.execute(
+            "DELETE FROM scan_jobs WHERE user_id = %s AND username = %s AND site = %s",
+            (user_id, canonical, site),
+        )
+
+
+def clear_insights_data(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site: str = "all",
+) -> None:
+    """Delete player insights, insight game features, and insight jobs for a fresh rebuild."""
+    canonical = username.strip().lower()
+    cursor = conn.cursor()
+
+    if site == "all":
+        cursor.execute(
+            "DELETE FROM player_insights WHERE user_id = %s AND username = %s",
+            (user_id, canonical),
+        )
+        cursor.execute(
+            "DELETE FROM insight_game_features WHERE user_id = %s AND username = %s",
+            (user_id, canonical),
+        )
+        cursor.execute(
+            "DELETE FROM insight_jobs WHERE user_id = %s AND username = %s",
+            (user_id, canonical),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM player_insights WHERE user_id = %s AND username = %s AND site = %s",
+            (user_id, canonical, site),
+        )
+        cursor.execute(
+            "DELETE FROM insight_game_features WHERE user_id = %s AND username = %s AND site = %s",
+            (user_id, canonical, site),
+        )
+        cursor.execute(
+            "DELETE FROM insight_jobs WHERE user_id = %s AND username = %s AND site = %s",
+            (user_id, canonical, site),
+        )
+
+
 def get_quick_scan_results(
     conn: psycopg.Connection,
     user_id: str,
     username: str,
     site: str = "all",
 ) -> list[dict]:
-    """Fetch all quick-scan results for aggregation."""
+    """Fetch all quick-scan results for aggregation, joined with game info."""
     cursor = conn.cursor()
     query = """
-        SELECT site, site_game_id, problems_json, summary_json, scanned_at
-        FROM game_quick_scans
-        WHERE user_id = %s AND username = %s
+        SELECT qs.site, qs.site_game_id, qs.problems_json, qs.summary_json, qs.scanned_at,
+               g.time_class, g.opponent, g.played_at
+        FROM game_quick_scans qs
+        LEFT JOIN games g ON qs.user_id = g.user_id AND qs.site = g.site AND qs.site_game_id = g.site_game_id
+        WHERE qs.user_id = %s AND qs.username = %s
     """
     params: list = [user_id, username.strip().lower()]
     if site != "all":
-        query += " AND site = %s"
+        query += " AND qs.site = %s"
         params.append(site)
     cursor.execute(query, params)
     rows = []
@@ -2269,39 +2339,56 @@ def get_quick_scan_problem_spotter(
 
     by_theme: dict[str, int] = {}
     by_phase: dict[str, int] = {"opening": 0, "middlegame": 0, "endgame": 0}
-    total_blunders = 0
-    total_mistakes = 0
+    tactical_blunders = 0
+    tactical_mistakes = 0
     all_problems: list[dict] = []
 
     for row in results:
         problems_data = row.get("problems") or {}
         problems_list = problems_data.get("problems", [])
-        summary = problems_data.get("summary") or row.get("summary") or {}
-
-        total_blunders += int(summary.get("blunders") or 0)
-        total_mistakes += int(summary.get("mistakes") or 0)
 
         for problem in problems_list:
             classification = problem.get("classification")
-            # Only include blunders and mistakes, skip inaccuracies
             if classification not in ("blunder", "mistake"):
                 continue
 
             tactic_type = problem.get("tactic_type")
-            if tactic_type:
-                by_theme[tactic_type] = by_theme.get(tactic_type, 0) + 1
+            if not tactic_type:
+                continue
+
+            if classification == "blunder":
+                tactical_blunders += 1
+            else:
+                tactical_mistakes += 1
+
+            by_theme[tactic_type] = by_theme.get(tactic_type, 0) + 1
 
             phase = problem.get("phase", "middlegame")
             if phase in by_phase:
                 by_phase[phase] += 1
 
+            problem_data = {**problem}
+            problem_data.pop("cp_loss", None)
             all_problems.append({
-                **problem,
+                **problem_data,
                 "site": row["site"],
                 "site_game_id": row["site_game_id"],
+                "time_class": row.get("time_class"),
+                "opponent": row.get("opponent"),
+                "played_at": row.get("played_at"),
             })
 
-    all_problems.sort(key=lambda p: p.get("cp_loss", 0), reverse=True)
+    # Sort by severity: blunders first, then mistakes
+    def sort_key(p):
+        classification = p.get("classification", "")
+        if classification == "blunder":
+            return 0
+        elif classification == "mistake":
+            return 1
+        else:
+            return 2
+    
+    all_problems.sort(key=sort_key)
 
     theme_items = sorted(
         [{"theme": t, "count": c} for t, c in by_theme.items()],
@@ -2310,12 +2397,90 @@ def get_quick_scan_problem_spotter(
     )
 
     return {
-        "total_problems": total_blunders + total_mistakes,
+        "total_problems": tactical_blunders + tactical_mistakes,
         "by_theme": theme_items,
         "by_phase": by_phase,
         "by_classification": {
-            "blunders": total_blunders,
-            "mistakes": total_mistakes,
+            "blunders": tactical_blunders,
+            "mistakes": tactical_mistakes,
         },
         "recent_problems": all_problems[:recent_limit],
+    }
+
+
+def get_problems_by_theme(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    theme: str,
+    site: str = "all",
+    time_control: str | None = None,
+    phase: str | None = None,
+    page: int = 0,
+    page_size: int = 8,
+) -> dict:
+    """Return paginated problems matching a specific tactic theme with filters."""
+    results = get_quick_scan_results(conn, user_id, username, site)
+    matched: list[dict] = []
+    theme_lower = theme.strip().lower()
+    time_controls_set: set[str] = set()
+    phases_set: set[str] = set()
+
+    for row in results:
+        problems_data = row.get("problems") or {}
+        problems_list = problems_data.get("problems", [])
+
+        for problem in problems_list:
+            classification = problem.get("classification")
+            if classification not in ("blunder", "mistake"):
+                continue
+
+            tactic_type = (problem.get("tactic_type") or "").lower()
+            tactic_types = [t.lower() for t in (problem.get("tactic_types") or [])]
+            if tactic_type != theme_lower and theme_lower not in tactic_types:
+                continue
+
+            problem_data = {**problem}
+            problem_data.pop("cp_loss", None)
+            item = {
+                **problem_data,
+                "site": row["site"],
+                "site_game_id": row["site_game_id"],
+                "time_class": row.get("time_class"),
+                "opponent": row.get("opponent"),
+                "played_at": row.get("played_at"),
+            }
+            matched.append(item)
+
+            if item.get("time_class"):
+                time_controls_set.add(item["time_class"])
+            if item.get("phase"):
+                phases_set.add(item["phase"])
+
+    matched.sort(
+        key=lambda p: (0 if p.get("classification") == "blunder" else 1),
+    )
+
+    total_count = len(matched)
+
+    if time_control:
+        matched = [p for p in matched if p.get("time_class") == time_control]
+    if phase:
+        matched = [p for p in matched if p.get("phase") == phase]
+
+    filtered_count = len(matched)
+
+    start = page * page_size
+    end = start + page_size
+    paginated = matched[start:end]
+
+    return {
+        "items": paginated,
+        "total_count": total_count,
+        "filtered_count": filtered_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (filtered_count + page_size - 1) // page_size if filtered_count > 0 else 0,
+        "available_time_controls": sorted(time_controls_set),
+        "available_phases": sorted(phases_set),
     }

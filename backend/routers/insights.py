@@ -7,12 +7,13 @@ from auth import get_optional_user
 from db import (
     ensure_public_user_for_username,
     get_latest_scan_job,
+    get_problems_by_theme,
     get_public_user_id_for_username,
     get_quick_scan_problem_spotter,
 )
 from dependencies import get_db, validate_site
 from insights import get_insights_state, schedule_insights_refresh
-from schemas import InsightsProfileResponse, InsightsRequest
+from schemas import InsightsProfileResponse, InsightsRequest, ProblemsByThemeResponse
 
 router = APIRouter(tags=["insights"])
 
@@ -113,3 +114,32 @@ async def refresh_insights_profile(
     state = get_insights_state(user_id, username, site)
     state["user_id"] = user_id
     return _build_profile_response(state, conn)
+
+
+@router.get("/insights/problems-by-theme", response_model=ProblemsByThemeResponse)
+async def get_problems_by_theme_endpoint(
+    username: str = Query(..., min_length=1, max_length=50),
+    theme: str = Query(..., min_length=1, max_length=100),
+    site: str = Query(default="all", pattern="^(all|lichess|chesscom)$"),
+    time_control: str | None = Query(default=None),
+    phase: str | None = Query(default=None),
+    page: int = Query(default=0, ge=0),
+    page_size: int = Query(default=8, ge=1, le=100),
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict | None = Depends(get_optional_user),
+):
+    """Return paginated problems matching a specific tactic theme for a user."""
+    site = validate_site(site)
+    username = username.strip().lower()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+
+    public_user_id = get_public_user_id_for_username(conn, username)
+    user_id = current_user["id"] if current_user else public_user_id
+    return get_problems_by_theme(
+        conn, user_id, username, theme, site,
+        time_control=time_control,
+        phase=phase,
+        page=page,
+        page_size=page_size,
+    )

@@ -323,12 +323,24 @@ class QuickScanProblemItem(BaseModel):
     ply: int
     san: str
     classification: str | None = None
-    cp_loss: int
     phase: str
     tactic_type: str | None = None
     tactic_types: list[str] = []
     played_at: str | None = None
     opponent: str | None = None
+    time_class: str | None = None
+
+
+class ProblemsByThemeResponse(BaseModel):
+    """Paginated response for problems filtered by theme."""
+    items: list[QuickScanProblemItem] = []
+    total_count: int = 0
+    filtered_count: int = 0
+    page: int = 0
+    page_size: int = 8
+    total_pages: int = 0
+    available_time_controls: list[str] = []
+    available_phases: list[str] = []
 
 
 class ProblemSpotterData(BaseModel):
