@@ -407,11 +407,11 @@ export default function DashboardPage() {
     return guestImportHistory;
   }, [isAuthenticated, guestImportHistory, accountImportHistory]);
 
-  // Redirect authenticated users who haven't completed onboarding; fetch profile for nav
+  // Fetch profile for nav (onboarding is optional, no redirect)
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    const checkOnboarding = async () => {
+    const fetchProfile = async () => {
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/v1/auth/profile`,
@@ -421,16 +421,13 @@ export default function DashboardPage() {
         const profile = await res.json();
         setProfileUsername(profile.username || "");
         setProfileAvatar(profile.avatar || "pawn");
-        if (!profile.onboarding_complete) {
-          router.replace("/onboarding");
-        }
       } catch {
         // Ignore; user can still use dashboard
       }
     };
 
-    checkOnboarding();
-  }, [isAuthenticated, router, session?.idToken]);
+    fetchProfile();
+  }, [isAuthenticated, session?.idToken]);
 
   // Always load guest-local "recently analyzed" history.
   useEffect(() => {

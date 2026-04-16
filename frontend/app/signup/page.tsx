@@ -39,12 +39,7 @@ export default function SignupPage() {
         return;
       }
 
-      const profile = await profileRes.json();
-      if (profile.onboarding_complete) {
-        router.replace(safeNextPath || "/dashboard");
-      } else {
-        router.replace(withNextParam("/onboarding", safeNextPath));
-      }
+      router.replace(safeNextPath || "/dashboard");
     } catch {
       setProfileError("Something went wrong. Please try again.");
     }
