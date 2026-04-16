@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class ImportRequest(BaseModel):
     """Request body for importing games."""
     username: str = Field(..., min_length=1, max_length=50)
-    max_games: int = Field(default=2000, ge=1, le=10000)
+    max_games: int = Field(default=500, ge=1, le=10000)
 
 
 class ImportResponse(BaseModel):
@@ -120,22 +120,6 @@ ReviewTag = Literal[
     "miss",
     "blunder",
 ]
-
-
-class AnalysisResult(BaseModel):
-    """Analysis result structure."""
-    opening_eval_cp: int | None
-    checkpoints: list[dict]
-    biggest_mistake: dict | None
-    accuracy: int
-    meta: dict
-
-
-class AnalysisResponse(BaseModel):
-    """Response for analysis endpoint."""
-    status: str  # "ready" | "missing"
-    analysis: AnalysisResult | None = None
-    created_at: str | None = None
 
 
 class EvalScore(BaseModel):

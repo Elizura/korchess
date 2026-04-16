@@ -1,4 +1,4 @@
-"""Game analysis endpoints (lightweight and full)."""
+"""Game analysis endpoints (full analysis and AI insights)."""
 
 import asyncio
 import json
@@ -16,26 +16,22 @@ from db import (
     delete_analysis_job,
     ensure_public_user_for_username,
     get_ai_game_insights,
-    get_analysis,
     get_analysis_job,
     get_connection,
     get_full_analysis,
     get_game_by_id,
     get_public_user_id_for_username,
     log_ai_insights_request,
-    save_analysis,
     save_ai_game_insights,
     save_full_analysis,
     save_full_analysis_insights,
 )
-from analysis import run_lightweight_analysis
 from full_analysis import run_full_analysis
 from game_insights_narration import ensure_narration, is_current_clean_narration_payload
 from single_game_insights import compute_single_game_insights
 
 from schemas import (
     AIInsightsResponse,
-    AnalysisResponse,
     FullAnalysisResponse,
     SingleGameInsightsResponse,
 )
@@ -277,161 +273,6 @@ async def run_analysis_background(
         async with active_analysis_lock:
             active_analysis_count -= 1
             print(f"[Analysis] Active count now: {active_analysis_count}")
-
-
-@router.get("/{site}/{username}/{game_id}", response_model=AnalysisResponse)
-async def get_analysis_endpoint(
-    site: str,
-    username: str,
-    game_id: str,
-    conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
-):
-    """Get cached analysis for a game."""
-    site = validate_site(site)
-    username = username.strip()
-
-    if not username:
-        raise HTTPException(status_code=400, detail="Username is required.")
-
-    user_id = _resolve_public_user_id(conn, username)
-    cached = get_analysis(conn, user_id, username, game_id, site)
-
-    if not cached:
-        return AnalysisResponse(status="missing")
-
-    return AnalysisResponse(
-        status="ready",
-        analysis=json.loads(cached["result_json"]),
-        created_at=cached["created_at"]
-    )
-
-
-@router.post("/{site}/{username}/{game_id}", response_model=AnalysisResponse)
-async def run_analysis_endpoint(
-    site: str,
-    username: str,
-    game_id: str,
-    request: Request,
-    conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
-):
-    """Run analysis on a game (or return cached)."""
-    site = validate_site(site)
-    username = username.strip()
-
-    if not username:
-        raise HTTPException(status_code=400, detail="Username is required.")
-
-    username_hash = hash_username(username)
-    await track_server_event(
-        conn,
-        event_name="analysis.light.start",
-        user_id=current_user["id"] if current_user else None,
-        request=request,
-        properties={
-            "site": site,
-            "username": username_hash,
-        },
-    )
-
-    user_id = _resolve_public_user_id(conn, username)
-    cached = get_analysis(conn, user_id, username, game_id, site)
-    if cached:
-        await track_server_event(
-            conn,
-            event_name="analysis.light.success",
-            user_id=current_user["id"] if current_user else None,
-            request=request,
-            properties={
-                "site": site,
-                "username": username_hash,
-                "cached": True,
-            },
-        )
-        conn.commit()
-        return AnalysisResponse(
-            status="ready",
-            analysis=json.loads(cached["result_json"]),
-            created_at=cached["created_at"]
-        )
-
-    game = get_game_by_id(conn, user_id, username, game_id, site)
-    if not game:
-        await track_server_event(
-            conn,
-            event_name="analysis.light.failed",
-            user_id=current_user["id"] if current_user else None,
-            request=request,
-            properties={
-                "site": site,
-                "username": username_hash,
-                "reason": "Game not found",
-            },
-        )
-        conn.commit()
-        raise HTTPException(status_code=404, detail="Game not found")
-
-    if not game.get("pgn"):
-        await track_server_event(
-            conn,
-            event_name="analysis.light.failed",
-            user_id=current_user["id"] if current_user else None,
-            request=request,
-            properties={
-                "site": site,
-                "username": username_hash,
-                "reason": "Game has no PGN",
-            },
-        )
-        conn.commit()
-        raise HTTPException(status_code=400, detail="Game has no PGN")
-
-    try:
-        result = run_lightweight_analysis(game["pgn"], game["color"])
-    except Exception as e:
-        await track_server_event(
-            conn,
-            event_name="analysis.light.failed",
-            user_id=current_user["id"] if current_user else None,
-            request=request,
-            properties={
-                "site": site,
-                "username": username_hash,
-                "reason": f"Analysis failed: {str(e)}",
-            },
-        )
-        conn.commit()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-
-    settings = {"time_ms": 150, "checkpoints": [10, 20, 30, 40]}
-    save_analysis(
-        conn, user_id, username, game_id, site,
-        engine_name="stockfish",
-        engine_version="15+",
-        settings_json=json.dumps(settings),
-        result_json=json.dumps(result)
-    )
-    await track_server_event(
-        conn,
-        event_name="analysis.light.success",
-        user_id=current_user["id"] if current_user else None,
-        request=request,
-        properties={
-            "site": site,
-            "username": username_hash,
-            "cached": False,
-        },
-    )
-    conn.commit()
-
-    saved = get_analysis(conn, user_id, username, game_id, site)
-
-    return AnalysisResponse(
-        status="ready",
-        analysis=result,
-        created_at=saved["created_at"] if saved else None
-    )
 
 
 @router.get(

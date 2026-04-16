@@ -4,7 +4,7 @@ This module contains:
 - Schema initialization (init_db)
 - User management (upsert_user, get_user_by_id, etc.)
 - Game management (upsert_game, get_games_by_opening, etc.)
-- Analysis caching (save_analysis, get_full_analysis, etc.)
+- Analysis caching (get_full_analysis, save_full_analysis, etc.)
 - Insights storage (player_insights, insight_jobs, etc.)
 - Import tracking (imports table)
 
@@ -166,25 +166,6 @@ def init_db() -> None:
     )
     if not cursor.fetchone():
         cursor.execute("ALTER TABLE imports ADD COLUMN last_synced_at TIMESTAMPTZ")
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS analysis (
-            id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            site TEXT NOT NULL,
-            site_game_id TEXT NOT NULL,
-            username TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            engine_name TEXT NOT NULL,
-            engine_version TEXT,
-            settings_json TEXT NOT NULL,
-            result_json TEXT NOT NULL,
-            UNIQUE(user_id, site, site_game_id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-        """
-    )
 
     cursor.execute(
         """
@@ -1206,71 +1187,6 @@ def get_game_by_id(
     if not row:
         return None
     return dict(row)
-
-
-def get_analysis(
-    conn: psycopg.Connection,
-    user_id: str,
-    username: str,
-    site_game_id: str,
-    site: str,
-) -> dict | None:
-    """Get cached analysis for a game."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT result_json, created_at, engine_name, engine_version
-        FROM analysis
-        WHERE user_id = %s AND username = %s AND site_game_id = %s AND site = %s
-        """,
-        (user_id, username.strip().lower(), site_game_id, site),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return None
-    return dict(row)
-
-
-def save_analysis(
-    conn: psycopg.Connection,
-    user_id: str,
-    username: str,
-    site_game_id: str,
-    site: str,
-    engine_name: str,
-    engine_version: str,
-    settings_json: str,
-    result_json: str,
-) -> None:
-    """Save analysis result to cache."""
-    cursor = conn.cursor()
-    created_at = datetime.now(timezone.utc).isoformat()
-    cursor.execute(
-        """
-        INSERT INTO analysis 
-        (user_id, site, site_game_id, username, created_at, engine_name, 
-         engine_version, settings_json, result_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, site, site_game_id)
-        DO UPDATE SET
-            created_at = EXCLUDED.created_at,
-            engine_name = EXCLUDED.engine_name,
-            engine_version = EXCLUDED.engine_version,
-            settings_json = EXCLUDED.settings_json,
-            result_json = EXCLUDED.result_json
-        """,
-        (
-            user_id,
-            site,
-            site_game_id,
-            username.strip().lower(),
-            created_at,
-            engine_name,
-            engine_version,
-            settings_json,
-            result_json,
-        ),
-    )
 
 
 def get_full_analysis(
