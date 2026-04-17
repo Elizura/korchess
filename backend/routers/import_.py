@@ -1,4 +1,7 @@
-"""Import games from Lichess and Chess.com."""
+"""Import games from Lichess and Chess.com.
+
+Games and imports are shared by (username, site) - not owned by individual users.
+"""
 
 import logging
 from datetime import datetime, timezone
@@ -8,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from analytics import hash_username, track_server_event
 from db import (
-    ensure_public_user_for_username,
     get_import_history,
     get_import_status,
     upsert_game,
@@ -43,8 +45,6 @@ def _parse_synced_at(raw: str | None) -> datetime | None:
 
 def _record_import_status(
     conn: psycopg.Connection,
-    public_user_id: str,
-    current_user: dict | None,
     username: str,
     site: str,
     imported: int,
@@ -53,28 +53,21 @@ def _record_import_status(
     imported_at: str,
     last_synced_at: str,
 ) -> None:
-    """Write import status for the public user and optionally the signed-in user."""
+    """Write import status for username/site."""
     upsert_import_status(
-        conn, public_user_id, username, site,
+        conn, username, site,
         imported, skipped, max_games, imported_at,
         last_synced_at=last_synced_at,
     )
-    if current_user:
-        upsert_import_status(
-            conn, current_user["id"], username, site,
-            imported, skipped, max_games, imported_at,
-            last_synced_at=last_synced_at,
-        )
 
 
-def _schedule_insights(public_user_id: str, username: str, site: str) -> None:
-    """Schedule insights refresh and quick scan for the public user.
+def _schedule_insights(username: str, site: str) -> None:
+    """Schedule insights refresh and quick scan.
     
-    Insights are not owned by individual users - they are shared per chess username.
+    Insights are shared per chess username - not owned by individual users.
     """
     try:
         schedule_insights_refresh(
-            user_id=public_user_id,
             username=username,
             site="all",
             reason="import",
@@ -83,7 +76,7 @@ def _schedule_insights(public_user_id: str, username: str, site: str) -> None:
         logger.warning("Failed to schedule insights refresh after %s import: %s", site, exc)
 
     try:
-        schedule_quick_scan(public_user_id, username, site="all")
+        schedule_quick_scan(username, site="all")
     except Exception as exc:
         logger.warning("Failed to schedule quick scan after %s import: %s", site, exc)
 
@@ -91,10 +84,9 @@ def _schedule_insights(public_user_id: str, username: str, site: str) -> None:
 @router.get("/history", response_model=ImportHistoryResponse)
 async def get_import_history_endpoint(
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict = Depends(get_registered_user),
 ):
-    """Get last 10 import records for the authenticated user."""
-    rows = get_import_history(conn, current_user["id"], limit=10)
+    """Get last 10 import records."""
+    rows = get_import_history(conn, limit=10)
     return ImportHistoryResponse(
         history=[ImportHistoryItem(**r) for r in rows]
     )
@@ -113,8 +105,7 @@ async def import_lichess_games(
         raise HTTPException(status_code=400, detail="Username is required.")
 
     username_hash = hash_username(username)
-    public_user_id = ensure_public_user_for_username(conn, username)
-    existing = get_import_status(conn, public_user_id, username, "lichess")
+    existing = get_import_status(conn, username, "lichess")
     existing_games = int(existing.get("total_games") or 0)
     last_synced_at = _parse_synced_at(existing.get("last_synced_at"))
     is_sync = existing_games > 0 and last_synced_at is not None
@@ -168,7 +159,7 @@ async def import_lichess_games(
     if not pgn_text.strip():
         if is_sync:
             _record_import_status(
-                conn, public_user_id, current_user, username, "lichess",
+                conn, username, "lichess",
                 0, 0, max_games, imported_at, synced_at_value,
             )
             conn.commit()
@@ -199,7 +190,7 @@ async def import_lichess_games(
     if not games and skipped == 0:
         if is_sync:
             _record_import_status(
-                conn, public_user_id, current_user, username, "lichess",
+                conn, username, "lichess",
                 0, 0, max_games, imported_at, synced_at_value,
             )
             conn.commit()
@@ -224,9 +215,8 @@ async def import_lichess_games(
             detail=f"No games found for user '{username}'."
         )
 
-    # do bulk insert here
+    imported = 0
     for game in games:
-        game["user_id"] = public_user_id
         if upsert_game(conn, game):
             imported += 1
         else:
@@ -234,7 +224,7 @@ async def import_lichess_games(
     conn.commit()
 
     _record_import_status(
-        conn, public_user_id, current_user, username, "lichess",
+        conn, username, "lichess",
         imported, skipped, max_games, imported_at, synced_at_value,
     )
 
@@ -255,7 +245,7 @@ async def import_lichess_games(
     )
     conn.commit()
 
-    _schedule_insights(public_user_id, username, "lichess")
+    _schedule_insights(username, "lichess")
 
     return ImportResponse(
         username=username,
@@ -279,8 +269,7 @@ async def import_chesscom_games(
         raise HTTPException(status_code=400, detail="Username is required.")
 
     username_hash = hash_username(username)
-    public_user_id = ensure_public_user_for_username(conn, username)
-    existing = get_import_status(conn, public_user_id, username, "chesscom")
+    existing = get_import_status(conn, username, "chesscom")
     existing_games = int(existing.get("total_games") or 0)
     last_synced_at = _parse_synced_at(existing.get("last_synced_at"))
     is_sync = existing_games > 0 and last_synced_at is not None
@@ -332,7 +321,7 @@ async def import_chesscom_games(
     if not games:
         if is_sync:
             _record_import_status(
-                conn, public_user_id, current_user, username, "chesscom",
+                conn, username, "chesscom",
                 0, 0, max_games, imported_at, synced_at_value,
             )
             conn.commit()
@@ -360,7 +349,6 @@ async def import_chesscom_games(
     imported = 0
     skipped = 0
     for game in games:
-        game["user_id"] = public_user_id
         if upsert_game(conn, game):
             imported += 1
         else:
@@ -368,7 +356,7 @@ async def import_chesscom_games(
     conn.commit()
 
     _record_import_status(
-        conn, public_user_id, current_user, username, "chesscom",
+        conn, username, "chesscom",
         imported, skipped, max_games, imported_at, synced_at_value,
     )
 
@@ -389,7 +377,7 @@ async def import_chesscom_games(
     )
     conn.commit()
 
-    _schedule_insights(public_user_id, username, "chesscom")
+    _schedule_insights(username, "chesscom")
 
     return ImportResponse(
         username=username,

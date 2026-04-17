@@ -1,4 +1,7 @@
-"""Openings and games-by-opening endpoints."""
+"""Openings and games-by-opening endpoints.
+
+Game data is shared by (username, site) - not owned by individual users.
+"""
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,7 +10,6 @@ from db import (
     get_games_by_opening,
     get_import_status,
     get_openings_stats,
-    get_public_user_id_for_username,
     get_variations_stats,
 )
 from schemas import (
@@ -17,7 +19,6 @@ from schemas import (
     VariationStats,
 )
 from dependencies import get_db, validate_site
-from auth import get_optional_user
 
 router = APIRouter(tags=["openings"])
 
@@ -30,7 +31,6 @@ async def get_openings_report(
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
     limit: int = Query(default=10, ge=1, le=100, description="Max number of openings to return (top by games)"),
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
     """
     Get aggregated opening statistics for a user.
@@ -45,8 +45,7 @@ async def get_openings_report(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    user_id = get_public_user_id_for_username(conn, username)
-    stats = get_openings_stats(conn, user_id, username, color, time_class, site, limit)
+    stats = get_openings_stats(conn, username, color, time_class, site, limit)
 
     return [OpeningStats(**s) for s in stats]
 
@@ -56,7 +55,6 @@ async def get_import_status_endpoint(
     site: str,
     username: str,
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
     """Get last import status and total games count for a user on a specific site."""
     site = validate_site(site)
@@ -65,8 +63,7 @@ async def get_import_status_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    user_id = get_public_user_id_for_username(conn, username)
-    status = get_import_status(conn, user_id, username, site)
+    status = get_import_status(conn, username, site)
 
     return ImportStatusResponse(**status)
 
@@ -83,7 +80,6 @@ async def get_games_for_opening(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=50),
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
     """Get recent games and summary for a user and opening with filters."""
     site = validate_site(site)
@@ -95,9 +91,8 @@ async def get_games_for_opening(
     if not opening_key:
         raise HTTPException(status_code=400, detail="Opening key is required.")
 
-    user_id = get_public_user_id_for_username(conn, username)
     result_data = get_games_by_opening(
-        conn, user_id, username, opening_key, variation_key, color, time_class, result, offset, limit, site
+        conn, username, opening_key, variation_key, color, time_class, result, offset, limit, site
     )
 
     if result_data["summary"]["total_games"] == 0:
@@ -117,7 +112,6 @@ async def get_opening_variations(
     color: str = Query(default="all", pattern="^(all|white|black)$"),
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
     """Get variation statistics for a user's opening key with filters."""
     site = validate_site(site)
@@ -128,7 +122,6 @@ async def get_opening_variations(
     if not opening_key:
         raise HTTPException(status_code=400, detail="Opening key is required.")
 
-    user_id = get_public_user_id_for_username(conn, username)
-    stats = get_variations_stats(conn, user_id, username, opening_key, color, time_class, site)
+    stats = get_variations_stats(conn, username, opening_key, color, time_class, site)
 
     return [VariationStats(**s) for s in stats]
