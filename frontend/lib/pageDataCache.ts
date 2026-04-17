@@ -202,3 +202,11 @@ export const buildOpeningCacheKey = (
 ): string => {
   return `opening:${username.toLowerCase()}:${openingKey}:${variationKey || "_"}:${color}:${timeClass}:${result}:${offset}:${authUserId}`;
 };
+
+export const buildAuthProfileCacheKey = (authUserId: string): string => {
+  return `auth:profile:${authUserId}`;
+};
+
+export const buildChessProfilesCacheKey = (authUserId: string): string => {
+  return `chess:profiles:${authUserId}`;
+};

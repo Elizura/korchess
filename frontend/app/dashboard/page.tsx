@@ -15,6 +15,8 @@ import {
 } from "@/lib/guestHistory";
 import {
   PAGE_DATA_CACHE_TTL_MS,
+  buildAuthProfileCacheKey,
+  buildChessProfilesCacheKey,
   buildDashboardCacheKey,
   buildDashboardInsightsCacheKey,
   clearAllCache,
@@ -209,6 +211,15 @@ type DashboardReportCacheData = {
 
 type DashboardImportHistoryCacheData = {
   history: ImportHistoryItem[];
+};
+
+type AuthProfileCacheData = {
+  username: string;
+  avatar: string;
+};
+
+type ChessProfilesCacheData = {
+  profiles: ChessProfile[];
 };
 
 const INSIGHTS_ACTIVE_STATUSES = new Set<InsightsProfile["lifecycle_status"]>([
@@ -426,6 +437,20 @@ export default function DashboardPage() {
     if (!isAuthenticated) return;
 
     const fetchProfile = async () => {
+      const cacheKey = buildAuthProfileCacheKey(authUserId);
+      
+      // Try to load from cache first
+      const cached = getCached<AuthProfileCacheData>(cacheKey);
+      if (cached) {
+        setProfileUsername(cached.data.username);
+        setProfileAvatar(cached.data.avatar);
+        
+        // If cache is fresh, skip the fetch
+        if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
+          return;
+        }
+      }
+      
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/v1/auth/profile`,
@@ -433,8 +458,14 @@ export default function DashboardPage() {
         );
         if (!res.ok) return;
         const profile = await res.json();
-        setProfileUsername(profile.username || "");
-        setProfileAvatar(profile.avatar || "pawn");
+        const username = profile.username || "";
+        const avatar = profile.avatar || "pawn";
+        
+        setProfileUsername(username);
+        setProfileAvatar(avatar);
+        
+        // Cache the profile data
+        setCached<AuthProfileCacheData>(cacheKey, { username, avatar });
       } catch {
         // Ignore; user can still use dashboard
       }
@@ -452,10 +483,27 @@ export default function DashboardPage() {
 
     const loadChessProfiles = async () => {
       if (!session?.idToken) return;
+      
+      const cacheKey = buildChessProfilesCacheKey(authUserId);
+      
+      // Try to load from cache first
+      const cached = getCached<ChessProfilesCacheData>(cacheKey);
+      if (cached) {
+        setChessProfiles(cached.data.profiles);
+        
+        // If cache is fresh, skip the fetch
+        if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
+          return;
+        }
+      }
+      
       try {
         setProfilesLoading(true);
         const profiles = await fetchProfiles(session.idToken);
         setChessProfiles(profiles);
+        
+        // Cache the profiles data
+        setCached<ChessProfilesCacheData>(cacheKey, { profiles });
       } catch {
         // Ignore errors; profiles are optional enhancement
       } finally {
@@ -496,14 +544,20 @@ export default function DashboardPage() {
       if (isAuthenticated && session?.idToken) {
         const result = await addProfile(session.idToken, trimmedUsername, selectedPlatform);
         
-        setChessProfiles((prev) => {
-          const filtered = prev.filter(
+        const updatedProfiles = (() => {
+          const filtered = chessProfiles.filter(
             (p) =>
               !(p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
                 p.site === result.profile.site)
           );
           return [result.profile, ...filtered];
-        });
+        })();
+        
+        setChessProfiles(updatedProfiles);
+        
+        // Invalidate chess profiles cache
+        clearCacheKey(buildChessProfilesCacheKey(authUserId));
+        setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
 
         setImportResult(result.import_result);
         setUsername(result.profile.chess_username);
@@ -624,14 +678,17 @@ export default function DashboardPage() {
           profile.chess_username
         );
 
-        setChessProfiles((prev) =>
-          prev.map((p) =>
-            p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
-            p.site === result.profile.site
-              ? result.profile
-              : p
-          )
+        const updatedProfiles = chessProfiles.map((p) =>
+          p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
+          p.site === result.profile.site
+            ? result.profile
+            : p
         );
+        
+        setChessProfiles(updatedProfiles);
+        
+        // Update chess profiles cache
+        setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
 
         if (
           currentUsername &&
@@ -691,13 +748,16 @@ export default function DashboardPage() {
           profile.chess_username
         );
 
-        setChessProfiles((prev) =>
-          prev.filter(
-            (p) =>
-              !(p.chess_username.toLowerCase() === profile.chess_username.toLowerCase() &&
-                p.site === profile.site)
-          )
+        const updatedProfiles = chessProfiles.filter(
+          (p) =>
+            !(p.chess_username.toLowerCase() === profile.chess_username.toLowerCase() &&
+              p.site === profile.site)
         );
+        
+        setChessProfiles(updatedProfiles);
+        
+        // Update chess profiles cache
+        setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
 
         trackEvent("profile.deleted", {
           properties: {
@@ -1355,6 +1415,15 @@ export default function DashboardPage() {
     );
   }, [importHistory]);
 
+  /** Sync / import toast: show inside the large profile card when it applies to the selected account */
+  const showImportResultInProfileCard = useMemo(() => {
+    if (!importResult || !isAuthenticated || !currentUsername) return false;
+    const u = importResult.username.toLowerCase();
+    const c = currentUsername.toLowerCase();
+    if (u !== c) return false;
+    return chessProfiles.some((p) => p.chess_username.toLowerCase() === c);
+  }, [importResult, isAuthenticated, currentUsername, chessProfiles]);
+
   // When no user in URL but we have history: auto-load last selected or most recent user
   useEffect(() => {
     if (userFromUrl) {
@@ -1839,8 +1908,8 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Import Result */}
-        {importResult && (
+        {/* Import / sync result — guests or when message is not tied to the selected profile card */}
+        {importResult && !showImportResultInProfileCard && (
           <div className="mt-4 zen-surface-flat px-4 py-3">
             <p className="text-sm">
               <span className="text-[color:var(--zen-success)] font-semibold">
@@ -1963,6 +2032,23 @@ export default function DashboardPage() {
                   )}
                 </div>
               </div>
+
+              {importResult && showImportResultInProfileCard && (
+                <div className="mt-4 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-border)]/80">
+                  <p className="text-sm">
+                    <span className="text-[color:var(--zen-success)] font-semibold">
+                      {importResult.is_sync
+                        ? `Synced ${importResult.imported} new game${importResult.imported !== 1 ? "s" : ""}`
+                        : `Imported ${importResult.imported} game${importResult.imported !== 1 ? "s" : ""}`}
+                    </span>{" "}
+                    <span className="text-[color:var(--zen-muted)]">
+                      for{" "}
+                      <span className="text-[color:var(--zen-text)] font-medium">{importResult.username}</span>
+                      {importResult.skipped > 0 ? ` (${importResult.skipped} skipped)` : ""}
+                    </span>
+                  </p>
+                </div>
+              )}
               
               <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div className="zen-surface-flat p-4 rounded-lg text-center">
@@ -2163,11 +2249,8 @@ export default function DashboardPage() {
           <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl">
             <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
               <div>
-                <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
-                  Tactical Analysis
-                </p>
                 <h3 className="text-2xl sm:text-3xl font-semibold text-[color:var(--zen-text)] mt-1">
-                  Problem Spotter
+                Tactical Analysis
                 </h3>
               </div>
             </div>
@@ -2260,8 +2343,8 @@ export default function DashboardPage() {
                                     key={`problem-${idx}`}
                                     onClick={() => gameUrl && router.push(gameUrl)}
                                     className={`border-b border-[#2d2d33]/50 transition-all duration-200 ${
-                                      gameUrl 
-                                        ? "cursor-pointer hover:bg-[#2d2d33]/40 hover:border-[#4ade80]/50 hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(74,222,128,0.15)]" 
+                                      gameUrl
+                                        ? "cursor-pointer hover:bg-[#2d2d33]/40 hover:border-[#4ade80]/50 hover:shadow-[0_0_15px_rgba(74,222,128,0.15)]"
                                         : ""
                                     }`}
                                   >

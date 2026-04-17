@@ -654,7 +654,7 @@ body {
 
 .tactical-card-count {
   font-family: var(--font-pixel), var(--font-mono), monospace;
-  font-size: 2rem;
+  font-size: 1.5rem;
   font-weight: 700;
   line-height: 1;
   color: var(--zen-text);

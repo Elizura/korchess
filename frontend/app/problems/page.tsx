@@ -298,7 +298,7 @@ export default function ProblemsPage() {
                         onClick={() => gameUrl && router.push(gameUrl)}
                         className={`border-b border-[#2d2d33]/50 transition-all duration-200 ${
                           gameUrl
-                            ? "cursor-pointer hover:bg-[#2d2d33]/40 hover:border-[#4ade80]/50 hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(74,222,128,0.15)]"
+                            ? "cursor-pointer hover:bg-[#2d2d33]/40 hover:border-[#4ade80]/50 hover:shadow-[0_0_15px_rgba(74,222,128,0.15)]"
                             : ""
                         }`}
                       >
