@@ -19,7 +19,7 @@ const IS_PROD_BUILD = process.env.NEXT_PHASE === "phase-production-build";
 const NEXTAUTH_URL =
   process.env.NEXTAUTH_URL ||
   process.env.AUTH_URL ||
-  (IS_PROD ? "" : "http://localhost:3000");
+  (IS_PROD ? "" : "http://localhost:3005");
 const NEXTAUTH_SECRET =
   process.env.NEXTAUTH_SECRET ||
   process.env.AUTH_SECRET ||

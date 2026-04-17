@@ -27,10 +27,12 @@ To run with **live reload** so code changes are picked up without rebuilding:
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
+Then open **http://localhost:3005** (dev frontend; production images still use port 3000).
+
 - **First time** (or when dependencies change): use `--build` to build images.
 - **After that**: code changes under `backend/` or `frontend/` are picked up automatically; no rebuild needed.
 - Backend: uvicorn runs with `--reload`; editing Python files restarts the server.
-- Frontend: Next.js dev server runs with HMR; editing React/TS files hot-reloads in the browser.
+- Frontend: Next.js **dev** server on port **3005** with HMR; `npm run dev` locally also uses **3005**. Production `next start` remains on **3000** (see `package.json`).
 
 ### Run Backend Only
 

@@ -38,13 +38,13 @@ services:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
     ports:
-      - "3000:3000"
+      - "3005:3005"
     env_file:
       - .env
     environment:
       - NODE_ENV=development
       - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3005}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-local-dev-nextauth-secret-change-me}
 
 volumes:
