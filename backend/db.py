@@ -21,8 +21,6 @@ import psycopg
 # Re-export core connection utilities for backwards compatibility
 from db_connection import (
     get_connection,
-    public_user_id_for_username,
-    PUBLIC_USER_ID_PREFIX,
     LESSON_CONSENT_CHANNEL_EMAIL,
     LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY,
     LESSON_CONSENT_DECISIONS,
@@ -30,36 +28,16 @@ from db_connection import (
 )
 
 
-def get_public_user_id_for_username(conn: psycopg.Connection, username: str) -> str:
-    """Resolve shared public owner ID for username (no writes)."""
-    del conn  # keep backwards-compatible signature for existing call sites
-    return public_user_id_for_username(username)
-
-
-def ensure_public_user_for_username(conn: psycopg.Connection, username: str) -> str:
-    """Ensure the shared public user exists and return its ID."""
-    canonical_username = username.strip().lower()
-    if not canonical_username:
-        raise ValueError("Username is required.")
-
-    public_user_id = public_user_id_for_username(canonical_username)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO users (id, name, username)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (id) DO NOTHING
-        """,
-        (public_user_id, f"Public {canonical_username}", canonical_username),
-    )
-    return public_user_id
-
-
 def init_db() -> None:
-    """Initialize the database schema and indexes."""
+    """Initialize the database schema and indexes.
+    
+    Shared data (games, imports, insights, analysis) is keyed by (username, site).
+    User-specific data (AI quotas, consent) is keyed by user_id.
+    """
     conn = get_connection()
     cursor = conn.cursor()
 
+    # Users table - for authenticated users only
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -84,14 +62,14 @@ def init_db() -> None:
     if not cursor.fetchone():
         cursor.execute("ALTER TABLE users ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now()")
 
+    # Games table - shared by (username, site, site_game_id)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS games (
             id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
-            username TEXT NOT NULL,
             played_at TEXT,
             time_class TEXT,
             color TEXT,
@@ -104,47 +82,34 @@ def init_db() -> None:
             white_elo INTEGER,
             black_elo INTEGER,
             pgn TEXT,
-            UNIQUE(user_id, site, site_game_id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            UNIQUE(username, site, site_game_id)
         )
         """
     )
 
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_games_user
-        ON games(user_id)
+        CREATE INDEX IF NOT EXISTS idx_games_username_site
+        ON games(username, site)
         """
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_games_user_username
-        ON games(user_id, username)
+        CREATE INDEX IF NOT EXISTS idx_games_username_color_time_class
+        ON games(username, color, time_class)
         """
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_games_user_username_color_time_class
-        ON games(user_id, username, color, time_class)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_games_user_site_username
-        ON games(user_id, site, username)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_games_user_username_played_at_id
-        ON games(user_id, username, played_at DESC NULLS LAST, id DESC)
+        CREATE INDEX IF NOT EXISTS idx_games_username_played_at_id
+        ON games(username, played_at DESC NULLS LAST, id DESC)
         """
     )
 
+    # Imports table - shared by (username, site)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS imports (
-            user_id TEXT NOT NULL,
             username TEXT NOT NULL,
             site TEXT NOT NULL,
             imported INTEGER NOT NULL,
@@ -152,29 +117,19 @@ def init_db() -> None:
             max_games INTEGER NOT NULL,
             imported_at TEXT NOT NULL,
             last_synced_at TIMESTAMPTZ,
-            PRIMARY KEY (user_id, site, username),
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            PRIMARY KEY (username, site)
         )
         """
     )
 
-    cursor.execute(
-        """
-        SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'imports' AND column_name = 'last_synced_at'
-        """
-    )
-    if not cursor.fetchone():
-        cursor.execute("ALTER TABLE imports ADD COLUMN last_synced_at TIMESTAMPTZ")
-
+    # Full analysis cache - shared by (username, site, site_game_id, depth, multipv)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS full_analysis (
             id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
-            username TEXT NOT NULL,
             depth INTEGER NOT NULL,
             multipv INTEGER NOT NULL,
             moves_json TEXT NOT NULL,
@@ -182,60 +137,28 @@ def init_db() -> None:
             meta_json TEXT NOT NULL,
             insights_json TEXT,
             created_at TEXT NOT NULL,
-            UNIQUE(user_id, site, site_game_id, depth, multipv),
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            UNIQUE(username, site, site_game_id, depth, multipv)
         )
         """
     )
 
-    cursor.execute(
-        """
-        SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'full_analysis' AND column_name = 'insights_json'
-        """
-    )
-    if not cursor.fetchone():
-        cursor.execute("ALTER TABLE full_analysis ADD COLUMN insights_json TEXT")
-
+    # Analysis jobs - tracks in-flight analysis, shared by (username, site, site_game_id)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS analysis_jobs (
             id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
-            username TEXT NOT NULL,
             depth INTEGER NOT NULL,
             multipv INTEGER NOT NULL,
             created_at TEXT NOT NULL,
-            UNIQUE(user_id, site, site_game_id, depth, multipv),
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            UNIQUE(username, site, site_game_id, depth, multipv)
         )
         """
     )
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS full_analysis_requests (
-            id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            site TEXT NOT NULL,
-            site_game_id TEXT NOT NULL,
-            username TEXT NOT NULL,
-            depth INTEGER NOT NULL,
-            multipv INTEGER NOT NULL,
-            requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_full_analysis_requests_user_day
-        ON full_analysis_requests(user_id, requested_at)
-        """
-    )
-
+    # AI game insights - user-specific (for quota tracking), keyed by user_id
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS ai_game_insights (
@@ -255,6 +178,8 @@ def init_db() -> None:
         )
         """
     )
+
+    # AI insights requests - user-specific (for quota tracking), keyed by user_id
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS ai_insights_requests (
@@ -278,6 +203,8 @@ def init_db() -> None:
         WHERE status = 'gemini_success'
         """
     )
+
+    # Lesson consent events - user-specific, keyed by user_id
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS lesson_consent_events (
@@ -342,11 +269,11 @@ def init_db() -> None:
         """
     )
 
+    # Insight jobs - shared by (username, site)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS insight_jobs (
             id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
             username TEXT NOT NULL,
             site TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -358,25 +285,24 @@ def init_db() -> None:
             started_at TEXT,
             finished_at TEXT,
             updated_at TEXT NOT NULL,
-            meta_json TEXT,
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            meta_json TEXT
         )
         """
     )
 
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_insight_jobs_active_user_site_updated
-        ON insight_jobs(user_id, username, site, updated_at DESC)
+        CREATE INDEX IF NOT EXISTS idx_insight_jobs_active_username_site
+        ON insight_jobs(username, site, updated_at DESC)
         WHERE status IN ('queued', 'running')
         """
     )
 
+    # Game-level insight features - shared by (username, site, site_game_id)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS insight_game_features (
             id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
             username TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
@@ -386,8 +312,7 @@ def init_db() -> None:
             deep_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(user_id, site, site_game_id, feature_version),
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            UNIQUE(username, site, site_game_id, feature_version)
         )
         """
     )
@@ -395,15 +320,15 @@ def init_db() -> None:
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_insight_game_features_lookup
-        ON insight_game_features(user_id, username, site, feature_version)
+        ON insight_game_features(username, site, feature_version)
         """
     )
 
+    # Player insights (aggregated) - shared by (username, site)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS player_insights (
             id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
             username TEXT NOT NULL,
             site TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -416,17 +341,16 @@ def init_db() -> None:
             source_job_id TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(user_id, username, site),
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            UNIQUE(username, site)
         )
         """
     )
 
+    # Quick scan jobs - shared by (username, site)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS scan_jobs (
             id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
             username TEXT NOT NULL,
             site TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -436,39 +360,37 @@ def init_db() -> None:
             created_at TEXT NOT NULL,
             started_at TEXT,
             finished_at TEXT,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            updated_at TEXT NOT NULL
         )
         """
     )
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_scan_jobs_active
-        ON scan_jobs(user_id, username, site, updated_at DESC)
+        ON scan_jobs(username, site, updated_at DESC)
         WHERE status IN ('queued', 'running')
         """
     )
 
+    # Game quick scans - shared by (username, site, site_game_id)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS game_quick_scans (
             id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
             site TEXT NOT NULL,
             site_game_id TEXT NOT NULL,
-            username TEXT NOT NULL,
             problems_json TEXT NOT NULL,
             summary_json TEXT NOT NULL,
             scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE(user_id, site, site_game_id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            UNIQUE(username, site, site_game_id)
         )
         """
     )
     cursor.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_game_quick_scans_user
-        ON game_quick_scans(user_id, username, site)
+        CREATE INDEX IF NOT EXISTS idx_game_quick_scans_username_site
+        ON game_quick_scans(username, site)
         """
     )
 
@@ -482,6 +404,15 @@ def init_db() -> None:
     cursor.execute("DROP INDEX IF EXISTS idx_ai_insights_requests_user_day_status")
     cursor.execute("DROP INDEX IF EXISTS idx_insight_jobs_lookup")
     cursor.execute("DROP INDEX IF EXISTS idx_player_insights_lookup")
+    # Drop old user_id-based indexes from refactored tables
+    cursor.execute("DROP INDEX IF EXISTS idx_games_user")
+    cursor.execute("DROP INDEX IF EXISTS idx_games_user_username")
+    cursor.execute("DROP INDEX IF EXISTS idx_games_user_username_color_time_class")
+    cursor.execute("DROP INDEX IF EXISTS idx_games_user_site_username")
+    cursor.execute("DROP INDEX IF EXISTS idx_games_user_username_played_at_id")
+    cursor.execute("DROP INDEX IF EXISTS idx_game_quick_scans_user")
+    cursor.execute("DROP INDEX IF EXISTS idx_scan_jobs_active")
+    cursor.execute("DROP INDEX IF EXISTS idx_insight_jobs_active_user_site_updated")
 
     # PostHog-only analytics mode:
     # remove legacy first-party analytics storage artifacts.
@@ -626,24 +557,23 @@ def get_user_by_username(conn: psycopg.Connection, username: str) -> dict | None
 
 def upsert_game(conn: psycopg.Connection, game_row: dict) -> bool:
     """
-    Insert a game, ignoring if it already exists (by site + site_game_id).
+    Insert a game, ignoring if it already exists (by username + site + site_game_id).
     Returns True if inserted, False if skipped (duplicate).
     """
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO games (
-            user_id, site, site_game_id, username, played_at, time_class,
+            username, site, site_game_id, played_at, time_class,
             color, result, eco, opening_name, opening_id, opening_ply_count,
             opponent, white_elo, black_elo, pgn
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, site, site_game_id) DO NOTHING
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (username, site, site_game_id) DO NOTHING
         """,
         (
-            game_row["user_id"],
+            game_row["username"].strip().lower(),
             game_row["site"],
             game_row["site_game_id"],
-            game_row["username"].strip().lower(),
             game_row.get("played_at"),
             game_row.get("time_class"),
             game_row.get("color"),
@@ -663,7 +593,6 @@ def upsert_game(conn: psycopg.Connection, game_row: dict) -> bool:
 
 def get_openings_stats(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     color: str = "all",
     time_class: str = "all",
@@ -671,7 +600,7 @@ def get_openings_stats(
     limit: int = 10,
 ) -> list[dict]:
     """
-    Aggregate opening statistics for a user with optional filters.
+    Aggregate opening statistics for a username with optional filters.
     Returns list of dicts with opening_key, opening_label, games, wins, draws, losses, score_pct.
     If site is None or "all", includes games from all sites.
     Limited to top `limit` openings by games played (default 10).
@@ -693,9 +622,9 @@ def get_openings_stats(
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
-        WHERE g.user_id = %s AND g.username = %s
+        WHERE g.username = %s
     """
-    params: list = [user_id, canonical_username]
+    params: list = [canonical_username]
 
     if site and site != "all":
         query += " AND g.site = %s"
@@ -743,7 +672,6 @@ def get_openings_stats(
 
 def upsert_import_status(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str,
     imported: int,
@@ -752,15 +680,15 @@ def upsert_import_status(
     imported_at: str,
     last_synced_at: str | None = None,
 ) -> None:
-    """Record import status for a user."""
+    """Record import status for a username/site."""
     cursor = conn.cursor()
     canonical_username = username.strip().lower()
     cursor.execute(
         """
         INSERT INTO imports
-        (user_id, username, site, imported, skipped, max_games, imported_at, last_synced_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, site, username)
+        (username, site, imported, skipped, max_games, imported_at, last_synced_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (username, site)
         DO UPDATE SET
             imported = EXCLUDED.imported,
             skipped = EXCLUDED.skipped,
@@ -768,7 +696,7 @@ def upsert_import_status(
             imported_at = EXCLUDED.imported_at,
             last_synced_at = EXCLUDED.last_synced_at
         """,
-        (user_id, canonical_username, site, imported, skipped, max_games, imported_at, last_synced_at),
+        (canonical_username, site, imported, skipped, max_games, imported_at, last_synced_at),
     )
 
 
@@ -823,11 +751,10 @@ def _raw_opening_key_suffix(opening_key: str) -> str:
 
 def get_import_status(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "lichess",
 ) -> dict:
-    """Get last import status + total games count for a user.
+    """Get last import status + total games count for a username.
 
     When site="all", aggregates across all sites: sums games, uses the most
     recent imported_at / last_synced_at, and sums imported/skipped.
@@ -840,9 +767,9 @@ def get_import_status(
             """
             SELECT imported, skipped, max_games, imported_at, last_synced_at
             FROM imports
-            WHERE user_id = %s AND username = %s AND site = %s
+            WHERE username = %s AND site = %s
             """,
-            (user_id, canonical_username, site),
+            (canonical_username, site),
         )
         import_row = cursor.fetchone()
 
@@ -850,9 +777,9 @@ def get_import_status(
             """
             SELECT COUNT(*) as total
             FROM games
-            WHERE user_id = %s AND username = %s AND site = %s
+            WHERE username = %s AND site = %s
             """,
-            (user_id, canonical_username, site),
+            (canonical_username, site),
         )
         total_row = cursor.fetchone()
     else:
@@ -863,9 +790,9 @@ def get_import_status(
                    MAX(imported_at) as imported_at,
                    MAX(last_synced_at) as last_synced_at
             FROM imports
-            WHERE user_id = %s AND username = %s
+            WHERE username = %s
             """,
-            (user_id, canonical_username),
+            (canonical_username,),
         )
         import_row = cursor.fetchone()
         if import_row and import_row["imported"] is None:
@@ -875,9 +802,9 @@ def get_import_status(
             """
             SELECT COUNT(*) as total
             FROM games
-            WHERE user_id = %s AND username = %s
+            WHERE username = %s
             """,
-            (user_id, canonical_username),
+            (canonical_username,),
         )
         total_row = cursor.fetchone()
 
@@ -898,27 +825,24 @@ def get_import_status(
 
 def get_import_history(
     conn: psycopg.Connection,
-    user_id: str,
     limit: int = 10,
 ) -> list[dict]:
-    """Get last N import records for a user, ordered by most recent first."""
+    """Get last N import records, ordered by most recent first."""
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT username, site, imported_at
         FROM imports
-        WHERE user_id = %s
         ORDER BY imported_at DESC
         LIMIT %s
         """,
-        (user_id, limit),
+        (limit,),
     )
     return [dict(row) for row in cursor.fetchall()]
 
 
 def get_games_by_opening(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     opening_key: str,
     variation_key: str | None = None,
@@ -930,7 +854,7 @@ def get_games_by_opening(
     site: str | None = None,
 ) -> dict:
     """
-    Get games and summary stats for a user and opening.
+    Get games and summary stats for a username and opening.
     Returns both summary and paginated games.
     If site is None or "all", includes games from all sites.
     """
@@ -942,12 +866,11 @@ def get_games_by_opening(
     opening_label_expr = _opening_label_expr_sql("g", "o")
 
     base_where_conditions = [
-        "g.user_id = %s",
         "g.username = %s",
         "g.site_game_id IS NOT NULL",
         "g.site_game_id != ''",
     ]
-    base_params = [user_id, canonical_username]
+    base_params = [canonical_username]
 
     if opening_key == "unknown":
         base_where_conditions.append("g.opening_id IS NULL")
@@ -1075,7 +998,6 @@ def get_games_by_opening(
 
 def get_variations_stats(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     opening_key: str,
     color: str = "all",
@@ -1083,11 +1005,10 @@ def get_variations_stats(
     site: str | None = None,
 ) -> list[dict]:
     """
-    Aggregate variation statistics for a user and opening_key.
+    Aggregate variation statistics for a username and opening_key.
     Returns list of dicts with variation_key, variation_label, games, wins, draws, losses, score_pct.
     """
     if opening_key.startswith(RAW_OPENING_KEY_PREFIX):
-        # Synthetic keys (from raw opening_name fallback) have no canonical variation mapping.
         return []
 
     ensure_openings_table(conn)
@@ -1118,10 +1039,10 @@ def get_variations_stats(
             SUM(CASE WHEN g.result = 'loss' THEN 1 ELSE 0 END) as losses
         FROM games g
         LEFT JOIN openings o ON g.opening_id = o.id
-        WHERE g.user_id = %s AND g.username = %s
+        WHERE g.username = %s
           AND o.opening_key = %s
     """
-    params: list = [user_id, canonical_username, opening_key]
+    params: list = [canonical_username, opening_key]
 
     if site and site != "all":
         query += " AND g.site = %s"
@@ -1167,7 +1088,6 @@ def get_variations_stats(
 
 def get_game_by_id(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site_game_id: str,
     site: str,
@@ -1179,9 +1099,9 @@ def get_game_by_id(
         SELECT site, site_game_id, played_at, color, result, opponent, 
                opening_name, opening_ply_count, pgn, eco
         FROM games
-        WHERE user_id = %s AND username = %s AND site_game_id = %s AND site = %s
+        WHERE username = %s AND site_game_id = %s AND site = %s
         """,
-        (user_id, username.strip().lower(), site_game_id, site),
+        (username.strip().lower(), site_game_id, site),
     )
     row = cursor.fetchone()
     if not row:
@@ -1191,7 +1111,6 @@ def get_game_by_id(
 
 def get_full_analysis(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -1204,10 +1123,10 @@ def get_full_analysis(
         """
         SELECT moves_json, summary_json, meta_json, insights_json, created_at
         FROM full_analysis
-        WHERE user_id = %s AND username = %s AND site_game_id = %s
+        WHERE username = %s AND site_game_id = %s
         AND depth = %s AND multipv = %s AND site = %s
         """,
-        (user_id, username.strip().lower(), site_game_id, depth, multipv, site),
+        (username.strip().lower(), site_game_id, depth, multipv, site),
     )
     row = cursor.fetchone()
     if not row:
@@ -1217,7 +1136,6 @@ def get_full_analysis(
 
 def save_full_analysis(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -1235,10 +1153,10 @@ def save_full_analysis(
     cursor.execute(
         """
         INSERT INTO full_analysis 
-        (user_id, site, site_game_id, username, depth, multipv, 
+        (username, site, site_game_id, depth, multipv, 
          moves_json, summary_json, meta_json, insights_json, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, site, site_game_id, depth, multipv)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (username, site, site_game_id, depth, multipv)
         DO UPDATE SET
             moves_json = EXCLUDED.moves_json,
             summary_json = EXCLUDED.summary_json,
@@ -1247,10 +1165,9 @@ def save_full_analysis(
             created_at = EXCLUDED.created_at
         """,
         (
-            user_id,
+            username.strip().lower(),
             site,
             site_game_id,
-            username.strip().lower(),
             depth,
             multipv,
             moves_json,
@@ -1264,7 +1181,6 @@ def save_full_analysis(
 
 def save_full_analysis_insights(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -1278,8 +1194,7 @@ def save_full_analysis_insights(
         """
         UPDATE full_analysis
         SET insights_json = %s
-        WHERE user_id = %s
-          AND username = %s
+        WHERE username = %s
           AND site_game_id = %s
           AND depth = %s
           AND multipv = %s
@@ -1287,7 +1202,6 @@ def save_full_analysis_insights(
         """,
         (
             insights_json,
-            user_id,
             username.strip().lower(),
             site_game_id,
             depth,
@@ -1589,7 +1503,6 @@ def log_full_analysis_request(
 def create_analysis_job(
     conn: psycopg.Connection,
     job_id: str,
-    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
@@ -1602,32 +1515,31 @@ def create_analysis_job(
     created_at = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         """
-        INSERT INTO analysis_jobs (id, user_id, site, site_game_id, username, depth, multipv, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO analysis_jobs (id, username, site, site_game_id, depth, multipv, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (id) DO NOTHING
         """,
-        (job_id, user_id, site, site_game_id, username.strip().lower(), depth, multipv, created_at),
+        (job_id, username.strip().lower(), site, site_game_id, depth, multipv, created_at),
     )
 
 
 def get_analysis_job(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site_game_id: str,
     depth: int,
     multipv: int,
     site: str,
 ) -> dict | None:
-    """Get an analysis job by game/user/params. Returns None if not found."""
+    """Get an analysis job by game/params. Returns None if not found."""
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT id, site, site_game_id, username, depth, multipv, created_at
         FROM analysis_jobs
-        WHERE user_id = %s AND username = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
+        WHERE username = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
         """,
-        (user_id, username.strip().lower(), site_game_id, depth, multipv, site),
+        (username.strip().lower(), site_game_id, depth, multipv, site),
     )
     row = cursor.fetchone()
     if not row:
@@ -1652,7 +1564,6 @@ def count_analysis_jobs(conn: psycopg.Connection) -> int:
 def create_insight_job(
     conn: psycopg.Connection,
     job_id: str,
-    user_id: str,
     username: str,
     site: str,
     status: str,
@@ -1668,13 +1579,12 @@ def create_insight_job(
     cursor.execute(
         """
         INSERT INTO insight_jobs
-        (id, user_id, username, site, status, stage, reason, error, feature_version,
+        (id, username, site, status, stage, reason, error, feature_version,
          created_at, started_at, finished_at, updated_at, meta_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, NULL, NULL, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s, NULL, NULL, %s, %s)
         """,
         (
             job_id,
-            user_id,
             username.strip().lower(),
             site,
             status,
@@ -1690,25 +1600,23 @@ def create_insight_job(
 
 def get_active_insight_job(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> dict | None:
-    """Get the latest active insights job for this user/username/site."""
+    """Get the latest active insights job for this username/site."""
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT id, status, stage, reason, error, feature_version, created_at,
                started_at, finished_at, updated_at, meta_json
         FROM insight_jobs
-        WHERE user_id = %s
-          AND username = %s
+        WHERE username = %s
           AND site = %s
           AND status IN ('queued', 'running')
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (user_id, username.strip().lower(), site),
+        (username.strip().lower(), site),
     )
     row = cursor.fetchone()
     if not row:
@@ -1726,7 +1634,7 @@ def get_insight_job_by_id(
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, user_id, username, site, status, stage, reason, error, feature_version,
+        SELECT id, username, site, status, stage, reason, error, feature_version,
                created_at, started_at, finished_at, updated_at, meta_json
         FROM insight_jobs
         WHERE id = %s
@@ -1790,7 +1698,6 @@ def update_insight_job(
 
 def upsert_insight_game_feature(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str,
     site_game_id: str,
@@ -1806,10 +1713,10 @@ def upsert_insight_game_feature(
     cursor.execute(
         """
         INSERT INTO insight_game_features
-        (user_id, username, site, site_game_id, feature_version, analysis_tier,
+        (username, site, site_game_id, feature_version, analysis_tier,
          light_json, deep_json, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, site, site_game_id, feature_version)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (username, site, site_game_id, feature_version)
         DO UPDATE SET
             analysis_tier = CASE
                 WHEN EXCLUDED.deep_json IS NOT NULL THEN 'deep'
@@ -1820,7 +1727,6 @@ def upsert_insight_game_feature(
             updated_at = EXCLUDED.updated_at
         """,
         (
-            user_id,
             username.strip().lower(),
             site,
             site_game_id,
@@ -1836,7 +1742,6 @@ def upsert_insight_game_feature(
 
 def get_insight_game_features(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
     feature_version: str | None = None,
@@ -1847,9 +1752,9 @@ def get_insight_game_features(
         SELECT site, site_game_id, feature_version, analysis_tier,
                light_json, deep_json, created_at, updated_at
         FROM insight_game_features
-        WHERE user_id = %s AND username = %s
+        WHERE username = %s
     """
-    params: list = [user_id, username.strip().lower()]
+    params: list = [username.strip().lower()]
 
     if site != "all":
         query += " AND site = %s"
@@ -1872,7 +1777,6 @@ def get_insight_game_features(
 
 def get_games_for_insights(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
     limit: int = 500,
@@ -1883,9 +1787,9 @@ def get_games_for_insights(
         SELECT site, site_game_id, played_at, time_class, color, result, eco,
                opening_name, opponent, white_elo, black_elo, pgn
         FROM games
-        WHERE user_id = %s AND username = %s
+        WHERE username = %s
     """
-    params: list = [user_id, username.strip().lower()]
+    params: list = [username.strip().lower()]
     if site != "all":
         query += " AND site = %s"
         params.append(site)
@@ -1903,7 +1807,6 @@ def get_games_for_insights(
 
 def upsert_player_insights(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str,
     status: str,
@@ -1915,18 +1818,18 @@ def upsert_player_insights(
     narrative: dict,
     source_job_id: str | None = None,
 ) -> None:
-    """Insert or update latest user-level insights snapshot."""
+    """Insert or update latest player insights snapshot."""
 
     now = datetime.now(timezone.utc).isoformat()
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO player_insights
-        (user_id, username, site, status, feature_version, narrative_version,
+        (username, site, status, feature_version, narrative_version,
          coverage_json, features_json, fact_map_json, narrative_json,
          source_job_id, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, username, site)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (username, site)
         DO UPDATE SET
             status = EXCLUDED.status,
             feature_version = EXCLUDED.feature_version,
@@ -1939,7 +1842,6 @@ def upsert_player_insights(
             updated_at = EXCLUDED.updated_at
         """,
         (
-            user_id,
             username.strip().lower(),
             site,
             status,
@@ -1958,11 +1860,10 @@ def upsert_player_insights(
 
 def get_player_insights(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> dict | None:
-    """Fetch latest user-level insights snapshot."""
+    """Fetch latest player insights snapshot."""
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -1970,9 +1871,9 @@ def get_player_insights(
                coverage_json, features_json, fact_map_json, narrative_json,
                source_job_id, created_at, updated_at
         FROM player_insights
-        WHERE user_id = %s AND username = %s AND site = %s
+        WHERE username = %s AND site = %s
         """,
-        (user_id, username.strip().lower(), site),
+        (username.strip().lower(), site),
     )
     row = cursor.fetchone()
     if not row:
@@ -1993,7 +1894,6 @@ def get_player_insights(
 def create_scan_job(
     conn: psycopg.Connection,
     job_id: str,
-    user_id: str,
     username: str,
     site: str,
     total_games: int,
@@ -2004,11 +1904,11 @@ def create_scan_job(
     cursor.execute(
         """
         INSERT INTO scan_jobs
-        (id, user_id, username, site, status, total_games, games_done,
+        (id, username, site, status, total_games, games_done,
          created_at, updated_at)
-        VALUES (%s, %s, %s, %s, 'queued', %s, 0, %s, %s)
+        VALUES (%s, %s, %s, 'queued', %s, 0, %s, %s)
         """,
-        (job_id, user_id, username.strip().lower(), site, total_games, now, now),
+        (job_id, username.strip().lower(), site, total_games, now, now),
     )
 
 
@@ -2050,23 +1950,22 @@ def update_scan_job(
 
 def get_active_scan_job(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> dict | None:
-    """Get the latest active scan job for a user."""
+    """Get the latest active scan job for a username/site."""
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT id, status, total_games, games_done, error,
                created_at, started_at, finished_at, updated_at
         FROM scan_jobs
-        WHERE user_id = %s AND username = %s AND site = %s
+        WHERE username = %s AND site = %s
           AND status IN ('queued', 'running')
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (user_id, username.strip().lower(), site),
+        (username.strip().lower(), site),
     )
     row = cursor.fetchone()
     return dict(row) if row else None
@@ -2074,22 +1973,21 @@ def get_active_scan_job(
 
 def get_latest_scan_job(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> dict | None:
-    """Get the most recent scan job (any status) for a user."""
+    """Get the most recent scan job (any status) for a username/site."""
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT id, status, total_games, games_done, error,
                created_at, started_at, finished_at, updated_at
         FROM scan_jobs
-        WHERE user_id = %s AND username = %s AND site = %s
+        WHERE username = %s AND site = %s
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (user_id, username.strip().lower(), site),
+        (username.strip().lower(), site),
     )
     row = cursor.fetchone()
     return dict(row) if row else None
@@ -2097,10 +1995,9 @@ def get_latest_scan_job(
 
 def upsert_game_quick_scan(
     conn: psycopg.Connection,
-    user_id: str,
+    username: str,
     site: str,
     site_game_id: str,
-    username: str,
     problems_json: str,
     summary_json: str,
 ) -> None:
@@ -2109,33 +2006,32 @@ def upsert_game_quick_scan(
     cursor.execute(
         """
         INSERT INTO game_quick_scans
-        (user_id, site, site_game_id, username, problems_json, summary_json)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, site, site_game_id)
+        (username, site, site_game_id, problems_json, summary_json)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (username, site, site_game_id)
         DO UPDATE SET
             problems_json = EXCLUDED.problems_json,
             summary_json = EXCLUDED.summary_json,
             scanned_at = now()
         """,
-        (user_id, site, site_game_id, username.strip().lower(),
+        (username.strip().lower(), site, site_game_id,
          problems_json, summary_json),
     )
 
 
 def get_scanned_game_ids(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> set[tuple[str, str]]:
-    """Return set of (site, site_game_id) already scanned for the user."""
+    """Return set of (site, site_game_id) already scanned for the username."""
     cursor = conn.cursor()
     query = """
         SELECT site, site_game_id
         FROM game_quick_scans
-        WHERE user_id = %s AND username = %s
+        WHERE username = %s
     """
-    params: list = [user_id, username.strip().lower()]
+    params: list = [username.strip().lower()]
     if site != "all":
         query += " AND site = %s"
         params.append(site)
@@ -2145,37 +2041,35 @@ def get_scanned_game_ids(
 
 def clear_quick_scan_data(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> None:
-    """Delete all quick scan results and jobs for a user so they can be re-scanned."""
+    """Delete all quick scan results and jobs for a username so they can be re-scanned."""
     canonical = username.strip().lower()
     cursor = conn.cursor()
 
     if site == "all":
         cursor.execute(
-            "DELETE FROM game_quick_scans WHERE user_id = %s AND username = %s",
-            (user_id, canonical),
+            "DELETE FROM game_quick_scans WHERE username = %s",
+            (canonical,),
         )
         cursor.execute(
-            "DELETE FROM scan_jobs WHERE user_id = %s AND username = %s",
-            (user_id, canonical),
+            "DELETE FROM scan_jobs WHERE username = %s",
+            (canonical,),
         )
     else:
         cursor.execute(
-            "DELETE FROM game_quick_scans WHERE user_id = %s AND username = %s AND site = %s",
-            (user_id, canonical, site),
+            "DELETE FROM game_quick_scans WHERE username = %s AND site = %s",
+            (canonical, site),
         )
         cursor.execute(
-            "DELETE FROM scan_jobs WHERE user_id = %s AND username = %s AND site = %s",
-            (user_id, canonical, site),
+            "DELETE FROM scan_jobs WHERE username = %s AND site = %s",
+            (canonical, site),
         )
 
 
 def clear_insights_data(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> None:
@@ -2185,48 +2079,48 @@ def clear_insights_data(
 
     if site == "all":
         cursor.execute(
-            "DELETE FROM player_insights WHERE user_id = %s AND username = %s",
-            (user_id, canonical),
+            "DELETE FROM player_insights WHERE username = %s",
+            (canonical,),
         )
         cursor.execute(
-            "DELETE FROM insight_game_features WHERE user_id = %s AND username = %s",
-            (user_id, canonical),
+            "DELETE FROM insight_game_features WHERE username = %s",
+            (canonical,),
         )
         cursor.execute(
-            "DELETE FROM insight_jobs WHERE user_id = %s AND username = %s",
-            (user_id, canonical),
+            "DELETE FROM insight_jobs WHERE username = %s",
+            (canonical,),
         )
     else:
         cursor.execute(
-            "DELETE FROM player_insights WHERE user_id = %s AND username = %s AND site = %s",
-            (user_id, canonical, site),
+            "DELETE FROM player_insights WHERE username = %s AND site = %s",
+            (canonical, site),
         )
         cursor.execute(
-            "DELETE FROM insight_game_features WHERE user_id = %s AND username = %s AND site = %s",
-            (user_id, canonical, site),
+            "DELETE FROM insight_game_features WHERE username = %s AND site = %s",
+            (canonical, site),
         )
         cursor.execute(
-            "DELETE FROM insight_jobs WHERE user_id = %s AND username = %s AND site = %s",
-            (user_id, canonical, site),
+            "DELETE FROM insight_jobs WHERE username = %s AND site = %s",
+            (canonical, site),
         )
 
 
 def get_quick_scan_results(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> list[dict]:
     """Fetch all quick-scan results for aggregation, joined with game info."""
     cursor = conn.cursor()
+    canonical = username.strip().lower()
     query = """
         SELECT qs.site, qs.site_game_id, qs.problems_json, qs.summary_json, qs.scanned_at,
                g.time_class, g.opponent, g.played_at
         FROM game_quick_scans qs
-        LEFT JOIN games g ON qs.user_id = g.user_id AND qs.site = g.site AND qs.site_game_id = g.site_game_id
-        WHERE qs.user_id = %s AND qs.username = %s
+        LEFT JOIN games g ON qs.username = g.username AND qs.site = g.site AND qs.site_game_id = g.site_game_id
+        WHERE qs.username = %s
     """
-    params: list = [user_id, username.strip().lower()]
+    params: list = [canonical]
     if site != "all":
         query += " AND qs.site = %s"
         params.append(site)
@@ -2242,7 +2136,6 @@ def get_quick_scan_results(
 
 def get_quick_scan_problem_spotter(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     site: str = "all",
     recent_limit: int = 500,
@@ -2251,7 +2144,7 @@ def get_quick_scan_problem_spotter(
     
     Only includes blunders and mistakes (not inaccuracies) in the problems list.
     """
-    results = get_quick_scan_results(conn, user_id, username, site)
+    results = get_quick_scan_results(conn, username, site)
 
     by_theme: dict[str, int] = {}
     by_phase: dict[str, int] = {"opening": 0, "middlegame": 0, "endgame": 0}
@@ -2326,7 +2219,6 @@ def get_quick_scan_problem_spotter(
 
 def get_problems_by_theme(
     conn: psycopg.Connection,
-    user_id: str,
     username: str,
     theme: str,
     site: str = "all",
@@ -2336,7 +2228,7 @@ def get_problems_by_theme(
     page_size: int = 8,
 ) -> dict:
     """Return paginated problems matching a specific tactic theme with filters."""
-    results = get_quick_scan_results(conn, user_id, username, site)
+    results = get_quick_scan_results(conn, username, site)
     matched: list[dict] = []
     theme_lower = theme.strip().lower()
     time_controls_set: set[str] = set()
