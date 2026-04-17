@@ -67,26 +67,18 @@ def _record_import_status(
         )
 
 
-def _schedule_insights(
-    public_user_id: str, current_user: dict | None, username: str, site: str,
-) -> None:
+def _schedule_insights(public_user_id: str, username: str, site: str) -> None:
+    """Schedule insights refresh and quick scan for the public user.
+    
+    Insights are not owned by individual users - they are shared per chess username.
+    """
     try:
         schedule_insights_refresh(
             user_id=public_user_id,
             username=username,
             site="all",
             reason="import",
-            allow_llm=False,
-            source_user_id=public_user_id,
         )
-        if current_user:
-            schedule_insights_refresh(
-                user_id=current_user["id"],
-                username=username,
-                site="all",
-                reason="import",
-                source_user_id=public_user_id,
-            )
     except Exception as exc:
         logger.warning("Failed to schedule insights refresh after %s import: %s", site, exc)
 
@@ -263,7 +255,7 @@ async def import_lichess_games(
     )
     conn.commit()
 
-    _schedule_insights(public_user_id, current_user, username, "lichess")
+    _schedule_insights(public_user_id, username, "lichess")
 
     return ImportResponse(
         username=username,
@@ -397,7 +389,7 @@ async def import_chesscom_games(
     )
     conn.commit()
 
-    _schedule_insights(public_user_id, current_user, username, "chesscom")
+    _schedule_insights(public_user_id, username, "chesscom")
 
     return ImportResponse(
         username=username,

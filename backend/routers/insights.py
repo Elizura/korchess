@@ -3,7 +3,6 @@
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from auth import get_optional_user
 from db import (
     ensure_public_user_for_username,
     get_latest_scan_job,
@@ -70,18 +69,19 @@ async def get_insights_profile(
     username: str = Query(..., min_length=1, max_length=50),
     site: str = Query(default="all", pattern="^(all|lichess|chesscom)$"),
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
-    """Get current AI insights snapshot and background status."""
+    """Get current AI insights snapshot and background status.
+    
+    Insights are shared per chess username - not owned by individual users.
+    """
     site = validate_site(site)
     username = username.strip().lower()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
     public_user_id = get_public_user_id_for_username(conn, username)
-    user_id = current_user["id"] if current_user else public_user_id
-    state = get_insights_state(user_id, username, site)
-    state["user_id"] = user_id
+    state = get_insights_state(public_user_id, username, site)
+    state["user_id"] = public_user_id
     return _build_profile_response(state, conn)
 
 
@@ -89,30 +89,28 @@ async def get_insights_profile(
 async def refresh_insights_profile(
     request: InsightsRequest,
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
-    """Queue or reuse an AI insights generation job for the user."""
+    """Queue or reuse an AI insights generation job.
+    
+    Insights are shared per chess username - not owned by individual users.
+    """
     site = validate_site(request.site)
     username = request.username.strip().lower()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
     public_user_id = ensure_public_user_for_username(conn, username)
-    user_id = current_user["id"] if current_user else public_user_id
-    allow_llm = bool(current_user)
 
     schedule_insights_refresh(
-        user_id=user_id,
+        user_id=public_user_id,
         username=username,
         site=site,
         reason="manual_refresh",
         force=request.force,
-        allow_llm=allow_llm,
-        source_user_id=public_user_id,
     )
 
-    state = get_insights_state(user_id, username, site)
-    state["user_id"] = user_id
+    state = get_insights_state(public_user_id, username, site)
+    state["user_id"] = public_user_id
     return _build_profile_response(state, conn)
 
 
@@ -126,7 +124,6 @@ async def get_problems_by_theme_endpoint(
     page: int = Query(default=0, ge=0),
     page_size: int = Query(default=8, ge=1, le=100),
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
     """Return paginated problems matching a specific tactic theme for a user."""
     site = validate_site(site)
@@ -135,9 +132,8 @@ async def get_problems_by_theme_endpoint(
         raise HTTPException(status_code=400, detail="Username is required.")
 
     public_user_id = get_public_user_id_for_username(conn, username)
-    user_id = current_user["id"] if current_user else public_user_id
     return get_problems_by_theme(
-        conn, user_id, username, theme, site,
+        conn, public_user_id, username, theme, site,
         time_control=time_control,
         phase=phase,
         page=page,

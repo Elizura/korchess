@@ -7,7 +7,7 @@ import pathlib
 import sys
 import types
 import unittest
-from unittest.mock import AsyncMock, Mock, call, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.routing import APIRoute
@@ -175,210 +175,50 @@ class RegisteredUserConnectionTest(unittest.TestCase):
         self.assertIn("User not registered", err.exception.detail)
 
 
-class CachedImportInsightsRefreshTest(unittest.TestCase):
-    def _build_request(self) -> Request:
-        return Request(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/api/v1/import/chesscom",
-                "headers": [(b"host", b"korchess.com")],
-            }
-        )
+class ScheduleInsightsTest(unittest.TestCase):
+    """Tests for the simplified insights scheduling.
+    
+    Insights are shared per chess username - not owned by individual users.
+    Only one schedule_insights_refresh call is made per import, using the public user ID.
+    """
 
-    def test_cached_import_schedules_public_insights_refresh(self) -> None:
-        conn = Mock()
-        conn.commit = Mock()
+    def test_schedule_insights_uses_public_user_id_only(self) -> None:
+        """Verify _schedule_insights only schedules for public user."""
+        with patch("routers.import_.schedule_insights_refresh") as schedule_mock, patch(
+            "routers.import_.schedule_quick_scan"
+        ) as scan_mock:
+            import_router._schedule_insights("public:testuser", "testuser", "lichess")
 
-        with patch("routers.import_.ensure_public_user_for_username", return_value="public:magnuscarlsen"), patch(
-            "routers.import_.get_import_status",
-            return_value={
-                "total_games": 200,
-                "last_imported": 200,
-                "last_skipped": 0,
-                "imported_at": "2026-03-03T00:00:00+00:00",
-            },
-        ), patch(
-            "routers.import_.get_insights_state",
-            return_value={"lifecycle_status": "missing"},
-        ), patch(
-            "routers.import_.track_server_event",
-            new=AsyncMock(return_value=None),
-        ) as track_mock, patch(
-            "routers.import_.schedule_insights_refresh"
-        ) as schedule_mock:
-            response = asyncio.run(
-                import_router._maybe_return_existing_import(
-                    conn=conn,
-                    current_user=None,
-                    http_request=self._build_request(),
-                    username="MagnusCarlsen",
-                    site="chesscom",
-                    max_games=200,
-                    username_hash="hash",
-                )
-            )
-
-        self.assertIsNotNone(response)
-        self.assertEqual(response.username, "MagnusCarlsen")
-        self.assertEqual(response.imported, 200)
-        conn.commit.assert_called_once()
-        track_mock.assert_awaited_once()
         schedule_mock.assert_called_once_with(
-            user_id="public:magnuscarlsen",
-            username="MagnusCarlsen",
+            user_id="public:testuser",
+            username="testuser",
             site="all",
-            reason="import_cache_hit",
-            allow_llm=False,
-            source_user_id="public:magnuscarlsen",
+            reason="import",
         )
+        scan_mock.assert_called_once_with("public:testuser", "testuser", site="all")
 
-    def test_cached_import_schedules_public_and_authenticated_refresh(self) -> None:
-        conn = Mock()
-        conn.commit = Mock()
-        current_user = {"id": "user-123"}
+    def test_schedule_insights_handles_refresh_exception(self) -> None:
+        """Verify _schedule_insights continues if schedule_insights_refresh fails."""
+        with patch(
+            "routers.import_.schedule_insights_refresh",
+            side_effect=Exception("test error"),
+        ), patch("routers.import_.schedule_quick_scan") as scan_mock:
+            # Should not raise
+            import_router._schedule_insights("public:testuser", "testuser", "lichess")
 
-        with patch("routers.import_.ensure_public_user_for_username", return_value="public:magnuscarlsen"), patch(
-            "routers.import_.get_import_status",
-            return_value={
-                "total_games": 200,
-                "last_imported": 200,
-                "last_skipped": 0,
-                "imported_at": "2026-03-03T00:00:00+00:00",
-            },
-        ), patch(
-            "routers.import_.get_insights_state",
-            side_effect=[
-                {"lifecycle_status": "missing"},
-                {"lifecycle_status": "missing"},
-            ],
-        ), patch(
-            "routers.import_.upsert_import_status"
-        ) as upsert_status_mock, patch(
-            "routers.import_.track_server_event",
-            new=AsyncMock(return_value=None),
-        ), patch(
-            "routers.import_.schedule_insights_refresh"
-        ) as schedule_mock:
-            response = asyncio.run(
-                import_router._maybe_return_existing_import(
-                    conn=conn,
-                    current_user=current_user,
-                    http_request=self._build_request(),
-                    username="MagnusCarlsen",
-                    site="chesscom",
-                    max_games=200,
-                    username_hash="hash",
-                )
-            )
+        # Quick scan should still be called
+        scan_mock.assert_called_once()
 
-        self.assertIsNotNone(response)
-        upsert_status_mock.assert_called_once()
-        schedule_mock.assert_has_calls(
-            [
-                call(
-                    user_id="public:magnuscarlsen",
-                    username="MagnusCarlsen",
-                    site="all",
-                    reason="import_cache_hit",
-                    allow_llm=False,
-                    source_user_id="public:magnuscarlsen",
-                ),
-                call(
-                    user_id="user-123",
-                    username="MagnusCarlsen",
-                    site="all",
-                    reason="import_cache_hit",
-                    allow_llm=True,
-                    source_user_id="public:magnuscarlsen",
-                ),
-            ]
-        )
+    def test_schedule_insights_handles_scan_exception(self) -> None:
+        """Verify _schedule_insights handles quick scan failure gracefully."""
+        with patch("routers.import_.schedule_insights_refresh") as schedule_mock, patch(
+            "routers.import_.schedule_quick_scan",
+            side_effect=Exception("scan error"),
+        ):
+            # Should not raise
+            import_router._schedule_insights("public:testuser", "testuser", "chesscom")
 
-    def test_cached_import_skips_refresh_when_insights_complete(self) -> None:
-        conn = Mock()
-        conn.commit = Mock()
-
-        with patch("routers.import_.ensure_public_user_for_username", return_value="public:magnuscarlsen"), patch(
-            "routers.import_.get_import_status",
-            return_value={
-                "total_games": 200,
-                "last_imported": 200,
-                "last_skipped": 0,
-                "imported_at": "2026-03-03T00:00:00+00:00",
-            },
-        ), patch(
-            "routers.import_.get_insights_state",
-            return_value={"lifecycle_status": "complete"},
-        ), patch(
-            "routers.import_.track_server_event",
-            new=AsyncMock(return_value=None),
-        ), patch(
-            "routers.import_.schedule_insights_refresh"
-        ) as schedule_mock:
-            response = asyncio.run(
-                import_router._maybe_return_existing_import(
-                    conn=conn,
-                    current_user=None,
-                    http_request=self._build_request(),
-                    username="MagnusCarlsen",
-                    site="chesscom",
-                    max_games=200,
-                    username_hash="hash",
-                )
-            )
-
-        self.assertIsNotNone(response)
-        schedule_mock.assert_not_called()
-
-    def test_cached_import_refreshes_only_missing_context(self) -> None:
-        conn = Mock()
-        conn.commit = Mock()
-        current_user = {"id": "user-123"}
-
-        with patch("routers.import_.ensure_public_user_for_username", return_value="public:magnuscarlsen"), patch(
-            "routers.import_.get_import_status",
-            return_value={
-                "total_games": 200,
-                "last_imported": 200,
-                "last_skipped": 0,
-                "imported_at": "2026-03-03T00:00:00+00:00",
-            },
-        ), patch(
-            "routers.import_.get_insights_state",
-            side_effect=[
-                {"lifecycle_status": "complete"},
-                {"lifecycle_status": "missing"},
-            ],
-        ), patch(
-            "routers.import_.upsert_import_status"
-        ), patch(
-            "routers.import_.track_server_event",
-            new=AsyncMock(return_value=None),
-        ), patch(
-            "routers.import_.schedule_insights_refresh"
-        ) as schedule_mock:
-            response = asyncio.run(
-                import_router._maybe_return_existing_import(
-                    conn=conn,
-                    current_user=current_user,
-                    http_request=self._build_request(),
-                    username="MagnusCarlsen",
-                    site="chesscom",
-                    max_games=200,
-                    username_hash="hash",
-                )
-            )
-
-        self.assertIsNotNone(response)
-        schedule_mock.assert_called_once_with(
-            user_id="user-123",
-            username="MagnusCarlsen",
-            site="all",
-            reason="import_cache_hit",
-            allow_llm=True,
-            source_user_id="public:magnuscarlsen",
-        )
+        schedule_mock.assert_called_once()
 
 
 if __name__ == "__main__":

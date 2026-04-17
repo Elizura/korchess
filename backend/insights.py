@@ -104,7 +104,7 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
             "low_time_moves": 0,
             "low_time_rate": 0.0,
         }
-        base["move_artifacts"] = []
+        base["clock_by_ply"] = {}
         return base
 
     parsed_game = chess.pgn.read_game(io.StringIO(pgn))
@@ -119,7 +119,7 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
             "low_time_moves": 0,
             "low_time_rate": 0.0,
         }
-        base["move_artifacts"] = []
+        base["clock_by_ply"] = {}
         return base
 
     board = parsed_game.board()
@@ -224,7 +224,12 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
         "low_time_moves": low_time_moves,
         "low_time_rate": round((low_time_moves / len(clock_samples)) if clock_samples else 0.0, 4),
     }
-    base["move_artifacts"] = [event for event in move_events if event["is_user_move"]]
+    # Store only clock data per ply for deep feature extraction
+    base["clock_by_ply"] = {
+        int(event["ply"]): int(event["clock_seconds"])
+        for event in move_events
+        if event.get("clock_seconds") is not None
+    }
 
     return base
 
@@ -313,17 +318,13 @@ def _extract_deep_game_features(
         "endgame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
     }
     theme_counts: dict[str, int] = {}
-    move_artifacts: list[dict[str, Any]] = []
     cp_losses: list[float] = []
     blunders_total = 0
     blunders_low_time = 0
     user_moves_with_clock = 0
     user_moves_low_time = 0
 
-    clock_lookup = {}
-    for item in light_feature.get("move_artifacts", []):
-        if item.get("clock_seconds") is not None:
-            clock_lookup[int(item.get("ply", 0))] = int(item["clock_seconds"])
+    clock_lookup = light_feature.get("clock_by_ply", {})
     low_time_threshold = light_feature.get("time_pressure", {}).get("low_time_threshold_s")
     low_time_cp_losses: list[float] = []
 
@@ -398,17 +399,6 @@ def _extract_deep_game_features(
         if is_low_time_move:
             low_time_cp_losses.append(cp_loss_f)
 
-        if cp_loss_f >= 80:
-            move_artifacts.append(
-                {
-                    "ply": ply,
-                    "phase": phase,
-                    "classification": classification,
-                    "cp_loss": round(cp_loss_f, 2),
-                    "themes": themes,
-                }
-            )
-
     for phase_name, stats in phase_stats.items():
         moves_count = stats["moves"]
         stats["avg_cp_loss"] = round((stats["cp_loss_sum"] / moves_count), 2) if moves_count > 0 else None
@@ -423,13 +413,7 @@ def _extract_deep_game_features(
         "quality": {
             "user_moves_analyzed": len(cp_losses),
             "avg_cp_loss": round(mean(cp_losses), 2) if cp_losses else None,
-            "blunder_rate": round(
-                sum(1 for artifact in move_artifacts if artifact.get("classification") == "blunder")
-                / len(cp_losses),
-                4,
-            )
-            if cp_losses
-            else None,
+            "blunder_rate": round((blunders_total / len(cp_losses)), 4) if cp_losses else None,
             "avg_cp_loss_low_time": round(mean(low_time_cp_losses), 2) if low_time_cp_losses else None,
             "time_pressure": {
                 "user_moves_with_clock": user_moves_with_clock,
@@ -446,7 +430,6 @@ def _extract_deep_game_features(
         },
         "phase_stats": phase_stats,
         "theme_counts": theme_counts,
-        "move_artifacts": move_artifacts[:80],
     }
 
 
@@ -966,23 +949,12 @@ def _generate_llm_narrative(
 def build_narrative(
     features: dict[str, Any],
     fact_map: dict[str, Any],
-    *,
-    allow_llm: bool = True,
 ) -> dict[str, Any]:
-    """Generate grounded narrative with verifier + deterministic fallback."""
-    fallback = _build_fallback_narrative(features)
-    if not allow_llm:
-        return fallback
-
-    llm_output = _generate_llm_narrative(features, fact_map)
-    if llm_output and verify_narrative(llm_output, fact_map):
-        llm_output["meta"] = {
-            "source": "llm",
-            "provider": NARRATIVE_PROVIDER,
-            "version": NARRATIVE_VERSION,
-        }
-        return llm_output
-    return fallback
+    """Generate deterministic fallback narrative.
+    
+    LLM narratives are currently disabled. This always returns the fallback.
+    """
+    return _build_fallback_narrative(features)
 
 
 async def _save_snapshot(
@@ -1022,13 +994,13 @@ async def run_insights_pipeline(
     user_id: str,
     username: str,
     site: str = "all",
-    allow_llm: bool = True,
-    source_user_id: str | None = None,
     trigger_quick_scan: bool = False,
 ) -> None:
-    """Run tiered insights processing for a user."""
+    """Run tiered insights processing for a user.
+    
+    Insights are shared per chess username - not owned by individual users.
+    """
     started_at = utc_now_iso()
-    source_owner_id = source_user_id or user_id
     async with _INSIGHTS_SEMAPHORE:
         conn = get_connection()
         try:
@@ -1049,7 +1021,7 @@ async def run_insights_pipeline(
             try:
                 games = get_games_for_insights(
                     conn,
-                    user_id=source_owner_id,
+                    user_id=user_id,
                     username=username,
                     site=site,
                     limit=MAX_GAMES_WINDOW,
@@ -1137,7 +1109,7 @@ async def run_insights_pipeline(
                 conn.close()
 
             features, coverage, fact_map = _build_aggregate_features(stored_features)
-            narrative = build_narrative(features, fact_map, allow_llm=allow_llm)
+            narrative = build_narrative(features, fact_map)
 
             initial_status = "baseline_ready" if coverage.get("has_enough_games") else "not_enough_data"
             await _save_snapshot(
@@ -1195,7 +1167,7 @@ async def run_insights_pipeline(
             if trigger_quick_scan:
                 from quick_scan import schedule_quick_scan
                 try:
-                    schedule_quick_scan(source_owner_id, username, site=site)
+                    schedule_quick_scan(user_id, username, site=site)
                 except Exception:
                     pass
 
@@ -1221,16 +1193,14 @@ def schedule_insights_refresh(
     site: str = "all",
     reason: str = "manual_refresh",
     force: bool = False,
-    allow_llm: bool = True,
-    source_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Create an insights job if none is currently active, then schedule it.
 
+    Insights are shared per chess username - not owned by individual users.
     When force=True, clears all existing insights, quick scan data, and stale
     jobs so that everything is rebuilt from scratch.
     """
     canonical_username = username.strip().lower()
-    source_owner_id = source_user_id or user_id
     conn = get_connection()
     try:
         if force:
@@ -1259,8 +1229,6 @@ def schedule_insights_refresh(
             feature_version=FEATURE_VERSION,
             meta={
                 "window_size": MAX_GAMES_WINDOW,
-                "allow_llm": allow_llm,
-                "source_user_id": source_owner_id,
             },
         )
         conn.commit()
@@ -1275,8 +1243,6 @@ def schedule_insights_refresh(
                 user_id,
                 canonical_username,
                 site,
-                allow_llm=allow_llm,
-                source_user_id=source_owner_id,
                 trigger_quick_scan=force,
             )
         )
