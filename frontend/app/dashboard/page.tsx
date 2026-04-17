@@ -1272,34 +1272,6 @@ export default function DashboardPage() {
     void loadDashboardBundle(item.username, colorFilter, timeClassFilter);
   };
 
-  const handleRefresh = () => {
-    if (!currentUsername) return;
-    trackEvent("feature.usage", {
-      properties: {
-        feature: "dashboard_refresh",
-      },
-    });
-
-    setReportRefreshNotice(null);
-    setError(null);
-    void loadDashboardBundle(currentUsername, colorFilter, timeClassFilter, { force: true });
-    setInsightsLoading(true);
-    void fetchInsights(currentUsername)
-      .then((insightsData) => {
-        setInsights(insightsData);
-        setCached<InsightsProfile | null>(
-          getDashboardInsightsCacheKey(currentUsername),
-          insightsData,
-        );
-      })
-      .catch(() => {
-        // keep existing insights when refresh fails
-      })
-      .finally(() => {
-        setInsightsLoading(false);
-      });
-  };
-
   const handleRefreshInsights = async () => {
     if (!currentUsername) return;
     trackEvent("insights.refresh.requested", {
@@ -1691,7 +1663,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div role="main" className="opening-page max-w-[1400px] mx-auto px-4 sm:px-6 py-10">
+    <div role="main" className="opening-page max-w-[1550px] mx-auto px-4 sm:px-6 py-10">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="opening-title text-3xl sm:text-4xl font-semibold tracking-tight">
@@ -1796,7 +1768,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Profile cards (authenticated) or chips (guest) */}
+        {/* Account chips */}
         <div className="mt-5 border-t border-[color:var(--zen-border)]/70 pt-4">
           <div className="mb-3 flex items-center justify-between gap-2">
             <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
@@ -1813,22 +1785,26 @@ export default function DashboardPage() {
                 No accounts added yet. Add a Lichess or Chess.com username above.
               </p>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="flex flex-wrap gap-2">
                 {chessProfiles.map((profile) => {
                   const profileKey = `${profile.site}:${profile.chess_username}`;
                   const isSelected =
                     currentUsername &&
                     profile.chess_username.toLowerCase() === currentUsername.toLowerCase();
                   return (
-                    <ChessProfileCard
+                    <button
                       key={profileKey}
-                      profile={profile}
-                      isSelected={!!isSelected}
-                      isSyncing={syncingProfile === profileKey}
+                      type="button"
                       onClick={() => handleProfileClick(profile)}
-                      onSync={() => handleSyncProfile(profile)}
-                      onDelete={() => handleDeleteProfile(profile)}
-                    />
+                      className={[
+                        "zen-pill px-3 py-2 text-sm transition cursor-pointer flex items-center max-w-full",
+                        isSelected
+                          ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-accent)] border border-[color:var(--zen-accent)]"
+                          : "text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface-2)] hover:text-[color:var(--zen-accent)]",
+                      ].join(" ")}
+                    >
+                      <span className="truncate">{profile.chess_username}</span>
+                    </button>
                   );
                 })}
               </div>
@@ -1887,59 +1863,198 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Data Freshness Line */}
-        {importStatus?.imported_at && currentUsername && !loading && (
-          <div className="mt-5 zen-surface-flat px-4 py-3">
-            <p className="text-sm text-[color:var(--zen-muted)]">
-              Report generated from{" "}
-              <span className="text-[color:var(--zen-text)] font-medium">
-                {importStatus.total_games}
-              </span>{" "}
-              games
-              {importStatus.total_games > 0 && (
-                <>
-                  {" "}
-                  ({importStatus.last_synced_at ? "last sync" : "last import"}:{" "}
-                  {new Date(importStatus.last_synced_at || importStatus.imported_at!).toLocaleString("en-US", {
-                    year: "numeric",
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                  )
-                </>
-              )}
-            </p>
-          </div>
-        )}
+        {/* Data freshness — guest / no saved profile (when large profile card is not shown) */}
+        {importStatus?.imported_at &&
+          currentUsername &&
+          !loading &&
+          !(isAuthenticated && chessProfiles.some((p) => p.chess_username.toLowerCase() === currentUsername.toLowerCase())) && (
+            <div className="mt-5 zen-surface-flat px-4 py-3">
+              <p className="text-sm text-[color:var(--zen-muted)]">
+                Report generated from{" "}
+                <span className="text-[color:var(--zen-text)] font-medium">
+                  {importStatus.total_games}
+                </span>{" "}
+                games
+                {importStatus.total_games > 0 && (
+                  <>
+                    {" "}
+                    ({importStatus.last_synced_at ? "last sync" : "last import"}:{" "}
+                    {new Date(importStatus.last_synced_at || importStatus.imported_at!).toLocaleString("en-US", {
+                      year: "numeric",
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                    )
+                  </>
+                )}
+              </p>
+            </div>
+          )}
 
         </div>
+
+        {/* Selected Profile Card - larger display */}
+        {isAuthenticated && currentUsername && (() => {
+          const selectedProfile = chessProfiles.find(
+            (p) => p.chess_username.toLowerCase() === currentUsername.toLowerCase()
+          );
+          if (!selectedProfile) return null;
+          const profileKey = `${selectedProfile.site}:${selectedProfile.chess_username}`;
+          const isLichess = selectedProfile.site === "lichess";
+          const siteLogo = isLichess ? "/site-logos/lichess.png" : "/site-logos/chesscom.png";
+          const siteLabel = isLichess ? "Lichess" : "Chess.com";
+
+          return (
+            <div className="zen-surface opening-frame p-6 sm:p-8">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div
+                    className={`w-14 h-14 rounded-xl flex items-center justify-center ${isLichess ? "bg-[#1a1a1e]" : ""}`}
+                  >
+                    <img src={siteLogo} alt={siteLabel} className="w-10 h-10 object-contain" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-1">
+                      {siteLabel}
+                    </p>
+                    <h2 className="text-2xl sm:text-3xl font-bold text-[color:var(--zen-text)]">
+                      {selectedProfile.chess_username}
+                    </h2>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <button
+                    type="button"
+                    onClick={() => handleSyncProfile(selectedProfile)}
+                    disabled={syncingProfile === profileKey}
+                    className={`
+                      flex items-center gap-2 px-4 py-2.5 rounded-lg
+                      border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)]
+                      text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface-2)] 
+                      hover:border-[color:var(--zen-accent)]/50 transition-all
+                      ${syncingProfile === profileKey ? "opacity-50 cursor-wait" : "cursor-pointer"}
+                    `}
+                    title="Sync new games and update ratings"
+                  >
+                    {syncingProfile === profileKey ? (
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    )}
+                    <span className="text-sm font-medium">{syncingProfile === profileKey ? "Syncing..." : "Sync"}</span>
+                  </button>
+                  {SHOW_COACHING_SUMMARY && (
+                    <button
+                      type="button"
+                      onClick={handleRefreshInsights}
+                      disabled={insightsRefreshing || insightsLoading}
+                      className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:text-[color:var(--zen-accent)] transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {insightsRefreshing ? "Refreshing..." : "Refresh Insights"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              
+              <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="zen-surface-flat p-4 rounded-lg text-center">
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <img src="/time-controls/bullet.png" alt="Bullet" className="w-5 h-5" style={{ filter: "brightness(0) saturate(100%) invert(76%) sepia(65%) saturate(439%) hue-rotate(85deg) brightness(93%) contrast(92%)" }} />
+                    <span className="text-base font-semibold uppercase tracking-wide text-[color:var(--zen-muted)]">Bullet</span>
+                  </div>
+                  <p className="text-2xl font-bold text-[color:var(--zen-text)] font-mono">
+                    {selectedProfile.bullet_rating ?? "—"}
+                  </p>
+                </div>
+                <div className="zen-surface-flat p-4 rounded-lg text-center">
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <img src="/time-controls/blitz.png" alt="Blitz" className="w-5 h-5" style={{ filter: "brightness(0) saturate(100%) invert(76%) sepia(65%) saturate(439%) hue-rotate(85deg) brightness(93%) contrast(92%)" }} />
+                    <span className="text-base font-semibold uppercase tracking-wide text-[color:var(--zen-muted)]">Blitz</span>
+                  </div>
+                  <p className="text-2xl font-bold text-[color:var(--zen-text)] font-mono">
+                    {selectedProfile.blitz_rating ?? "—"}
+                  </p>
+                </div>
+                <div className="zen-surface-flat p-4 rounded-lg text-center">
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <img src="/time-controls/rapid.png" alt="Rapid" className="w-5 h-5" style={{ filter: "brightness(0) saturate(100%) invert(76%) sepia(65%) saturate(439%) hue-rotate(85deg) brightness(93%) contrast(92%)" }} />
+                    <span className="text-base font-semibold uppercase tracking-wide text-[color:var(--zen-muted)]">Rapid</span>
+                  </div>
+                  <p className="text-2xl font-bold text-[color:var(--zen-text)] font-mono">
+                    {selectedProfile.rapid_rating ?? "—"}
+                  </p>
+                </div>
+                <div className="zen-surface-flat p-4 rounded-lg text-center">
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <img src="/time-controls/classical.png" alt="Classical" className="w-5 h-5" style={{ filter: "brightness(0) saturate(100%) invert(76%) sepia(65%) saturate(439%) hue-rotate(85deg) brightness(93%) contrast(92%)" }} />
+                    <span className="text-base font-semibold uppercase tracking-wide text-[color:var(--zen-muted)]">Classical</span>
+                  </div>
+                  <p className="text-2xl font-bold text-[color:var(--zen-text)] font-mono">
+                    {selectedProfile.classical_rating ?? "—"}
+                  </p>
+                </div>
+              </div>
+
+              {importStatus?.imported_at &&
+                !loading &&
+                importStatus.username.toLowerCase() === selectedProfile.chess_username.toLowerCase() && (
+                  <div className="mt-6 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-border)]/80">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                      <p className="text-sm text-[color:var(--zen-muted)]">
+                        Report generated from{" "}
+                        <span className="text-[color:var(--zen-text)] font-medium">
+                          {importStatus.total_games}
+                        </span>{" "}
+                        games
+                        {importStatus.total_games > 0 && (
+                          <>
+                            {" "}
+                            ({importStatus.last_synced_at ? "last sync" : "last import"}:{" "}
+                            {new Date(importStatus.last_synced_at || importStatus.imported_at!).toLocaleString("en-US", {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                            )
+                          </>
+                        )}
+                      </p>
+                      {SHOW_COACHING_SUMMARY && (
+                        <span className="zen-pill px-4 py-2 text-sm uppercase tracking-wide text-[color:var(--zen-muted)] shrink-0">
+                          {insightsLoading && !insights
+                            ? "Loading..."
+                            : insights
+                              ? insightsStatusLabel
+                              : "—"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+            </div>
+          );
+        })()}
 
         {/* AI Coaching Summary - only render when insights are ready */}
         {SHOW_COACHING_SUMMARY && currentUsername && coachingSummaryReady && insights && (
           <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl">
-            <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
-              <div>
-                <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
-                  AI Insights
-                </p>
-                <h3 className="text-2xl sm:text-3xl font-semibold text-[color:var(--zen-text)] mt-1">
-                  Coaching summary for {currentUsername}
-                </h3>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="zen-pill px-4 py-2 text-sm uppercase tracking-wide text-[color:var(--zen-muted)]">
-                  {insightsStatusLabel}
-                </span>
-                <button
-                  onClick={handleRefreshInsights}
-                  disabled={insightsRefreshing || insightsLoading}
-                  className="zen-pill px-4 py-2 text-sm font-medium text-[color:var(--zen-text)] hover:text-[color:var(--zen-accent)] transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {insightsRefreshing ? "Refreshing..." : "Refresh Insights"}
-                </button>
-              </div>
+            <div className="mb-8">
+              <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                AI Insights
+              </p>
+              <h3 className="text-2xl sm:text-3xl font-semibold text-[color:var(--zen-text)] mt-1">
+                Coaching summary for {currentUsername}
+              </h3>
             </div>
 
             <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -2223,30 +2338,20 @@ export default function DashboardPage() {
         {/* Top openings - split by color */}
         <div className="zen-surface opening-frame p-5 sm:p-6 border border-[color:var(--zen-border)] rounded-2xl">
         {currentUsername && (
-          <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between mb-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={timeClassFilter}
-                onChange={(e) =>
-                  handleFilterChange("white", e.target.value as TimeClassFilter)
-                }
-                className="zen-input px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)]"
-                disabled={loading}
-              >
-                <option value="all">All time controls</option>
-                <option value="blitz">Blitz</option>
-                <option value="rapid">Rapid</option>
-                <option value="classical">Classical</option>
-              </select>
-            </div>
-
-            <button
-              onClick={handleRefresh}
-              disabled={loading || reportRefreshing}
-              className="zen-pill px-4 py-2.5 text-sm font-medium text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition disabled:opacity-50 disabled:cursor-not-allowed"
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <select
+              value={timeClassFilter}
+              onChange={(e) =>
+                handleFilterChange("white", e.target.value as TimeClassFilter)
+              }
+              className="zen-input px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)]"
+              disabled={loading}
             >
-              {reportRefreshing ? "Refreshing..." : "Refresh"}
-            </button>
+              <option value="all">All time controls</option>
+              <option value="blitz">Blitz</option>
+              <option value="rapid">Rapid</option>
+              <option value="classical">Classical</option>
+            </select>
           </div>
         )}
 

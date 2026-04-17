@@ -1001,6 +1001,23 @@ html:has(.analysis-page)::-webkit-scrollbar {
   height: 0;
 }
 
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--zen-border) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  height: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--zen-border);
+  border-radius: 2px;
+}
 
 .opening-page .opening-overall {
   border: 2px solid #2d2d33;
