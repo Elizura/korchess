@@ -268,11 +268,10 @@ def _empty_scan_result() -> dict[str, Any]:
 
 async def run_quick_scan_batch(
     job_id: str,
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> None:
-    """Scan all unscanned games for a user, saving results progressively."""
+    """Scan all unscanned games for a username, saving results progressively."""
     canonical = username.strip().lower()
     started_at = utc_now_iso()
 
@@ -288,12 +287,11 @@ async def run_quick_scan_batch(
         try:
             games = get_games_for_insights(
                 conn,
-                user_id=user_id,
                 username=canonical,
                 site=site,
                 limit=QUICK_SCAN_MAX_GAMES,
             )
-            already_scanned = get_scanned_game_ids(conn, user_id, canonical, site)
+            already_scanned = get_scanned_game_ids(conn, canonical, site)
         finally:
             conn.close()
 
@@ -314,7 +312,7 @@ async def run_quick_scan_batch(
                 conn.commit()
             finally:
                 conn.close()
-            await _merge_and_update_insights(user_id, canonical, site, job_id)
+            await _merge_and_update_insights(canonical, site, job_id)
             return
 
         conn = get_connection()
@@ -341,10 +339,9 @@ async def run_quick_scan_batch(
                     try:
                         upsert_game_quick_scan(
                             conn2,
-                            user_id=user_id,
+                            username=canonical,
                             site=game["site"],
                             site_game_id=game["site_game_id"],
-                            username=canonical,
                             problems_json=problems_str,
                             summary_json=summary_str,
                         )
@@ -382,7 +379,7 @@ async def run_quick_scan_batch(
         finally:
             conn.close()
 
-        await _merge_and_update_insights(user_id, canonical, site, job_id)
+        await _merge_and_update_insights(canonical, site, job_id)
 
     except Exception as exc:
         logger.exception("Quick scan batch failed: %s", exc)
@@ -400,7 +397,6 @@ async def run_quick_scan_batch(
 
 
 async def _merge_and_update_insights(
-    user_id: str,
     username: str,
     site: str,
     job_id: str,
@@ -408,8 +404,8 @@ async def _merge_and_update_insights(
     """Merge scan aggregates into the player_insights row."""
     conn = get_connection()
     try:
-        scan_rows = get_quick_scan_results(conn, user_id, username, site)
-        existing = get_player_insights(conn, user_id, username, site)
+        scan_rows = get_quick_scan_results(conn, username, site)
+        existing = get_player_insights(conn, username, site)
     finally:
         conn.close()
 
@@ -432,7 +428,6 @@ async def _merge_and_update_insights(
         if existing:
             upsert_player_insights(
                 conn,
-                user_id=user_id,
                 username=username,
                 site=site,
                 status="complete",
@@ -450,7 +445,6 @@ async def _merge_and_update_insights(
 
 
 def schedule_quick_scan(
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> dict[str, Any]:
@@ -458,18 +452,17 @@ def schedule_quick_scan(
     canonical = username.strip().lower()
     conn = get_connection()
     try:
-        active = get_active_scan_job(conn, user_id, canonical, site)
+        active = get_active_scan_job(conn, canonical, site)
         if active:
             return {"scheduled": False, "job": active}
 
         games = get_games_for_insights(
             conn,
-            user_id=user_id,
             username=canonical,
             site=site,
             limit=QUICK_SCAN_MAX_GAMES,
         )
-        already_scanned = get_scanned_game_ids(conn, user_id, canonical, site)
+        already_scanned = get_scanned_game_ids(conn, canonical, site)
         to_scan = [
             g for g in games
             if (g["site"], g["site_game_id"]) not in already_scanned
@@ -480,7 +473,7 @@ def schedule_quick_scan(
             return {"scheduled": False, "reason": "no_new_games"}
 
         job_id = str(uuid.uuid4())
-        create_scan_job(conn, job_id, user_id, canonical, site, total)
+        create_scan_job(conn, job_id, canonical, site, total)
         conn.commit()
     finally:
         conn.close()
@@ -488,7 +481,7 @@ def schedule_quick_scan(
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(
-            run_quick_scan_batch(job_id, user_id, canonical, site)
+            run_quick_scan_batch(job_id, canonical, site)
         )
     except RuntimeError:
         pass
