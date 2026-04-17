@@ -232,6 +232,7 @@ async def import_lichess_games(
             detail=f"No games found for user '{username}'."
         )
 
+    # do bulk insert here
     for game in games:
         game["user_id"] = public_user_id
         if upsert_game(conn, game):
