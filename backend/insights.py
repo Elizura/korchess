@@ -958,7 +958,6 @@ def build_narrative(
 
 
 async def _save_snapshot(
-    user_id: str,
     username: str,
     site: str,
     status: str,
@@ -972,7 +971,6 @@ async def _save_snapshot(
     try:
         upsert_player_insights(
             conn,
-            user_id=user_id,
             username=username,
             site=site,
             status=status,
@@ -991,12 +989,11 @@ async def _save_snapshot(
 
 async def run_insights_pipeline(
     job_id: str,
-    user_id: str,
     username: str,
     site: str = "all",
     trigger_quick_scan: bool = False,
 ) -> None:
-    """Run tiered insights processing for a user.
+    """Run tiered insights processing for a username.
     
     Insights are shared per chess username - not owned by individual users.
     """
@@ -1021,7 +1018,6 @@ async def run_insights_pipeline(
             try:
                 games = get_games_for_insights(
                     conn,
-                    user_id=user_id,
                     username=username,
                     site=site,
                     limit=MAX_GAMES_WINDOW,
@@ -1054,7 +1050,6 @@ async def run_insights_pipeline(
                 fact_map: dict[str, Any] = {}
                 narrative = _build_fallback_narrative(empty_features)
                 await _save_snapshot(
-                    user_id=user_id,
                     username=username,
                     site=site,
                     status="not_enough_data",
@@ -1084,7 +1079,6 @@ async def run_insights_pipeline(
                 try:
                     upsert_insight_game_feature(
                         conn,
-                        user_id=user_id,
                         username=username,
                         site=game["site"],
                         site_game_id=game["site_game_id"],
@@ -1100,7 +1094,6 @@ async def run_insights_pipeline(
             try:
                 stored_features = get_insight_game_features(
                     conn,
-                    user_id=user_id,
                     username=username,
                     site=site,
                     feature_version=FEATURE_VERSION,
@@ -1113,7 +1106,6 @@ async def run_insights_pipeline(
 
             initial_status = "baseline_ready" if coverage.get("has_enough_games") else "not_enough_data"
             await _save_snapshot(
-                user_id=user_id,
                 username=username,
                 site=site,
                 status=initial_status,
@@ -1140,7 +1132,6 @@ async def run_insights_pipeline(
                 return
 
             await _save_snapshot(
-                user_id=user_id,
                 username=username,
                 site=site,
                 status="complete",
@@ -1167,7 +1158,7 @@ async def run_insights_pipeline(
             if trigger_quick_scan:
                 from quick_scan import schedule_quick_scan
                 try:
-                    schedule_quick_scan(user_id, username, site=site)
+                    schedule_quick_scan(username, site=site)
                 except Exception:
                     pass
 
@@ -1188,7 +1179,6 @@ async def run_insights_pipeline(
 
 
 def schedule_insights_refresh(
-    user_id: str,
     username: str,
     site: str = "all",
     reason: str = "manual_refresh",
@@ -1204,11 +1194,11 @@ def schedule_insights_refresh(
     conn = get_connection()
     try:
         if force:
-            clear_insights_data(conn, user_id, canonical_username, site)
-            clear_quick_scan_data(conn, user_id, canonical_username, site)
+            clear_insights_data(conn, canonical_username, site)
+            clear_quick_scan_data(conn, canonical_username, site)
             conn.commit()
         else:
-            active = get_active_insight_job(conn, user_id, canonical_username, site)
+            active = get_active_insight_job(conn, canonical_username, site)
             if active:
                 return {
                     "scheduled": False,
@@ -1220,7 +1210,6 @@ def schedule_insights_refresh(
         create_insight_job(
             conn,
             job_id=job_id,
-            user_id=user_id,
             username=canonical_username,
             site=site,
             status="queued",
@@ -1240,7 +1229,6 @@ def schedule_insights_refresh(
         loop.create_task(
             run_insights_pipeline(
                 job_id,
-                user_id,
                 canonical_username,
                 site,
                 trigger_quick_scan=force,
@@ -1261,7 +1249,6 @@ def schedule_insights_refresh(
 
 
 def get_insights_state(
-    user_id: str,
     username: str,
     site: str = "all",
 ) -> dict[str, Any]:
@@ -1269,8 +1256,8 @@ def get_insights_state(
     canonical_username = username.strip().lower()
     conn = get_connection()
     try:
-        snapshot = get_player_insights(conn, user_id, canonical_username, site)
-        active_job = get_active_insight_job(conn, user_id, canonical_username, site)
+        snapshot = get_player_insights(conn, canonical_username, site)
+        active_job = get_active_insight_job(conn, canonical_username, site)
     finally:
         conn.close()
 
