@@ -591,6 +591,56 @@ def upsert_game(conn: psycopg.Connection, game_row: dict) -> bool:
     return cursor.rowcount > 0
 
 
+def bulk_upsert_games(conn: psycopg.Connection, games: list[dict]) -> tuple[int, int]:
+    """
+    Bulk insert games, skipping duplicates (by username + site + site_game_id).
+    Returns (inserted_count, skipped_count).
+    
+    Uses a single INSERT with multiple VALUES for better performance.
+    """
+    if not games:
+        return 0, 0
+
+    cursor = conn.cursor()
+    
+    values_list = [
+        (
+            game["username"].strip().lower(),
+            game["site"],
+            game["site_game_id"],
+            game.get("played_at"),
+            game.get("time_class"),
+            game.get("color"),
+            game.get("result"),
+            game.get("eco"),
+            game.get("opening_name"),
+            game.get("opening_id"),
+            game.get("opening_ply_count"),
+            game.get("opponent"),
+            game.get("white_elo"),
+            game.get("black_elo"),
+            game.get("pgn"),
+        )
+        for game in games
+    ]
+
+    cursor.executemany(
+        """
+        INSERT INTO games (
+            username, site, site_game_id, played_at, time_class,
+            color, result, eco, opening_name, opening_id, opening_ply_count,
+            opponent, white_elo, black_elo, pgn
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (username, site, site_game_id) DO NOTHING
+        """,
+        values_list,
+    )
+
+    inserted = cursor.rowcount
+    skipped = len(games) - inserted
+    return inserted, skipped
+
+
 def get_openings_stats(
     conn: psycopg.Connection,
     username: str,

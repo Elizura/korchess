@@ -11,9 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from analytics import hash_username, track_server_event
 from db import (
+    bulk_upsert_games,
     get_import_history,
     get_import_status,
-    upsert_game,
     upsert_import_status,
 )
 from lichess import fetch_lichess_pgn, parse_pgn_games, LichessAPIError
@@ -184,10 +184,9 @@ async def import_lichess_games(
             detail=f"No rated games found for user '{username}'."
         )
 
-    imported = 0
-    games, skipped = parse_pgn_games(pgn_text, username, conn)
+    games, parse_skipped = parse_pgn_games(pgn_text, username, conn)
 
-    if not games and skipped == 0:
+    if not (games or parse_skipped):
         if is_sync:
             _record_import_status(
                 conn, username, "lichess",
@@ -215,12 +214,8 @@ async def import_lichess_games(
             detail=f"No games found for user '{username}'."
         )
 
-    imported = 0
-    for game in games:
-        if upsert_game(conn, game):
-            imported += 1
-        else:
-            skipped += 1
+    imported, db_skipped = bulk_upsert_games(conn, games)
+    skipped = parse_skipped + db_skipped
     conn.commit()
 
     _record_import_status(
@@ -346,13 +341,7 @@ async def import_chesscom_games(
             detail=f"No games found for user '{username}' on Chess.com."
         )
 
-    imported = 0
-    skipped = 0
-    for game in games:
-        if upsert_game(conn, game):
-            imported += 1
-        else:
-            skipped += 1
+    imported, skipped = bulk_upsert_games(conn, games)
     conn.commit()
 
     _record_import_status(
