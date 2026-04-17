@@ -382,3 +382,38 @@ class AnalyticsIdentifyRequest(BaseModel):
     """Authenticated identity stitch request."""
     anonymous_id: str = Field(..., min_length=1, max_length=128)
     session_id: str | None = Field(default=None, max_length=128)
+
+
+class ChessProfileCreate(BaseModel):
+    """Request body for creating a chess profile."""
+    username: str = Field(..., min_length=1, max_length=50)
+    site: Literal["lichess", "chesscom"]
+
+
+class ChessProfile(BaseModel):
+    """A saved chess profile with ratings."""
+    chess_username: str
+    site: str
+    bullet_rating: int | None = None
+    blitz_rating: int | None = None
+    rapid_rating: int | None = None
+    classical_rating: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ChessProfileWithImport(BaseModel):
+    """Response for profile creation including initial import result."""
+    profile: ChessProfile
+    import_result: ImportResponse
+
+
+class ChessProfileListResponse(BaseModel):
+    """Response containing all chess profiles for a user."""
+    profiles: list[ChessProfile]
+
+
+class ChessProfileSyncResponse(BaseModel):
+    """Response for profile sync including updated profile and sync result."""
+    profile: ChessProfile
+    sync_result: ImportResponse

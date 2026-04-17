@@ -23,6 +23,65 @@ class LichessAPIError(Exception):
         super().__init__(self.message)
 
 
+def fetch_lichess_profile(username: str) -> dict:
+    """
+    Fetch a user's profile from Lichess, including ratings for all time controls.
+
+    Returns:
+        dict with keys: username, bullet_rating, blitz_rating, rapid_rating, classical_rating
+
+    Raises:
+        LichessAPIError: If user not found or API error.
+    """
+    url = f"{LICHESS_API_BASE}/user/{username}"
+    headers = {"Accept": "application/json"}
+
+    def make_request() -> httpx.Response:
+        with httpx.Client(timeout=30.0) as client:
+            return client.get(url, headers=headers)
+
+    response = make_request()
+
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After", "60")
+        try:
+            wait_seconds = int(retry_after)
+        except ValueError:
+            wait_seconds = 60
+        wait_seconds = min(wait_seconds, 120)
+        time.sleep(wait_seconds)
+
+        response = make_request()
+        if response.status_code == 429:
+            raise LichessAPIError(
+                "Rate limited by Lichess. Please try again later.",
+                status_code=429
+            )
+
+    if response.status_code == 404:
+        raise LichessAPIError(
+            f"User '{username}' not found on Lichess.",
+            status_code=404
+        )
+
+    if response.status_code != 200:
+        raise LichessAPIError(
+            f"Lichess API error: {response.status_code}",
+            status_code=response.status_code
+        )
+
+    data = response.json()
+    perfs = data.get("perfs", {})
+
+    return {
+        "username": data.get("username", username),
+        "bullet_rating": perfs.get("bullet", {}).get("rating"),
+        "blitz_rating": perfs.get("blitz", {}).get("rating"),
+        "rapid_rating": perfs.get("rapid", {}).get("rating"),
+        "classical_rating": perfs.get("classical", {}).get("rating"),
+    }
+
+
 def fetch_lichess_pgn(username: str, max_games: int = 1000, since: int | None = None) -> str:
     """
     Fetch games for a user from Lichess as PGN text.

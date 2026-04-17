@@ -4,7 +4,7 @@
 // avoid Next.js "useSearchParams() should be wrapped in a suspense boundary" build errors.
 export const dynamic = "force-dynamic";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
@@ -24,6 +24,14 @@ import {
   isFresh,
   setCached,
 } from "@/lib/pageDataCache";
+import { PlatformSelector, type Platform } from "@/components/PlatformSelector";
+import { ChessProfileCard, type ChessProfile } from "@/components/ChessProfileCard";
+import {
+  fetchProfiles,
+  addProfile,
+  syncProfile,
+  deleteProfile,
+} from "@/lib/profiles";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
@@ -400,6 +408,12 @@ export default function DashboardPage() {
   const [reportRefreshing, setReportRefreshing] = useState(false);
   const [reportRefreshNotice, setReportRefreshNotice] = useState<string | null>(null);
 
+  const [inputUsername, setInputUsername] = useState("");
+  const [selectedPlatform, setSelectedPlatform] = useState<Platform>("lichess");
+  const [chessProfiles, setChessProfiles] = useState<ChessProfile[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [syncingProfile, setSyncingProfile] = useState<string | null>(null);
+
   const importHistory = useMemo(() => {
     if (isAuthenticated) {
       return mergeHistory(guestImportHistory, accountImportHistory);
@@ -428,6 +442,293 @@ export default function DashboardPage() {
 
     fetchProfile();
   }, [isAuthenticated, session?.idToken]);
+
+  // Fetch chess profiles when authenticated
+  useEffect(() => {
+    if (!isAuthenticated || !session?.idToken) {
+      setChessProfiles([]);
+      return;
+    }
+
+    const loadChessProfiles = async () => {
+      if (!session?.idToken) return;
+      try {
+        setProfilesLoading(true);
+        const profiles = await fetchProfiles(session.idToken);
+        setChessProfiles(profiles);
+      } catch {
+        // Ignore errors; profiles are optional enhancement
+      } finally {
+        setProfilesLoading(false);
+      }
+    };
+
+    loadChessProfiles();
+  }, [isAuthenticated, session?.idToken]);
+
+  // Handle adding a new profile (authenticated) or importing (guest)
+  const handleAddOrImport = useCallback(async () => {
+    const trimmedUsername = inputUsername.trim();
+    if (!trimmedUsername) {
+      setError("Please enter a username");
+      return;
+    }
+
+    trackEvent("import.start", {
+      properties: {
+        site: selectedPlatform,
+        is_profile_add: isAuthenticated,
+      },
+    });
+
+    setLoading(true);
+    setError(null);
+    setReport(null);
+    setReportBlack(null);
+    setImportResult(null);
+
+    if (!currentUsername || trimmedUsername.toLowerCase() !== currentUsername.toLowerCase()) {
+      setLichessImportStatus(null);
+      setChesscomImportStatus(null);
+    }
+
+    try {
+      if (isAuthenticated && session?.idToken) {
+        const result = await addProfile(session.idToken, trimmedUsername, selectedPlatform);
+        
+        setChessProfiles((prev) => {
+          const filtered = prev.filter(
+            (p) =>
+              !(p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
+                p.site === result.profile.site)
+          );
+          return [result.profile, ...filtered];
+        });
+
+        setImportResult(result.import_result);
+        setUsername(result.profile.chess_username);
+        setCurrentUsername(result.profile.chess_username);
+        router.replace(`/dashboard?user=${encodeURIComponent(result.profile.chess_username)}`, { scroll: false });
+        persistLastUser(result.profile.chess_username);
+        
+        trackEvent("profile.added", {
+          properties: {
+            site: selectedPlatform,
+            imported: result.import_result.imported,
+          },
+        });
+      } else {
+        const endpoint =
+          selectedPlatform === "lichess"
+            ? `${API_BASE_URL}/api/v1/import/lichess`
+            : `${API_BASE_URL}/api/v1/import/chesscom`;
+
+        const importResponse = await fetch(endpoint, {
+          method: "POST",
+          headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
+          body: JSON.stringify({ username: trimmedUsername }),
+        });
+
+        if (!importResponse.ok) {
+          const data = await importResponse.json().catch(() => ({}));
+          throw new Error(data.detail || `Import failed: ${importResponse.status}`);
+        }
+
+        const importData: ImportResponse = await importResponse.json();
+        setImportResult(importData);
+        setUsername(trimmedUsername);
+        setCurrentUsername(trimmedUsername);
+        router.replace(`/dashboard?user=${encodeURIComponent(trimmedUsername)}`, { scroll: false });
+        persistLastUser(trimmedUsername);
+        setGuestImportHistory(
+          saveGuestHistoryEntry({
+            username: trimmedUsername,
+            site: selectedPlatform,
+            imported_at: new Date().toISOString(),
+          }),
+        );
+
+        trackEvent("import.success", {
+          properties: {
+            site: selectedPlatform,
+            imported: importData.imported,
+            skipped: importData.skipped,
+          },
+        });
+      }
+
+      setInputUsername("");
+      setReportRefreshNotice(null);
+      clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
+
+      const [whiteReportData, blackReportData] = await Promise.all([
+        fetchReport(trimmedUsername, "white", timeClassFilter),
+        fetchReport(trimmedUsername, "black", timeClassFilter),
+      ]);
+      setReport(whiteReportData);
+      setReportBlack(blackReportData);
+
+      const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
+        fetchImportStatus(trimmedUsername),
+        fetchImportStatus(trimmedUsername, "lichess"),
+        fetchImportStatus(trimmedUsername, "chesscom"),
+      ]);
+      if (statusData) setImportStatus(statusData);
+      setLichessImportStatus(lichessStatus);
+      setChesscomImportStatus(chesscomStatus);
+
+      if (isAuthenticated) {
+        void fetchImportHistory();
+      }
+      const insightsData = await fetchInsights(trimmedUsername);
+      setInsights(insightsData);
+    } catch (err) {
+      trackEvent("import.failed", {
+        properties: {
+          site: selectedPlatform,
+          reason: err instanceof Error ? err.message : "An error occurred",
+        },
+      });
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    inputUsername,
+    selectedPlatform,
+    isAuthenticated,
+    session?.idToken,
+    currentUsername,
+    authHeaders,
+    timeClassFilter,
+    router,
+  ]);
+
+  // Handle syncing a profile
+  const handleSyncProfile = useCallback(
+    async (profile: ChessProfile) => {
+      if (!isAuthenticated || !session?.idToken) return;
+
+      const profileKey = `${profile.site}:${profile.chess_username}`;
+      setSyncingProfile(profileKey);
+      setError(null);
+      setImportResult(null);
+
+      try {
+        const result = await syncProfile(
+          session.idToken,
+          profile.site as "lichess" | "chesscom",
+          profile.chess_username
+        );
+
+        setChessProfiles((prev) =>
+          prev.map((p) =>
+            p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
+            p.site === result.profile.site
+              ? result.profile
+              : p
+          )
+        );
+
+        if (
+          currentUsername &&
+          currentUsername.toLowerCase() === profile.chess_username.toLowerCase()
+        ) {
+          setImportResult(result.sync_result);
+
+          clearCacheByPrefix(`dashboard:${profile.chess_username.toLowerCase()}:`);
+          clearCacheByPrefix(`dashboard:variations:${profile.chess_username.toLowerCase()}:`);
+          clearCacheByPrefix(`dashboard:insights:${profile.chess_username.toLowerCase()}:`);
+          clearCacheByPrefix(`opening:${profile.chess_username.toLowerCase()}:`);
+
+          const [whiteReportData, blackReportData] = await Promise.all([
+            fetchReport(profile.chess_username, "white", timeClassFilter),
+            fetchReport(profile.chess_username, "black", timeClassFilter),
+          ]);
+          setReport(whiteReportData);
+          setReportBlack(blackReportData);
+
+          const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
+            fetchImportStatus(profile.chess_username),
+            fetchImportStatus(profile.chess_username, "lichess"),
+            fetchImportStatus(profile.chess_username, "chesscom"),
+          ]);
+          if (statusData) setImportStatus(statusData);
+          setLichessImportStatus(lichessStatus);
+          setChesscomImportStatus(chesscomStatus);
+
+          const insightsData = await fetchInsights(profile.chess_username);
+          setInsights(insightsData);
+        }
+
+        trackEvent("profile.synced", {
+          properties: {
+            site: profile.site,
+            imported: result.sync_result.imported,
+          },
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Sync failed");
+      } finally {
+        setSyncingProfile(null);
+      }
+    },
+    [isAuthenticated, session?.idToken, currentUsername, timeClassFilter]
+  );
+
+  // Handle deleting a profile
+  const handleDeleteProfile = useCallback(
+    async (profile: ChessProfile) => {
+      if (!isAuthenticated || !session?.idToken) return;
+
+      try {
+        await deleteProfile(
+          session.idToken,
+          profile.site as "lichess" | "chesscom",
+          profile.chess_username
+        );
+
+        setChessProfiles((prev) =>
+          prev.filter(
+            (p) =>
+              !(p.chess_username.toLowerCase() === profile.chess_username.toLowerCase() &&
+                p.site === profile.site)
+          )
+        );
+
+        trackEvent("profile.deleted", {
+          properties: {
+            site: profile.site,
+          },
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Delete failed");
+      }
+    },
+    [isAuthenticated, session?.idToken]
+  );
+
+  // Handle clicking on a profile card
+  const handleProfileClick = useCallback(
+    (profile: ChessProfile) => {
+      trackEvent("feature.usage", {
+        properties: {
+          feature: "profile_card_select",
+        },
+      });
+      setUsername(profile.chess_username);
+      setCurrentUsername(profile.chess_username);
+      router.replace(`/dashboard?user=${encodeURIComponent(profile.chess_username)}`, { scroll: false });
+      persistLastUser(profile.chess_username);
+      setReportRefreshNotice(null);
+      setError(null);
+      void loadDashboardBundle(profile.chess_username, colorFilter, timeClassFilter);
+    },
+    [colorFilter, timeClassFilter, router]
+  );
 
   // Always load guest-local "recently analyzed" history.
   useEffect(() => {
@@ -1457,87 +1758,82 @@ export default function DashboardPage() {
 
       <div className="min-w-0 space-y-6">
         <div className="zen-surface opening-frame p-5 sm:p-6">
-        {/* Import inputs row */}
-        <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-          {/* Lichess import */}
-          <div className="flex-1">
-            <label
-              htmlFor="lichess-username"
-              className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2"
-            >
-              Lichess username
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="lichess-username"
-                type="text"
-                value={lichessUsername}
-                onChange={(e) => setLichessUsername(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleImportLichess()}
-                placeholder="e.g. hikaru"
-                className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
-                disabled={loading}
-              />
-              <button
-                onClick={handleImportLichess}
-                disabled={loading || !lichessUsername.trim()}
-                className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
+        {/* Unified import input */}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
+            <div className="flex-1">
+              <label
+                htmlFor="chess-username"
+                className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2"
               >
-                {(() => {
-                  const isKnownUser = currentUsername && lichessUsername.trim().toLowerCase() === currentUsername.toLowerCase();
-                  const hasGames = isKnownUser && lichessImportStatus?.total_games;
-                  return loading
-                    ? (hasGames ? "Syncing..." : "Importing...")
-                    : (hasGames ? "Sync" : "Import");
-                })()}
-              </button>
-            </div>
-          </div>
-
-          {/* Chess.com import */}
-          <div className="flex-1">
-            <label
-              htmlFor="chesscom-username"
-              className="block text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)] mb-2"
-            >
-              Chess.com username
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="chesscom-username"
-                type="text"
-                value={chesscomUsername}
-                onChange={(e) => setChesscomUsername(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleImportChesscom()}
-                placeholder="e.g. hikaru"
-                className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
-                disabled={loading}
-              />
-              <button
-                onClick={handleImportChesscom}
-                disabled={loading || !chesscomUsername.trim()}
-                className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
-              >
-                {(() => {
-                  const isKnownUser = currentUsername && chesscomUsername.trim().toLowerCase() === currentUsername.toLowerCase();
-                  const hasGames = isKnownUser && chesscomImportStatus?.total_games;
-                  return loading
-                    ? (hasGames ? "Syncing..." : "Importing...")
-                    : (hasGames ? "Sync" : "Import");
-                })()}
-              </button>
+                {isAuthenticated ? "Add chess account" : "Import games"}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="chess-username"
+                  type="text"
+                  value={inputUsername}
+                  onChange={(e) => setInputUsername(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddOrImport()}
+                  placeholder="Enter username"
+                  className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
+                  disabled={loading}
+                />
+                <PlatformSelector
+                  value={selectedPlatform}
+                  onChange={setSelectedPlatform}
+                  disabled={loading}
+                />
+                <button
+                  onClick={handleAddOrImport}
+                  disabled={loading || !inputUsername.trim()}
+                  className="pixel-button shrink-0 px-5 py-3 rounded-xl font-medium text-sm border border-[color:var(--zen-border)] text-white hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                >
+                  {loading ? "Loading..." : isAuthenticated ? "Add" : "Import"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Recently analyzed usernames (moved here to free the left side) */}
+        {/* Profile cards (authenticated) or chips (guest) */}
         <div className="mt-5 border-t border-[color:var(--zen-border)]/70 pt-4">
-          <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="mb-3 flex items-center justify-between gap-2">
             <p className="text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
-              Recently analyzed
+              {isAuthenticated ? "Your accounts" : "Recently analyzed"}
             </p>
+            {profilesLoading && (
+              <span className="text-[10px] text-[color:var(--zen-muted)]">Loading...</span>
+            )}
           </div>
-          {uniqueHistoryByUser.length === 0 ? (
+
+          {isAuthenticated ? (
+            chessProfiles.length === 0 ? (
+              <p className="text-sm text-[color:var(--zen-muted)] py-2">
+                No accounts added yet. Add a Lichess or Chess.com username above.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {chessProfiles.map((profile) => {
+                  const profileKey = `${profile.site}:${profile.chess_username}`;
+                  const isSelected =
+                    currentUsername &&
+                    profile.chess_username.toLowerCase() === currentUsername.toLowerCase();
+                  return (
+                    <ChessProfileCard
+                      key={profileKey}
+                      profile={profile}
+                      isSelected={!!isSelected}
+                      isSyncing={syncingProfile === profileKey}
+                      onClick={() => handleProfileClick(profile)}
+                      onSync={() => handleSyncProfile(profile)}
+                      onDelete={() => handleDeleteProfile(profile)}
+                    />
+                  );
+                })}
+              </div>
+            )
+          ) : uniqueHistoryByUser.length === 0 ? (
             <p className="text-sm text-[color:var(--zen-muted)] py-2">
               No users analyzed yet
             </p>

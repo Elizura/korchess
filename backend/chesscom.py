@@ -35,6 +35,83 @@ class ChesscomAPIError(Exception):
         super().__init__(self.message)
 
 
+def fetch_chesscom_profile(username: str) -> dict:
+    """
+    Fetch a user's profile and stats from Chess.com, including ratings for all time controls.
+
+    Returns:
+        dict with keys: username, bullet_rating, blitz_rating, rapid_rating, classical_rating
+
+    Raises:
+        ChesscomAPIError: If user not found or API error.
+    """
+    headers = {"User-Agent": USER_AGENT}
+
+    player_url = f"{CHESSCOM_API_BASE}/player/{username}"
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            player_response = _get_follow_redirect(client, player_url, headers)
+    except httpx.RequestError as e:
+        raise ChesscomAPIError(f"Network error: {str(e)}")
+
+    if player_response.status_code == 404:
+        raise ChesscomAPIError(
+            f"User '{username}' not found on Chess.com.",
+            status_code=404
+        )
+
+    if player_response.status_code != 200:
+        raise ChesscomAPIError(
+            f"Chess.com API error: {player_response.status_code}",
+            status_code=player_response.status_code
+        )
+
+    try:
+        player_data = player_response.json()
+    except Exception as e:
+        raise ChesscomAPIError(f"Failed to parse player response: {str(e)}")
+
+    actual_username = player_data.get("username", username)
+
+    stats_url = f"{CHESSCOM_API_BASE}/player/{username}/stats"
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            stats_response = _get_follow_redirect(client, stats_url, headers)
+    except httpx.RequestError as e:
+        raise ChesscomAPIError(f"Network error fetching stats: {str(e)}")
+
+    if stats_response.status_code != 200:
+        return {
+            "username": actual_username,
+            "bullet_rating": None,
+            "blitz_rating": None,
+            "rapid_rating": None,
+            "classical_rating": None,
+        }
+
+    try:
+        stats_data = stats_response.json()
+    except Exception:
+        stats_data = {}
+
+    def get_rating(category: str) -> int | None:
+        cat_data = stats_data.get(category, {})
+        if not cat_data:
+            return None
+        last = cat_data.get("last", {})
+        if last:
+            return last.get("rating")
+        return None
+
+    return {
+        "username": actual_username,
+        "bullet_rating": get_rating("chess_bullet"),
+        "blitz_rating": get_rating("chess_blitz"),
+        "rapid_rating": get_rating("chess_rapid"),
+        "classical_rating": get_rating("chess_daily"),
+    }
+
+
 def _archive_url_year_month(archive_url: str) -> tuple[int, int] | None:
     """Extract (year, month) from a Chess.com archive URL like .../games/2024/03."""
     match = re.search(r'/games/(\d{4})/(\d{2})$', archive_url)

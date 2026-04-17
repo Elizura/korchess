@@ -394,6 +394,30 @@ def init_db() -> None:
         """
     )
 
+    # Chess profiles - user-specific saved profiles for Lichess/Chess.com accounts
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chess_profiles (
+            user_id TEXT NOT NULL REFERENCES users(id),
+            chess_username TEXT NOT NULL,
+            site TEXT NOT NULL,
+            bullet_rating INTEGER,
+            blitz_rating INTEGER,
+            rapid_rating INTEGER,
+            classical_rating INTEGER,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now(),
+            PRIMARY KEY (user_id, chess_username, site)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chess_profiles_user_id
+        ON chess_profiles(user_id)
+        """
+    )
+
     # Drop redundant/legacy indexes replaced by constraints or better-targeted indexes.
     cursor.execute("DROP INDEX IF EXISTS idx_analysis_user")
     cursor.execute("DROP INDEX IF EXISTS idx_analysis_lookup")
@@ -553,6 +577,106 @@ def get_user_by_username(conn: psycopg.Connection, username: str) -> dict | None
     if not row:
         return None
     return dict(row)
+
+
+def upsert_chess_profile(
+    conn: psycopg.Connection,
+    user_id: str,
+    chess_username: str,
+    site: str,
+    bullet_rating: int | None = None,
+    blitz_rating: int | None = None,
+    rapid_rating: int | None = None,
+    classical_rating: int | None = None,
+) -> dict:
+    """Insert or update a chess profile. Returns the upserted profile."""
+    cursor = conn.cursor()
+    canonical_username = chess_username.strip().lower()
+    cursor.execute(
+        """
+        INSERT INTO chess_profiles (
+            user_id, chess_username, site,
+            bullet_rating, blitz_rating, rapid_rating, classical_rating,
+            created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
+        ON CONFLICT (user_id, chess_username, site) DO UPDATE SET
+            bullet_rating = EXCLUDED.bullet_rating,
+            blitz_rating = EXCLUDED.blitz_rating,
+            rapid_rating = EXCLUDED.rapid_rating,
+            classical_rating = EXCLUDED.classical_rating,
+            updated_at = now()
+        RETURNING
+            user_id, chess_username, site,
+            bullet_rating, blitz_rating, rapid_rating, classical_rating,
+            created_at, updated_at
+        """,
+        (
+            user_id,
+            canonical_username,
+            site,
+            bullet_rating,
+            blitz_rating,
+            rapid_rating,
+            classical_rating,
+        ),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else {}
+
+
+def get_chess_profiles(conn: psycopg.Connection, user_id: str) -> list[dict]:
+    """Get all chess profiles for a user, ordered by most recently updated."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            user_id, chess_username, site,
+            bullet_rating, blitz_rating, rapid_rating, classical_rating,
+            created_at, updated_at
+        FROM chess_profiles
+        WHERE user_id = %s
+        ORDER BY updated_at DESC
+        """,
+        (user_id,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_chess_profile(
+    conn: psycopg.Connection, user_id: str, chess_username: str, site: str
+) -> dict | None:
+    """Get a specific chess profile."""
+    cursor = conn.cursor()
+    canonical_username = chess_username.strip().lower()
+    cursor.execute(
+        """
+        SELECT
+            user_id, chess_username, site,
+            bullet_rating, blitz_rating, rapid_rating, classical_rating,
+            created_at, updated_at
+        FROM chess_profiles
+        WHERE user_id = %s AND chess_username = %s AND site = %s
+        """,
+        (user_id, canonical_username, site),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def delete_chess_profile(
+    conn: psycopg.Connection, user_id: str, chess_username: str, site: str
+) -> bool:
+    """Delete a chess profile. Returns True if deleted."""
+    cursor = conn.cursor()
+    canonical_username = chess_username.strip().lower()
+    cursor.execute(
+        """
+        DELETE FROM chess_profiles
+        WHERE user_id = %s AND chess_username = %s AND site = %s
+        """,
+        (user_id, canonical_username, site),
+    )
+    return cursor.rowcount > 0
 
 
 def upsert_game(conn: psycopg.Connection, game_row: dict) -> bool:
