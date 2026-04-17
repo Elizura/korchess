@@ -1,13 +1,14 @@
-"""AI insights endpoints."""
+"""AI insights endpoints.
+
+Insights are shared by (username, site) - not owned by individual users.
+"""
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import (
-    ensure_public_user_for_username,
     get_latest_scan_job,
     get_problems_by_theme,
-    get_public_user_id_for_username,
     get_quick_scan_problem_spotter,
 )
 from dependencies import get_db, validate_site
@@ -22,7 +23,6 @@ def _build_profile_response(state: dict, conn: psycopg.Connection) -> InsightsPr
     active_job = state.get("active_job")
     username = state["username"]
     site = state["site"]
-    user_id = state.get("user_id") or ""
 
     response_payload = {
         "username": username,
@@ -49,7 +49,7 @@ def _build_profile_response(state: dict, conn: psycopg.Connection) -> InsightsPr
             "updated_at": active_job.get("updated_at"),
         }
 
-    scan_job = get_latest_scan_job(conn, user_id, username, site)
+    scan_job = get_latest_scan_job(conn, username, site)
     if scan_job:
         response_payload["scan_progress"] = {
             "status": scan_job["status"],
@@ -57,7 +57,7 @@ def _build_profile_response(state: dict, conn: psycopg.Connection) -> InsightsPr
             "total": scan_job.get("total_games", 0),
         }
 
-    problem_data = get_quick_scan_problem_spotter(conn, user_id, username, site)
+    problem_data = get_quick_scan_problem_spotter(conn, username, site)
     if problem_data and problem_data.get("total_problems", 0) > 0:
         response_payload["problem_spotter"] = problem_data
 
@@ -79,9 +79,7 @@ async def get_insights_profile(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    public_user_id = get_public_user_id_for_username(conn, username)
-    state = get_insights_state(public_user_id, username, site)
-    state["user_id"] = public_user_id
+    state = get_insights_state(username, site)
     return _build_profile_response(state, conn)
 
 
@@ -99,18 +97,14 @@ async def refresh_insights_profile(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    public_user_id = ensure_public_user_for_username(conn, username)
-
     schedule_insights_refresh(
-        user_id=public_user_id,
         username=username,
         site=site,
         reason="manual_refresh",
         force=request.force,
     )
 
-    state = get_insights_state(public_user_id, username, site)
-    state["user_id"] = public_user_id
+    state = get_insights_state(username, site)
     return _build_profile_response(state, conn)
 
 
@@ -131,9 +125,8 @@ async def get_problems_by_theme_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    public_user_id = get_public_user_id_for_username(conn, username)
     return get_problems_by_theme(
-        conn, public_user_id, username, theme, site,
+        conn, username, theme, site,
         time_control=time_control,
         phase=phase,
         page=page,

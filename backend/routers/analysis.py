@@ -1,4 +1,8 @@
-"""Game analysis endpoints (full analysis and AI insights)."""
+"""Game analysis endpoints (full analysis and AI insights).
+
+Full analysis is shared by (username, site, site_game_id) - not owned by individual users.
+AI insights (Gemini-based) are user-specific for quota tracking.
+"""
 
 import asyncio
 import json
@@ -14,13 +18,11 @@ from db import (
     count_user_ai_gemini_success_utc_day,
     create_analysis_job,
     delete_analysis_job,
-    ensure_public_user_for_username,
     get_ai_game_insights,
     get_analysis_job,
     get_connection,
     get_full_analysis,
     get_game_by_id,
-    get_public_user_id_for_username,
     log_ai_insights_request,
     save_ai_game_insights,
     save_full_analysis,
@@ -102,79 +104,10 @@ def _is_ai_cached_payload_current_and_clean(payload: dict | None) -> bool:
     return is_current_clean_narration_payload(payload)
 
 
-def _resolve_public_user_id(conn: psycopg.Connection, username: str) -> str:
-    return get_public_user_id_for_username(conn, username)
-
-
-def _analysis_owner_candidates(
-    conn: psycopg.Connection,
-    current_user: dict | None,
-    username: str,
-) -> list[str]:
-    public_user_id = _resolve_public_user_id(conn, username)
-    candidates = [public_user_id]
-    signed_user_id = current_user["id"] if current_user else None
-    if signed_user_id and signed_user_id != public_user_id:
-        candidates.append(signed_user_id)
-    return candidates
-
-
-def _get_full_analysis_with_fallback(
-    conn: psycopg.Connection,
-    current_user: dict | None,
-    username: str,
-    game_id: str,
-    depth: int,
-    multipv: int,
-    site: str,
-) -> tuple[dict | None, str]:
-    candidates = _analysis_owner_candidates(conn, current_user, username)
-    for owner_id in candidates:
-        cached = get_full_analysis(conn, owner_id, username, game_id, depth, multipv, site)
-        if cached:
-            return cached, owner_id
-    return None, candidates[0]
-
-
-def _get_analysis_job_with_fallback(
-    conn: psycopg.Connection,
-    current_user: dict | None,
-    username: str,
-    game_id: str,
-    depth: int,
-    multipv: int,
-    site: str,
-) -> tuple[dict | None, str]:
-    candidates = _analysis_owner_candidates(conn, current_user, username)
-    for owner_id in candidates:
-        job = get_analysis_job(conn, owner_id, username, game_id, depth, multipv, site)
-        if job:
-            return job, owner_id
-    return None, candidates[0]
-
-
-def _get_game_for_deep_analysis(
-    conn: psycopg.Connection,
-    signed_user_id: str | None,
-    username: str,
-    game_id: str,
-    site: str,
-) -> tuple[dict | None, str]:
-    public_user_id = _resolve_public_user_id(conn, username)
-    public_game = get_game_by_id(conn, public_user_id, username, game_id, site)
-    if public_game:
-        return public_game, public_user_id
-
-    if signed_user_id:
-        private_game = get_game_by_id(conn, signed_user_id, username, game_id, site)
-        if private_game:
-            return private_game, signed_user_id
-    return None, public_user_id
 
 
 async def run_analysis_background(
     job_id: str,
-    user_id: str,
     username: str,
     game_id: str,
     pgn: str,
@@ -211,7 +144,7 @@ async def run_analysis_background(
         conn = get_connection()
         try:
             save_full_analysis(
-                conn, user_id, username, game_id,
+                conn, username, game_id,
                 depth=depth,
                 multipv=multipv,
                 moves_json=json.dumps(full_analysis["moves"]),
@@ -295,13 +228,9 @@ async def get_single_game_insights_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached, cached_owner_id = _get_full_analysis_with_fallback(
-        conn, current_user, username, game_id, depth, multipv, site
-    )
+    cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
     if not cached:
-        job, _owner_id = _get_analysis_job_with_fallback(
-            conn, current_user, username, game_id, depth, multipv, site
-        )
+        job = get_analysis_job(conn, username, game_id, depth, multipv, site)
         if job:
             return SingleGameInsightsResponse(
                 status="analysis_processing",
@@ -316,9 +245,7 @@ async def get_single_game_insights_endpoint(
     if cached_insights:
         return SingleGameInsightsResponse(**cached_insights)
 
-    game, _source_user_id = _get_game_for_deep_analysis(
-        conn, current_user["id"], username, game_id, site
-    )
+    game = get_game_by_id(conn, username, game_id, site)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
@@ -337,7 +264,6 @@ async def get_single_game_insights_endpoint(
     try:
         save_full_analysis_insights(
             conn,
-            cached_owner_id,
             username,
             game_id,
             depth,
@@ -360,7 +286,6 @@ async def get_full_analysis_endpoint(
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5),
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
 ):
     """Get full analysis status for a game."""
     site = validate_site(site)
@@ -369,9 +294,7 @@ async def get_full_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    cached, _owner_id = _get_full_analysis_with_fallback(
-        conn, current_user, username, game_id, depth, multipv, site
-    )
+    cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
     if cached:
         full_analysis = _build_full_analysis_payload(cached)
         return FullAnalysisResponse(
@@ -381,9 +304,7 @@ async def get_full_analysis_endpoint(
             created_at=cached["created_at"]
         )
 
-    job, _owner_id = _get_analysis_job_with_fallback(
-        conn, current_user, username, game_id, depth, multipv, site
-    )
+    job = get_analysis_job(conn, username, game_id, depth, multipv, site)
     if job:
         return FullAnalysisResponse(status="processing")
 
@@ -412,7 +333,6 @@ async def run_full_analysis_endpoint(
         raise HTTPException(status_code=400, detail="Username is required.")
 
     actor_user_id = current_user["id"] if current_user else None
-    owner_user_id = ensure_public_user_for_username(conn, username)
     username_hash = hash_username(username)
     await track_server_event(
         conn,
@@ -429,9 +349,7 @@ async def run_full_analysis_endpoint(
     )
 
     if not force:
-        cached, _cached_owner_id = _get_full_analysis_with_fallback(
-            conn, current_user, username, game_id, depth, multipv, site
-        )
+        cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
         if cached:
             full_analysis = _build_full_analysis_payload(cached)
             await track_server_event(
@@ -456,9 +374,7 @@ async def run_full_analysis_endpoint(
                 created_at=cached["created_at"]
             )
 
-    existing_job, _owner_id = _get_analysis_job_with_fallback(
-        conn, current_user, username, game_id, depth, multipv, site
-    )
+    existing_job = get_analysis_job(conn, username, game_id, depth, multipv, site)
     if existing_job:
         conn.commit()
         return FullAnalysisResponse(status="processing")
@@ -486,9 +402,7 @@ async def run_full_analysis_endpoint(
         active_analysis_count += 1
         print(f"[Analysis] Starting new analysis. Active count: {active_analysis_count}")
 
-    game, _source_user_id = _get_game_for_deep_analysis(
-        conn, actor_user_id, username, game_id, site
-    )
+    game = get_game_by_id(conn, username, game_id, site)
     if not game:
         async with active_analysis_lock:
             active_analysis_count -= 1
@@ -528,7 +442,7 @@ async def run_full_analysis_endpoint(
         raise HTTPException(status_code=400, detail="Game has no PGN")
 
     job_id = str(uuid.uuid4())
-    create_analysis_job(conn, job_id, owner_user_id, username, game_id, depth, multipv, site)
+    create_analysis_job(conn, job_id, username, game_id, depth, multipv, site)
     await track_server_event(
         conn,
         event_name="analysis.deep.started",
@@ -548,7 +462,6 @@ async def run_full_analysis_endpoint(
     asyncio.create_task(
         run_analysis_background(
             job_id,
-            owner_user_id,
             username,
             game_id,
             game["pgn"],
@@ -579,7 +492,10 @@ async def get_ai_insights_endpoint(
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict = Depends(get_registered_user),
 ):
-    """Get account-scoped cached AI insights for a deep-analyzed game."""
+    """Get account-scoped cached AI insights for a deep-analyzed game.
+    
+    AI insights are user-specific (quota tracking), while full analysis is shared.
+    """
     site = validate_site(site)
     username = username.strip()
 
@@ -605,18 +521,14 @@ async def get_ai_insights_endpoint(
                 created_at=str(created_at) if created_at is not None else None,
             )
 
-    deep_cached, _owner_id = _get_full_analysis_with_fallback(
-        conn, current_user, username, game_id, depth, multipv, site
-    )
+    deep_cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
     if deep_cached:
         return AIInsightsResponse(
             status="analysis_missing",
             detail="Request AI insights to generate your AI summary.",
         )
 
-    job, _owner_id = _get_analysis_job_with_fallback(
-        conn, current_user, username, game_id, depth, multipv, site
-    )
+    job = get_analysis_job(conn, username, game_id, depth, multipv, site)
     if job:
         return AIInsightsResponse(
             status="analysis_missing",
@@ -690,9 +602,7 @@ async def request_ai_insights_endpoint(
         if isinstance(payload, dict):
             stale_cache_refresh = True
 
-    deep_cached, _owner_id = _get_full_analysis_with_fallback(
-        conn, current_user, username, game_id, depth, multipv, site
-    )
+    deep_cached = get_full_analysis(conn, username, game_id, depth, multipv, site)
     if not deep_cached:
         await track_server_event(
             conn,
@@ -744,9 +654,7 @@ async def request_ai_insights_endpoint(
                 ),
             )
 
-    game_meta, _source_owner_id = _get_game_for_deep_analysis(
-        conn, current_user["id"], username, game_id, site
-    )
+    game_meta = get_game_by_id(conn, username, game_id, site)
     if not game_meta:
         await track_server_event(
             conn,
