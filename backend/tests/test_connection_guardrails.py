@@ -179,23 +179,22 @@ class ScheduleInsightsTest(unittest.TestCase):
     """Tests for the simplified insights scheduling.
     
     Insights are shared per chess username - not owned by individual users.
-    Only one schedule_insights_refresh call is made per import, using the public user ID.
+    Data is keyed by (username, site) without any user_id indirection.
     """
 
-    def test_schedule_insights_uses_public_user_id_only(self) -> None:
-        """Verify _schedule_insights only schedules for public user."""
+    def test_schedule_insights_uses_username_only(self) -> None:
+        """Verify _schedule_insights schedules with just username (no user_id)."""
         with patch("routers.import_.schedule_insights_refresh") as schedule_mock, patch(
             "routers.import_.schedule_quick_scan"
         ) as scan_mock:
-            import_router._schedule_insights("public:testuser", "testuser", "lichess")
+            import_router._schedule_insights("testuser", "lichess")
 
         schedule_mock.assert_called_once_with(
-            user_id="public:testuser",
             username="testuser",
             site="all",
             reason="import",
         )
-        scan_mock.assert_called_once_with("public:testuser", "testuser", site="all")
+        scan_mock.assert_called_once_with("testuser", site="all")
 
     def test_schedule_insights_handles_refresh_exception(self) -> None:
         """Verify _schedule_insights continues if schedule_insights_refresh fails."""
@@ -204,7 +203,7 @@ class ScheduleInsightsTest(unittest.TestCase):
             side_effect=Exception("test error"),
         ), patch("routers.import_.schedule_quick_scan") as scan_mock:
             # Should not raise
-            import_router._schedule_insights("public:testuser", "testuser", "lichess")
+            import_router._schedule_insights("testuser", "lichess")
 
         # Quick scan should still be called
         scan_mock.assert_called_once()
@@ -216,7 +215,7 @@ class ScheduleInsightsTest(unittest.TestCase):
             side_effect=Exception("scan error"),
         ):
             # Should not raise
-            import_router._schedule_insights("public:testuser", "testuser", "chesscom")
+            import_router._schedule_insights("testuser", "chesscom")
 
         schedule_mock.assert_called_once()
 
