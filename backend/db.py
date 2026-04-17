@@ -1825,6 +1825,37 @@ def get_insight_game_features(
     return results
 
 
+def get_featured_game_ids(
+    conn: psycopg.Connection,
+    username: str,
+    site: str = "all",
+    feature_version: str | None = None,
+) -> set[tuple[str, str]]:
+    """Return set of (site, site_game_id) that already have light features extracted.
+    
+    Used to skip re-extracting features for games that were already processed.
+    """
+    cursor = conn.cursor()
+    query = """
+        SELECT site, site_game_id
+        FROM insight_game_features
+        WHERE username = %s
+          AND light_json IS NOT NULL
+    """
+    params: list = [username.strip().lower()]
+
+    if site != "all":
+        query += " AND site = %s"
+        params.append(site)
+
+    if feature_version is not None:
+        query += " AND feature_version = %s"
+        params.append(feature_version)
+
+    cursor.execute(query, params)
+    return {(row["site"], row["site_game_id"]) for row in cursor.fetchall()}
+
+
 def get_games_for_insights(
     conn: psycopg.Connection,
     username: str,

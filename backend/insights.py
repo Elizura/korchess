@@ -19,6 +19,7 @@ from db import (
     create_insight_job,
     get_active_insight_job,
     get_connection,
+    get_featured_game_ids,
     get_full_analysis,
     get_games_for_insights,
     get_insight_game_features,
@@ -1022,6 +1023,12 @@ async def run_insights_pipeline(
                     site=site,
                     limit=MAX_GAMES_WINDOW,
                 )
+                already_featured = get_featured_game_ids(
+                    conn,
+                    username=username,
+                    site=site,
+                    feature_version=FEATURE_VERSION,
+                )
             finally:
                 conn.close()
 
@@ -1073,7 +1080,12 @@ async def run_insights_pipeline(
                     conn.close()
                 return
 
-            for game in games:
+            new_games = [
+                g for g in games
+                if (g["site"], g["site_game_id"]) not in already_featured
+            ]
+
+            for game in new_games:
                 light_feature = await asyncio.to_thread(extract_light_game_features, game)
                 conn = get_connection()
                 try:
