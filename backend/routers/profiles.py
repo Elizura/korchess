@@ -198,8 +198,8 @@ async def create_profile(
 ):
     """Create a chess profile for the authenticated user.
     
-    Validates the user exists on the platform, fetches their ratings,
-    and triggers an initial game import.
+    Validates the user exists on the platform and fetches their ratings.
+    Games are imported separately via POST /{site}/{username}/import.
     """
     username = body.username.strip()
     site = body.site
@@ -245,19 +245,12 @@ async def create_profile(
     )
     conn.commit()
 
-    try:
-        if site == "lichess":
-            import_result = await _import_lichess_games(actual_username, conn)
-        else:
-            import_result = await _import_chesscom_games(actual_username, conn)
-        conn.commit()
-    except (LichessAPIError, ChesscomAPIError) as e:
-        import_result = ImportResponse(
-            username=actual_username,
-            imported=0,
-            skipped=0,
-            is_sync=False,
-        )
+    import_result = ImportResponse(
+        username=actual_username,
+        imported=0,
+        skipped=0,
+        is_sync=False,
+    )
 
     await track_server_event(
         conn,
@@ -267,7 +260,6 @@ async def create_profile(
         properties={
             "site": site,
             "username": hash_username(actual_username),
-            "imported": import_result.imported,
         },
     )
     conn.commit()
@@ -319,6 +311,48 @@ async def remove_profile(
     conn.commit()
 
     return {"status": "deleted"}
+
+
+@router.post("/{site}/{username}/import", response_model=ImportResponse)
+async def import_profile_games(
+    site: Literal["lichess", "chesscom"],
+    username: str,
+    http_request: Request,
+    conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Import games for an existing chess profile."""
+    user_id = current_user["id"]
+
+    existing_profile = get_chess_profile(conn, user_id, username, site)
+    if not existing_profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+
+    try:
+        if site == "lichess":
+            import_result = await _import_lichess_games(username, conn)
+        else:
+            import_result = await _import_chesscom_games(username, conn)
+        conn.commit()
+    except (LichessAPIError, ChesscomAPIError) as e:
+        if e.status_code == 429:
+            raise HTTPException(status_code=429, detail=e.message)
+        raise HTTPException(status_code=502, detail=e.message)
+
+    await track_server_event(
+        conn,
+        event_name="profile.imported",
+        user_id=user_id,
+        request=http_request,
+        properties={
+            "site": site,
+            "username": hash_username(username),
+            "imported": import_result.imported,
+        },
+    )
+    conn.commit()
+
+    return import_result
 
 
 @router.post("/{site}/{username}/sync", response_model=ChessProfileSyncResponse)

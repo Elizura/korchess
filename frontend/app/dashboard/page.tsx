@@ -31,6 +31,7 @@ import { ChessProfileCard, type ChessProfile } from "@/components/ChessProfileCa
 import {
   fetchProfiles,
   addProfile,
+  importProfileGames,
   syncProfile,
   deleteProfile,
 } from "@/lib/profiles";
@@ -424,6 +425,7 @@ export default function DashboardPage() {
   const [chessProfiles, setChessProfiles] = useState<ChessProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
   const [syncingProfile, setSyncingProfile] = useState<string | null>(null);
+  const [importingProfile, setImportingProfile] = useState<string | null>(null);
 
   const importHistory = useMemo(() => {
     if (isAuthenticated) {
@@ -555,20 +557,20 @@ export default function DashboardPage() {
         
         setChessProfiles(updatedProfiles);
         
-        // Invalidate chess profiles cache
         clearCacheKey(buildChessProfilesCacheKey(authUserId));
         setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
 
-        setImportResult(result.import_result);
         setUsername(result.profile.chess_username);
         setCurrentUsername(result.profile.chess_username);
+        setInputUsername("");
+        setImportStatus(null);
+        setInsights(null);
         router.replace(`/dashboard?user=${encodeURIComponent(result.profile.chess_username)}`, { scroll: false });
         persistLastUser(result.profile.chess_username);
         
         trackEvent("profile.added", {
           properties: {
             site: selectedPlatform,
-            imported: result.import_result.imported,
           },
         });
       } else {
@@ -609,36 +611,33 @@ export default function DashboardPage() {
             skipped: importData.skipped,
           },
         });
+
+        setInputUsername("");
+        setReportRefreshNotice(null);
+        clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
+        clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
+        clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
+        clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
+
+        const [whiteReportData, blackReportData] = await Promise.all([
+          fetchReport(trimmedUsername, "white", timeClassFilter),
+          fetchReport(trimmedUsername, "black", timeClassFilter),
+        ]);
+        setReport(whiteReportData);
+        setReportBlack(blackReportData);
+
+        const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
+          fetchImportStatus(trimmedUsername),
+          fetchImportStatus(trimmedUsername, "lichess"),
+          fetchImportStatus(trimmedUsername, "chesscom"),
+        ]);
+        if (statusData) setImportStatus(statusData);
+        setLichessImportStatus(lichessStatus);
+        setChesscomImportStatus(chesscomStatus);
+
+        const insightsData = await fetchInsights(trimmedUsername);
+        setInsights(insightsData);
       }
-
-      setInputUsername("");
-      setReportRefreshNotice(null);
-      clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
-
-      const [whiteReportData, blackReportData] = await Promise.all([
-        fetchReport(trimmedUsername, "white", timeClassFilter),
-        fetchReport(trimmedUsername, "black", timeClassFilter),
-      ]);
-      setReport(whiteReportData);
-      setReportBlack(blackReportData);
-
-      const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
-        fetchImportStatus(trimmedUsername),
-        fetchImportStatus(trimmedUsername, "lichess"),
-        fetchImportStatus(trimmedUsername, "chesscom"),
-      ]);
-      if (statusData) setImportStatus(statusData);
-      setLichessImportStatus(lichessStatus);
-      setChesscomImportStatus(chesscomStatus);
-
-      if (isAuthenticated) {
-        void fetchImportHistory();
-      }
-      const insightsData = await fetchInsights(trimmedUsername);
-      setInsights(insightsData);
     } catch (err) {
       trackEvent("import.failed", {
         properties: {
@@ -734,6 +733,105 @@ export default function DashboardPage() {
       }
     },
     [isAuthenticated, session?.idToken, currentUsername, timeClassFilter]
+  );
+
+  // Handle importing games for a profile (first import or re-import)
+  const handleImportProfile = useCallback(
+    async (profile: ChessProfile) => {
+      if (!isAuthenticated || !session?.idToken) return;
+
+      const profileKey = `${profile.site}:${profile.chess_username}`;
+      setImportingProfile(profileKey);
+      setError(null);
+      setImportResult(null);
+
+      try {
+        const result = await importProfileGames(
+          session.idToken,
+          profile.site as "lichess" | "chesscom",
+          profile.chess_username
+        );
+
+        setImportResult(result);
+
+        clearCacheByPrefix(`dashboard:${profile.chess_username.toLowerCase()}:`);
+        clearCacheByPrefix(`dashboard:variations:${profile.chess_username.toLowerCase()}:`);
+        clearCacheByPrefix(`dashboard:insights:${profile.chess_username.toLowerCase()}:`);
+        clearCacheByPrefix(`opening:${profile.chess_username.toLowerCase()}:`);
+
+        const [whiteReportData, blackReportData] = await Promise.all([
+          fetchReport(profile.chess_username, "white", timeClassFilter),
+          fetchReport(profile.chess_username, "black", timeClassFilter),
+        ]);
+        setReport(whiteReportData);
+        setReportBlack(blackReportData);
+
+        const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
+          fetchImportStatus(profile.chess_username),
+          fetchImportStatus(profile.chess_username, "lichess"),
+          fetchImportStatus(profile.chess_username, "chesscom"),
+        ]);
+        if (statusData) setImportStatus(statusData);
+        setLichessImportStatus(lichessStatus);
+        setChesscomImportStatus(chesscomStatus);
+
+        if (isAuthenticated) {
+          void fetchImportHistory();
+        }
+
+        const insightsData = await fetchInsights(profile.chess_username);
+        setInsights(insightsData);
+        clearCacheKey(getDashboardInsightsCacheKey(profile.chess_username));
+
+        // Always poll after import — the quick-scan/insights background jobs may not
+        // be visible in the first response yet due to race conditions.
+        if (result.imported > 0) {
+          setInsightsLoading(true);
+          const pollInsightsAfterImport = async () => {
+            let attempts = 0;
+            const maxAttempts = 120;
+            // Wait a short initial delay to let backend jobs register
+            await new Promise(r => setTimeout(r, 3000));
+            while (attempts < maxAttempts) {
+              attempts++;
+              try {
+                const data = await fetchInsights(profile.chess_username);
+                setInsights(data);
+                setCached<InsightsProfile | null>(
+                  getDashboardInsightsCacheKey(profile.chess_username),
+                  data,
+                );
+                if (!shouldKeepPolling(data)) {
+                  // One final check — if scan hasn't started yet, keep waiting a bit
+                  if (attempts < 5 && !data?.problem_spotter) {
+                    await new Promise(r => setTimeout(r, 5000));
+                    continue;
+                  }
+                  break;
+                }
+              } catch {
+                break;
+              }
+              await new Promise(r => setTimeout(r, 5000));
+            }
+            setInsightsLoading(false);
+          };
+          void pollInsightsAfterImport();
+        }
+
+        trackEvent("profile.imported", {
+          properties: {
+            site: profile.site,
+            imported: result.imported,
+          },
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Import failed");
+      } finally {
+        setImportingProfile(null);
+      }
+    },
+    [isAuthenticated, session?.idToken, timeClassFilter]
   );
 
   // Handle deleting a profile
@@ -1995,32 +2093,54 @@ export default function DashboardPage() {
                 </div>
                 
                 <div className="flex items-center gap-2 flex-wrap justify-end">
-                  <button
-                    type="button"
-                    onClick={() => handleSyncProfile(selectedProfile)}
-                    disabled={syncingProfile === profileKey}
-                    className={`
-                      flex items-center gap-2 px-4 py-2.5 rounded-lg
-                      border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)]
-                      text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface-2)] 
-                      hover:border-[color:var(--zen-accent)]/50 transition-all
-                      ${syncingProfile === profileKey ? "opacity-50 cursor-wait" : "cursor-pointer"}
-                    `}
-                    title="Sync new games and update ratings"
-                  >
-                    {syncingProfile === profileKey ? (
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                    ) : (
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                    )}
-                    <span className="text-sm font-medium">{syncingProfile === profileKey ? "Syncing..." : "Sync"}</span>
-                  </button>
-                  {SHOW_COACHING_SUMMARY && (
+                  {(() => {
+                    const hasGames = importStatus && importStatus.total_games > 0;
+                    const isBusy = hasGames
+                      ? syncingProfile === profileKey
+                      : importingProfile === profileKey;
+                    const action = hasGames
+                      ? () => handleSyncProfile(selectedProfile)
+                      : () => handleImportProfile(selectedProfile);
+                    const label = hasGames
+                      ? (isBusy ? "Syncing..." : "Sync")
+                      : (isBusy ? "Importing..." : "Import");
+                    const title = hasGames
+                      ? "Sync new games and update ratings"
+                      : "Import games from this account";
+
+                    return (
+                      <button
+                        type="button"
+                        onClick={action}
+                        disabled={isBusy}
+                        className={`
+                          flex items-center gap-2 px-4 py-2.5 rounded-lg
+                          border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)]
+                          text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface-2)] 
+                          hover:border-[color:var(--zen-accent)]/50 transition-all
+                          ${isBusy ? "opacity-50 cursor-wait" : "cursor-pointer"}
+                        `}
+                        title={title}
+                      >
+                        {isBusy ? (
+                          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                        ) : hasGames ? (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                        )}
+                        <span className="text-sm font-medium">{label}</span>
+                      </button>
+                    );
+                  })()}
+                  {SHOW_COACHING_SUMMARY && importStatus && importStatus.total_games > 0 && (
                     <button
                       type="button"
                       onClick={handleRefreshInsights}
@@ -2091,7 +2211,7 @@ export default function DashboardPage() {
 
               {importStatus?.imported_at &&
                 !loading &&
-                importStatus.username.toLowerCase() === selectedProfile.chess_username.toLowerCase() && (
+                importStatus.username.toLowerCase() === selectedProfile.chess_username.toLowerCase() ? (
                   <div className="mt-6 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-border)]/80">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                       <p className="text-sm text-[color:var(--zen-muted)]">
@@ -2126,12 +2246,62 @@ export default function DashboardPage() {
                       )}
                     </div>
                   </div>
+                ) : !loading && !importingProfile && (
+                  <div className="mt-6 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-border)]/80">
+                    <p className="text-sm text-[color:var(--zen-muted)]">
+                      No games imported yet. Click <strong className="text-[color:var(--zen-text)]">Import</strong> to fetch games from this account.
+                    </p>
+                  </div>
                 )}
             </div>
           );
         })()}
 
-        {/* AI Coaching Summary - only render when insights are ready */}
+        {/* AI Coaching Summary skeleton — visible while insights are loading */}
+        {SHOW_COACHING_SUMMARY && currentUsername && !coachingSummaryReady && (insightsLoading || (insights && shouldKeepPolling(insights))) && (
+          <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl animate-pulse">
+            <div className="mb-8">
+              <p className="text-sm font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                AI Insights
+              </p>
+              <div className="h-8 w-2/3 bg-[color:var(--zen-border)]/30 rounded mt-2" />
+            </div>
+            <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                <div className="h-4 w-24 bg-[color:var(--zen-border)]/30 rounded mb-4" />
+                <div className="h-7 w-40 bg-[color:var(--zen-border)]/30 rounded mb-3" />
+                <div className="space-y-2">
+                  <div className="h-4 w-full bg-[color:var(--zen-border)]/20 rounded" />
+                  <div className="h-4 w-3/4 bg-[color:var(--zen-border)]/20 rounded" />
+                </div>
+              </div>
+              <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                <div className="h-4 w-28 bg-[color:var(--zen-border)]/30 rounded mb-4" />
+                <div className="space-y-2">
+                  <div className="h-4 w-full bg-[color:var(--zen-border)]/20 rounded" />
+                  <div className="h-4 w-5/6 bg-[color:var(--zen-border)]/20 rounded" />
+                  <div className="h-4 w-2/3 bg-[color:var(--zen-border)]/20 rounded" />
+                </div>
+              </div>
+              <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                <div className="h-4 w-20 bg-[color:var(--zen-border)]/30 rounded mb-4" />
+                <div className="space-y-2">
+                  <div className="h-4 w-full bg-[color:var(--zen-border)]/20 rounded" />
+                  <div className="h-4 w-3/4 bg-[color:var(--zen-border)]/20 rounded" />
+                </div>
+              </div>
+              <div className="zen-surface p-8 rounded-xl border border-[color:var(--zen-border)] min-h-[180px]">
+                <div className="h-4 w-24 bg-[color:var(--zen-border)]/30 rounded mb-4" />
+                <div className="space-y-2">
+                  <div className="h-4 w-full bg-[color:var(--zen-border)]/20 rounded" />
+                  <div className="h-4 w-5/6 bg-[color:var(--zen-border)]/20 rounded" />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* AI Coaching Summary - render when insights are ready */}
         {SHOW_COACHING_SUMMARY && currentUsername && coachingSummaryReady && insights && (
           <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl">
             <div className="mb-8">
@@ -2240,6 +2410,54 @@ export default function DashboardPage() {
                   )}
                 </ul>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tactical Analysis skeleton — visible while quick scan is running or insights are loading after import */}
+        {currentUsername && !insights?.problem_spotter &&
+          ((insights?.scan_progress && (insights.scan_progress.status === "running" || insights.scan_progress.status === "queued")) ||
+           (insightsLoading && (importStatus?.total_games ?? 0) > 0)) && (
+          <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl animate-pulse">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-2xl sm:text-3xl font-semibold text-[color:var(--zen-text)] mt-1">
+                  Tactical Analysis
+                </h3>
+              </div>
+            </div>
+            <div className="h-4 w-64 bg-[color:var(--zen-border)]/30 rounded mb-6" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="zen-surface-flat p-5 rounded-lg border border-[color:var(--zen-border)] min-h-[140px]">
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="h-3 w-28 bg-[color:var(--zen-border)]/30 rounded" />
+                    <div className="w-10 h-10 bg-[color:var(--zen-border)]/20 rounded" />
+                  </div>
+                  <div className="h-8 w-16 bg-[color:var(--zen-border)]/30 rounded mb-3" />
+                  <div className="space-y-2">
+                    <div className="h-3 w-full bg-[color:var(--zen-border)]/20 rounded" />
+                    <div className="h-3 w-3/4 bg-[color:var(--zen-border)]/20 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-6">
+              <div className="w-full h-1.5 rounded-full bg-[color:var(--zen-border)] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[color:var(--zen-accent)] transition-all duration-700"
+                  style={{
+                    width: `${insights?.scan_progress && insights.scan_progress.total > 0
+                      ? Math.round((insights.scan_progress.done / insights.scan_progress.total) * 100)
+                      : 5}%`
+                  }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-[color:var(--zen-muted)]">
+                {insights?.scan_progress
+                  ? `Scanning games for tactical problems... ${insights.scan_progress.done}/${insights.scan_progress.total}`
+                  : "Starting tactical analysis..."}
+              </p>
             </div>
           </div>
         )}
@@ -2418,7 +2636,8 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Top openings - split by color */}
+        {/* Top openings - split by color (only show when games have been imported) */}
+        {(importStatus?.total_games ?? 0) > 0 && (
         <div className="zen-surface opening-frame p-5 sm:p-6 border border-[color:var(--zen-border)] rounded-2xl">
         {currentUsername && (
           <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -2451,8 +2670,39 @@ export default function DashboardPage() {
         )}
 
         {loading && (
-          <div className="py-10 flex justify-center">
-            <div className="animate-spin rounded-full h-10 w-10 border border-[color:var(--zen-border)] border-t-[color:var(--zen-accent)]" />
+          <div className="animate-pulse">
+            <div className="flex items-baseline justify-between gap-2 mb-4">
+              <div className="h-6 w-48 bg-[color:var(--zen-border)]/30 rounded" />
+            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {[0, 1].map((side) => (
+                <div key={side}>
+                  <div className="h-4 w-32 bg-[color:var(--zen-border)]/30 rounded mb-3" />
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[color:var(--zen-border)]/50">
+                        {["Opening", "Games", "Wins", "Draws", "Losses", "Score"].map((h) => (
+                          <th key={h} className="text-left py-2 px-2">
+                            <div className="h-3 w-12 bg-[color:var(--zen-border)]/20 rounded" />
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from({ length: 5 }).map((_, i) => (
+                        <tr key={i} className="border-b border-[color:var(--zen-border)]/30">
+                          {Array.from({ length: 6 }).map((_, j) => (
+                            <td key={j} className="py-3 px-2">
+                              <div className={`h-4 ${j === 0 ? "w-32" : "w-8"} bg-[color:var(--zen-border)]/20 rounded`} />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -2606,6 +2856,7 @@ export default function DashboardPage() {
           </div>
         )}
         </div>
+        )}
       </div>
     </div>
   );

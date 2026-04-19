@@ -66,6 +66,29 @@ export async function addProfile(
   return response.json();
 }
 
+export async function importProfileGames(
+  authToken: string,
+  site: "lichess" | "chesscom",
+  username: string
+): Promise<ImportResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/profiles/${site}/${encodeURIComponent(username)}/import`,
+    {
+      method: "POST",
+      headers: withTrackingHeaders({
+        Authorization: `Bearer ${authToken}`,
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || `Failed to import games: ${response.status}`);
+  }
+
+  return response.json();
+}
+
 export async function syncProfile(
   authToken: string,
   site: "lichess" | "chesscom",
