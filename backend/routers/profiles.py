@@ -134,8 +134,6 @@ async def _import_lichess_games(
         imported, skipped, max_games, imported_at, synced_at_value,
     )
 
-    _schedule_insights(username, "lichess")
-
     return ImportResponse(
         username=username,
         imported=imported,
@@ -178,8 +176,6 @@ async def _import_chesscom_games(
         conn, username, "chesscom",
         imported, skipped, max_games, imported_at, synced_at_value,
     )
-
-    _schedule_insights(username, "chesscom")
 
     return ImportResponse(
         username=username,
@@ -352,6 +348,9 @@ async def import_profile_games(
     )
     conn.commit()
 
+    if import_result.imported > 0:
+        _schedule_insights(username, site)
+
     return import_result
 
 
@@ -426,6 +425,9 @@ async def sync_profile(
         },
     )
     conn.commit()
+
+    if sync_result.imported > 0:
+        _schedule_insights(actual_username, site)
 
     return ChessProfileSyncResponse(
         profile=_db_row_to_profile(profile_row),
