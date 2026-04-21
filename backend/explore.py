@@ -13,7 +13,7 @@ class LichessAPIError(Exception):
         super().__init__(self.message)
 
 
-def fetch_lichess_pgn_stream(username: str, games_per_chunk: int = 2) -> Iterator[str]:
+def fetch_lichess_pgn_stream(username: str, games_per_chunk: int = 5) -> Iterator[str]:
     start_time = time.time()
     
     url = f"{LICHESS_API_BASE}/games/user/{username}"
@@ -25,7 +25,7 @@ def fetch_lichess_pgn_stream(username: str, games_per_chunk: int = 2) -> Iterato
         "rated": "true",
         "opening": "true",
         "clocks": "true",
-        "max": 10,
+        "max": 500,
     }
 
     with httpx.Client(timeout=60.0) as client:
@@ -154,7 +154,7 @@ def fetch_lichess_pgn(username: str) -> str:
 
 if __name__ == "__main__":
     print("Streaming version:")
-    for chunk in fetch_lichess_pgn_stream("elizura"):
+    for chunk in fetch_lichess_pgn_stream("Marsalseny"):
         print(f"Received chunk of {len(chunk)} bytes")
         print(chunk)
     
