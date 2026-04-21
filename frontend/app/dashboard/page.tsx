@@ -426,6 +426,8 @@ export default function DashboardPage() {
   const [profilesLoading, setProfilesLoading] = useState(false);
   const [syncingProfile, setSyncingProfile] = useState<string | null>(null);
   const [importingProfile, setImportingProfile] = useState<string | null>(null);
+  const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
+  const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<ChessProfile | null>(null);
 
   const importHistory = useMemo(() => {
     if (isAuthenticated) {
@@ -839,6 +841,10 @@ export default function DashboardPage() {
     async (profile: ChessProfile) => {
       if (!isAuthenticated || !session?.idToken) return;
 
+      const profileKey = `${profile.site}:${profile.chess_username}`;
+      setDeletingProfile(profileKey);
+      setConfirmDeleteProfile(null);
+
       try {
         await deleteProfile(
           session.idToken,
@@ -851,11 +857,28 @@ export default function DashboardPage() {
             !(p.chess_username.toLowerCase() === profile.chess_username.toLowerCase() &&
               p.site === profile.site)
         );
-        
+
         setChessProfiles(updatedProfiles);
-        
+
         // Update chess profiles cache
         setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
+
+        // Clear all caches for this user
+        clearCacheByPrefix(`dashboard:${profile.chess_username.toLowerCase()}:`);
+        clearCacheByPrefix(`dashboard:variations:${profile.chess_username.toLowerCase()}:`);
+        clearCacheByPrefix(`dashboard:insights:${profile.chess_username.toLowerCase()}:`);
+        clearCacheByPrefix(`opening:${profile.chess_username.toLowerCase()}:`);
+
+        // If this was the current user, clear the view
+        if (currentUsername?.toLowerCase() === profile.chess_username.toLowerCase()) {
+          setCurrentUsername(null);
+          setUsername("");
+          setReport(null);
+          setReportBlack(null);
+          setInsights(null);
+          setImportStatus(null);
+          router.replace("/dashboard", { scroll: false });
+        }
 
         trackEvent("profile.deleted", {
           properties: {
@@ -864,9 +887,11 @@ export default function DashboardPage() {
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Delete failed");
+      } finally {
+        setDeletingProfile(null);
       }
     },
-    [isAuthenticated, session?.idToken]
+    [isAuthenticated, session?.idToken, currentUsername, router]
   );
 
   // Handle clicking on a profile card
@@ -2150,6 +2175,24 @@ export default function DashboardPage() {
                       {insightsRefreshing ? "Refreshing..." : "Refresh Insights"}
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteProfile(selectedProfile)}
+                    disabled={deletingProfile === profileKey}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-[color:var(--zen-muted)] hover:text-red-500 hover:bg-red-500/10 transition disabled:opacity-50"
+                    title="Remove profile and all data"
+                  >
+                    {deletingProfile === profileKey ? (
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -2857,6 +2900,46 @@ export default function DashboardPage() {
         )}
         </div>
         )}
+
+      {/* Delete Profile Confirmation Modal */}
+      {confirmDeleteProfile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="zen-surface max-w-md w-full mx-4 p-6 rounded-2xl border border-[color:var(--zen-border)] shadow-xl">
+            <h3 className="text-xl font-semibold text-[color:var(--zen-text)] mb-2">
+              Remove Profile?
+            </h3>
+            <p className="text-[color:var(--zen-muted)] mb-4">
+              This will permanently delete <span className="font-semibold text-[color:var(--zen-text)]">{confirmDeleteProfile.chess_username}</span> and all associated data:
+            </p>
+            <ul className="text-sm text-[color:var(--zen-muted)] mb-6 space-y-1 list-disc list-inside">
+              <li>All imported games</li>
+              <li>Game analysis and insights</li>
+              <li>Tactical problem data</li>
+              <li>Opening statistics</li>
+            </ul>
+            <p className="text-sm text-red-500 mb-6">
+              This action cannot be undone.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteProfile(null)}
+                className="px-4 py-2 rounded-lg text-[color:var(--zen-text)] hover:bg-[color:var(--zen-surface-2)] transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteProfile(confirmDeleteProfile)}
+                disabled={deletingProfile !== null}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 transition disabled:opacity-50"
+              >
+                {deletingProfile ? "Deleting..." : "Delete Profile"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );

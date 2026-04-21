@@ -2310,6 +2310,88 @@ def clear_insights_data(
         )
 
 
+def delete_all_user_site_data(
+    conn: psycopg.Connection,
+    username: str,
+    site: str,
+) -> dict[str, int]:
+    """Delete ALL data for a username/site combination.
+
+    This is called when a user removes a profile. Returns counts of deleted rows.
+    """
+    canonical = username.strip().lower()
+    cursor = conn.cursor()
+    counts: dict[str, int] = {}
+
+    cursor.execute(
+        "DELETE FROM game_quick_scans WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["game_quick_scans"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM scan_jobs WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["scan_jobs"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM insight_game_features WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["insight_game_features"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM insight_jobs WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["insight_jobs"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM player_insights WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["player_insights"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM full_analysis WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["full_analysis"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM analysis_jobs WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["analysis_jobs"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM ai_game_insights WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["ai_game_insights"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM ai_insights_requests WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["ai_insights_requests"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM imports WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["imports"] = cursor.rowcount
+
+    cursor.execute(
+        "DELETE FROM games WHERE username = %s AND site = %s",
+        (canonical, site),
+    )
+    counts["games"] = cursor.rowcount
+
+    return counts
+
+
 def get_quick_scan_results(
     conn: psycopg.Connection,
     username: str,

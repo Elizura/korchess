@@ -13,11 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from analytics import hash_username, track_server_event
 from db import (
     bulk_upsert_games,
+    delete_all_user_site_data,
+    delete_chess_profile,
     get_chess_profile,
     get_chess_profiles,
     get_import_status,
     upsert_chess_profile,
-    delete_chess_profile,
     upsert_import_status,
 )
 from lichess import fetch_lichess_pgn, fetch_lichess_profile, parse_pgn_games, LichessAPIError
@@ -286,13 +287,16 @@ async def remove_profile(
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Delete a chess profile."""
+    """Delete a chess profile and ALL associated data (games, analysis, insights)."""
     user_id = current_user["id"]
-    deleted = delete_chess_profile(conn, user_id, username, site)
-    conn.commit()
 
-    if not deleted:
+    existing = get_chess_profile(conn, user_id, username, site)
+    if not existing:
         raise HTTPException(status_code=404, detail="Profile not found.")
+
+    deleted_counts = delete_all_user_site_data(conn, username, site)
+    delete_chess_profile(conn, user_id, username, site)
+    conn.commit()
 
     await track_server_event(
         conn,
@@ -302,11 +306,15 @@ async def remove_profile(
         properties={
             "site": site,
             "username": hash_username(username),
+            "games_deleted": deleted_counts.get("games", 0),
         },
     )
     conn.commit()
 
-    return {"status": "deleted"}
+    return {
+        "status": "deleted",
+        "deleted": deleted_counts,
+    }
 
 
 @router.post("/{site}/{username}/import", response_model=ImportResponse)
