@@ -2,11 +2,8 @@
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
-
-import redis as redis_lib
 
 from celery_app import app
 from db import (
@@ -36,11 +33,9 @@ from insights_constants import FEATURE_VERSION, MAX_GAMES_WINDOW, NARRATIVE_VERS
 from insights_utils import utc_now_iso
 from quick_scan import run_quick_scan_single
 from quick_scan_constants import QUICK_SCAN_MAX_GAMES
+from redis_client import redis_client as _redis
 
 logger = logging.getLogger(__name__)
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-_redis = redis_lib.from_url(REDIS_URL, decode_responses=True)
 
 # Flip to True when you want coaching summary / aggregate insights on import.
 RUN_AGGREGATION_ON_IMPORT = False

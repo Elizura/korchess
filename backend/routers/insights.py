@@ -3,10 +3,7 @@
 Insights are shared by (username, site) - not owned by individual users.
 """
 
-import os
-
 import psycopg
-import redis as redis_lib
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import (
@@ -16,12 +13,10 @@ from db import (
 )
 from dependencies import get_db, validate_site
 from insights import get_insights_state, schedule_insights_refresh
+from redis_client import redis_client as _redis
 from schemas import InsightsProfileResponse, InsightsRequest, ProblemsByThemeResponse
 
 router = APIRouter(tags=["insights"])
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-_redis = redis_lib.from_url(REDIS_URL, decode_responses=True)
 
 
 def _get_import_progress(username: str) -> dict | None:

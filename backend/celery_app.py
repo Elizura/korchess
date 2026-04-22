@@ -10,7 +10,7 @@ app = Celery("korchess", include=["tasks"])
 
 app.conf.update(
     broker_url=REDIS_URL,
-    result_backend=REDIS_URL,
+    result_backend=None,
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
@@ -18,4 +18,5 @@ app.conf.update(
     worker_prefetch_multiplier=1,
     task_reject_on_worker_lost=True,
     broker_connection_retry_on_startup=True,
+    task_ignore_result=True,
 )

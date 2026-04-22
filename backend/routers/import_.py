@@ -16,6 +16,7 @@ from analytics import hash_username, track_server_event
 from db import get_import_history, get_import_status
 from game_streamer import ChesscomStreamError, LichessStreamError
 from import_service import import_chesscom_games, import_lichess_games, import_key
+from redis_client import redis_client as _redis
 from schemas import (
     ImportRequest,
     ImportResponse,
@@ -25,14 +26,9 @@ from schemas import (
 )
 from dependencies import get_db
 from auth import get_optional_user
-import redis as redis_lib
-import os
 
 router = APIRouter(tags=["import"])
 logger = logging.getLogger(__name__)
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-_redis = redis_lib.from_url(REDIS_URL, decode_responses=True)
 
 
 @router.get("/history", response_model=ImportHistoryResponse)

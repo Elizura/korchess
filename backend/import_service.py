@@ -8,12 +8,10 @@ and the authenticated profiles router delegate to functions here.
 import io
 import json
 import logging
-import os
 from datetime import datetime
 
 import chess.pgn
 import psycopg
-import redis as redis_lib
 
 from chesscom import parse_chesscom_game
 from db import get_import_status
@@ -25,13 +23,11 @@ from game_streamer import (
 )
 from lichess import parse_pgn_games
 from opening_match import best_opening_match, game_to_uci_plies
+from redis_client import redis_client as _redis
 from schemas import ImportResponse
 from tasks import process_game
 
 logger = logging.getLogger(__name__)
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-_redis = redis_lib.from_url(REDIS_URL, decode_responses=True)
 
 
 def import_key(username: str, site: str, field: str) -> str:
