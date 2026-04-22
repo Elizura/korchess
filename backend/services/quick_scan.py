@@ -6,7 +6,9 @@ import asyncio
 import io
 import json
 import logging
+import math
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import chess
@@ -25,7 +27,7 @@ from repository.db import (
     upsert_player_insights,
 )
 from services.full_analysis import (
-    _analyse_with_recovery,
+    _analyse_fen_chunk,
     _compute_cp_loss,
     classify_move,
     score_to_cp,
@@ -38,6 +40,7 @@ from utils.quick_scan_constants import (
     QUICK_SCAN_CP_THRESHOLD,
     QUICK_SCAN_DEPTH,
     QUICK_SCAN_MAX_GAMES,
+    QUICK_SCAN_POSITION_WORKERS,
     QUICK_SCAN_TIME_MS,
 )
 from services.tactical_detection import detect_tactical_annotation
@@ -52,6 +55,11 @@ def run_quick_scan_single(
     username: str,
 ) -> dict[str, Any]:
     """Run a quick low-depth scan on a single game, analyzing only the user's moves.
+
+    Uses a three-phase approach for performance:
+    1. Collect all FEN positions that need analysis (no engine calls)
+    2. Batch-analyze all unique FENs in parallel using ThreadPoolExecutor
+    3. Process results using the pre-computed analysis lookup
 
     Returns a dict with 'problems', 'move_stats', and 'summary' keys.
     """
@@ -75,17 +83,11 @@ def run_quick_scan_single(
     total_plies = len(moves_list)
     endgame_start_ply = max(40, int(total_plies * 0.7)) if total_plies > 30 else None
 
-    problems: list[dict[str, Any]] = []
-    phase_cp_losses: dict[str, list[int]] = {
-        "opening": [],
-        "middlegame": [],
-        "endgame": [],
-    }
-    blunders = 0
-    mistakes = 0
-    inaccuracies = 0
-    total_user_moves = 0
-
+    # -------------------------------------------------------------------------
+    # PHASE 1: Collect all FEN positions that need analysis (no engine calls)
+    # -------------------------------------------------------------------------
+    user_moves_data: list[dict[str, Any]] = []
+    fens_to_analyze: set[str] = set()
     current_board = board.copy()
 
     for ply, move in enumerate(moves_list):
@@ -96,21 +98,100 @@ def run_quick_scan_single(
 
         fen_before = current_board.fen()
         side_to_move = current_board.turn
-
-        if not is_user_move:
-            current_board.push(move)
-            continue
-
-        total_user_moves += 1
         move_uci = move.uci()
         move_san = current_board.san(move)
 
-        try:
-            info_before = _analyse_with_recovery(
-                current_board, QUICK_SCAN_DEPTH, QUICK_SCAN_TIME_MS
+        current_board.push(move)
+
+        if not is_user_move:
+            continue
+
+        fen_after = current_board.fen()
+        is_checkmate = current_board.is_checkmate()
+        is_game_over = current_board.is_game_over()
+
+        user_moves_data.append({
+            "ply": ply,
+            "move": move,
+            "move_uci": move_uci,
+            "move_san": move_san,
+            "fen_before": fen_before,
+            "fen_after": fen_after,
+            "side_to_move": side_to_move,
+            "is_checkmate": is_checkmate,
+            "is_game_over": is_game_over,
+        })
+
+        fens_to_analyze.add(fen_before)
+        if not is_checkmate and not is_game_over:
+            fens_to_analyze.add(fen_after)
+
+    if not user_moves_data:
+        return _empty_scan_result()
+
+    # -------------------------------------------------------------------------
+    # PHASE 2: Batch analyze all unique FENs in parallel
+    # -------------------------------------------------------------------------
+    unique_fens = list(fens_to_analyze)
+    info_by_fen: dict[str, Any] = {}
+
+    if unique_fens:
+        worker_count = min(QUICK_SCAN_POSITION_WORKERS, len(unique_fens))
+        if worker_count <= 1:
+            info_by_fen = _analyse_fen_chunk(
+                unique_fens, QUICK_SCAN_DEPTH, QUICK_SCAN_TIME_MS, 1
             )
-        except Exception:
-            current_board.push(move)
+        else:
+            chunk_size = math.ceil(len(unique_fens) / worker_count)
+            chunks = [
+                unique_fens[i : i + chunk_size]
+                for i in range(0, len(unique_fens), chunk_size)
+            ]
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        _analyse_fen_chunk,
+                        chunk,
+                        QUICK_SCAN_DEPTH,
+                        QUICK_SCAN_TIME_MS,
+                        1,
+                    )
+                    for chunk in chunks
+                    if chunk
+                ]
+                for future in futures:
+                    try:
+                        info_by_fen.update(future.result())
+                    except Exception:
+                        continue
+
+    # -------------------------------------------------------------------------
+    # PHASE 3: Process results using pre-computed analysis lookup
+    # -------------------------------------------------------------------------
+    problems: list[dict[str, Any]] = []
+    phase_cp_losses: dict[str, list[int]] = {
+        "opening": [],
+        "middlegame": [],
+        "endgame": [],
+    }
+    blunders = 0
+    mistakes = 0
+    inaccuracies = 0
+    total_user_moves = len(user_moves_data)
+
+    for move_data in user_moves_data:
+        ply = move_data["ply"]
+        move = move_data["move"]
+        move_uci = move_data["move_uci"]
+        move_san = move_data["move_san"]
+        fen_before = move_data["fen_before"]
+        fen_after = move_data["fen_after"]
+        side_to_move = move_data["side_to_move"]
+        is_checkmate = move_data["is_checkmate"]
+        is_game_over = move_data["is_game_over"]
+
+        info_before = info_by_fen.get(fen_before)
+        if info_before is None:
             continue
 
         if isinstance(info_before, list):
@@ -131,22 +212,11 @@ def run_quick_scan_single(
             mate_val = score_before.pov(chess.WHITE).mate()
             eval_before_dict = {"cp": None, "mate": mate_val}
 
-        current_board.push(move)
-        fen_after = current_board.fen()
-
-        # If this move is checkmate, it's a winning move - not a problem
-        if current_board.is_checkmate():
+        if is_checkmate or is_game_over:
             continue
 
-        # If the game is over (stalemate, draw, etc.), skip analysis
-        if current_board.is_game_over():
-            continue
-
-        try:
-            info_after = _analyse_with_recovery(
-                current_board, QUICK_SCAN_DEPTH, QUICK_SCAN_TIME_MS
-            )
-        except Exception:
+        info_after = info_by_fen.get(fen_after)
+        if info_after is None:
             continue
 
         if isinstance(info_after, list):
@@ -190,8 +260,7 @@ def run_quick_scan_single(
         elif classification == "inaccuracy":
             inaccuracies += 1
 
-        # Only track blunders and mistakes as problems (skip inaccuracies)
-        if classification not in ("blunder", "mistake"):
+        if classification not in ("blunder"):
             continue
 
         if cp_loss < QUICK_SCAN_CP_THRESHOLD:
