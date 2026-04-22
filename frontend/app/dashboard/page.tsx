@@ -31,10 +31,10 @@ import { ChessProfileCard, type ChessProfile } from "@/components/ChessProfileCa
 import {
   fetchProfiles,
   addProfile,
-  importProfileGames,
   syncProfile,
   deleteProfile,
 } from "@/lib/profiles";
+import { importGames, type ImportResponse } from "@/lib/import";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
@@ -63,12 +63,6 @@ interface OpeningStats {
   score_pct: number;
 }
 
-interface ImportResponse {
-  username: string;
-  imported: number;
-  skipped: number;
-  is_sync: boolean;
-}
 
 interface ImportStatus {
   username: string;
@@ -394,8 +388,6 @@ export default function DashboardPage() {
   const isAuthenticated = status === "authenticated" && !!session?.idToken;
   
   const [username, setUsername] = useState("");
-  const [lichessUsername, setLichessUsername] = useState("");
-  const [chesscomUsername, setChesscomUsername] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<OpeningStats[] | null>(null);
@@ -518,6 +510,81 @@ export default function DashboardPage() {
     loadChessProfiles();
   }, [isAuthenticated, session?.idToken]);
 
+  // Shared: poll insights + reports after any import until processing is done.
+  const pollAfterImport = useCallback(
+    async (targetUsername: string) => {
+      setInsightsLoading(true);
+      let attempts = 0;
+      const maxAttempts = 120;
+      await new Promise(r => setTimeout(r, 3000));
+      while (attempts < maxAttempts) {
+        attempts++;
+        try {
+          const [data, whiteData, blackData] = await Promise.all([
+            fetchInsights(targetUsername),
+            fetchReport(targetUsername, "white", timeClassFilter),
+            fetchReport(targetUsername, "black", timeClassFilter),
+          ]);
+          setInsights(data);
+          setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(targetUsername), data);
+          setReport(whiteData);
+          setReportBlack(blackData);
+          if (!shouldKeepPolling(data)) {
+            if (attempts < 5 && !data?.problem_spotter) {
+              await new Promise(r => setTimeout(r, 5000));
+              continue;
+            }
+            break;
+          }
+        } catch {
+          break;
+        }
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      setInsightsLoading(false);
+    },
+    [timeClassFilter]
+  );
+
+  // Shared: refresh reports, import status, insights after any import.
+  const refreshDashboardAfterImport = useCallback(
+    async (targetUsername: string, importResult: ImportResponse) => {
+      clearCacheByPrefix(`dashboard:${targetUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:variations:${targetUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`dashboard:insights:${targetUsername.toLowerCase()}:`);
+      clearCacheByPrefix(`opening:${targetUsername.toLowerCase()}:`);
+
+      const [whiteReportData, blackReportData] = await Promise.all([
+        fetchReport(targetUsername, "white", timeClassFilter),
+        fetchReport(targetUsername, "black", timeClassFilter),
+      ]);
+      setReport(whiteReportData);
+      setReportBlack(blackReportData);
+
+      const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
+        fetchImportStatus(targetUsername),
+        fetchImportStatus(targetUsername, "lichess"),
+        fetchImportStatus(targetUsername, "chesscom"),
+      ]);
+      if (statusData) setImportStatus(statusData);
+      setLichessImportStatus(lichessStatus);
+      setChesscomImportStatus(chesscomStatus);
+
+      if (isAuthenticated) {
+        void fetchImportHistory();
+      }
+
+      const insightsData = await fetchInsights(targetUsername);
+      setInsights(insightsData);
+      clearCacheKey(getDashboardInsightsCacheKey(targetUsername));
+
+      if (importResult.imported > 0) {
+        void pollAfterImport(targetUsername);
+      }
+    },
+    [isAuthenticated, timeClassFilter, pollAfterImport]
+  );
+
   // Handle adding a new profile (authenticated) or importing (guest)
   const handleAddOrImport = useCallback(async () => {
     const trimmedUsername = inputUsername.trim();
@@ -576,23 +643,7 @@ export default function DashboardPage() {
           },
         });
       } else {
-        const endpoint =
-          selectedPlatform === "lichess"
-            ? `${API_BASE_URL}/api/v1/import/lichess`
-            : `${API_BASE_URL}/api/v1/import/chesscom`;
-
-        const importResponse = await fetch(endpoint, {
-          method: "POST",
-          headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
-          body: JSON.stringify({ username: trimmedUsername }),
-        });
-
-        if (!importResponse.ok) {
-          const data = await importResponse.json().catch(() => ({}));
-          throw new Error(data.detail || `Import failed: ${importResponse.status}`);
-        }
-
-        const importData: ImportResponse = await importResponse.json();
+        const importData = await importGames(trimmedUsername, selectedPlatform);
         setImportResult(importData);
         setUsername(trimmedUsername);
         setCurrentUsername(trimmedUsername);
@@ -616,67 +667,8 @@ export default function DashboardPage() {
 
         setInputUsername("");
         setReportRefreshNotice(null);
-        clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
-        clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
-        clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
-        clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
 
-        const [whiteReportData, blackReportData] = await Promise.all([
-          fetchReport(trimmedUsername, "white", timeClassFilter),
-          fetchReport(trimmedUsername, "black", timeClassFilter),
-        ]);
-        setReport(whiteReportData);
-        setReportBlack(blackReportData);
-
-        const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
-          fetchImportStatus(trimmedUsername),
-          fetchImportStatus(trimmedUsername, "lichess"),
-          fetchImportStatus(trimmedUsername, "chesscom"),
-        ]);
-        if (statusData) setImportStatus(statusData);
-        setLichessImportStatus(lichessStatus);
-        setChesscomImportStatus(chesscomStatus);
-
-        const insightsData = await fetchInsights(trimmedUsername);
-        setInsights(insightsData);
-
-        if (importData.imported > 0) {
-          setInsightsLoading(true);
-          const pollAfterGuestImport = async () => {
-            let attempts = 0;
-            const maxAttempts = 120;
-            await new Promise(r => setTimeout(r, 3000));
-            while (attempts < maxAttempts) {
-              attempts++;
-              try {
-                const [data, whiteData, blackData] = await Promise.all([
-                  fetchInsights(trimmedUsername),
-                  fetchReport(trimmedUsername, "white", timeClassFilter),
-                  fetchReport(trimmedUsername, "black", timeClassFilter),
-                ]);
-                setInsights(data);
-                setCached<InsightsProfile | null>(
-                  getDashboardInsightsCacheKey(trimmedUsername),
-                  data,
-                );
-                setReport(whiteData);
-                setReportBlack(blackData);
-                if (!shouldKeepPolling(data)) {
-                  if (attempts < 5 && !data?.problem_spotter) {
-                    await new Promise(r => setTimeout(r, 5000));
-                    continue;
-                  }
-                  break;
-                }
-              } catch {
-                break;
-              }
-              await new Promise(r => setTimeout(r, 5000));
-            }
-            setInsightsLoading(false);
-          };
-          void pollAfterGuestImport();
-        }
+        await refreshDashboardAfterImport(trimmedUsername, importData);
       }
     } catch (err) {
       trackEvent("import.failed", {
@@ -695,8 +687,8 @@ export default function DashboardPage() {
     isAuthenticated,
     session?.idToken,
     currentUsername,
-    authHeaders,
     timeClassFilter,
+    refreshDashboardAfterImport,
     router,
   ]);
 
@@ -734,30 +726,7 @@ export default function DashboardPage() {
           currentUsername.toLowerCase() === profile.chess_username.toLowerCase()
         ) {
           setImportResult(result.sync_result);
-
-          clearCacheByPrefix(`dashboard:${profile.chess_username.toLowerCase()}:`);
-          clearCacheByPrefix(`dashboard:variations:${profile.chess_username.toLowerCase()}:`);
-          clearCacheByPrefix(`dashboard:insights:${profile.chess_username.toLowerCase()}:`);
-          clearCacheByPrefix(`opening:${profile.chess_username.toLowerCase()}:`);
-
-          const [whiteReportData, blackReportData] = await Promise.all([
-            fetchReport(profile.chess_username, "white", timeClassFilter),
-            fetchReport(profile.chess_username, "black", timeClassFilter),
-          ]);
-          setReport(whiteReportData);
-          setReportBlack(blackReportData);
-
-          const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
-            fetchImportStatus(profile.chess_username),
-            fetchImportStatus(profile.chess_username, "lichess"),
-            fetchImportStatus(profile.chess_username, "chesscom"),
-          ]);
-          if (statusData) setImportStatus(statusData);
-          setLichessImportStatus(lichessStatus);
-          setChesscomImportStatus(chesscomStatus);
-
-          const insightsData = await fetchInsights(profile.chess_username);
-          setInsights(insightsData);
+          await refreshDashboardAfterImport(profile.chess_username, result.sync_result);
         }
 
         trackEvent("profile.synced", {
@@ -772,7 +741,7 @@ export default function DashboardPage() {
         setSyncingProfile(null);
       }
     },
-    [isAuthenticated, session?.idToken, currentUsername, timeClassFilter]
+    [isAuthenticated, session?.idToken, currentUsername, refreshDashboardAfterImport]
   );
 
   // Handle importing games for a profile (first import or re-import)
@@ -786,82 +755,14 @@ export default function DashboardPage() {
       setImportResult(null);
 
       try {
-        const result = await importProfileGames(
-          session.idToken,
+        const result = await importGames(
+          profile.chess_username,
           profile.site as "lichess" | "chesscom",
-          profile.chess_username
+          session.idToken,
         );
 
         setImportResult(result);
-
-        clearCacheByPrefix(`dashboard:${profile.chess_username.toLowerCase()}:`);
-        clearCacheByPrefix(`dashboard:variations:${profile.chess_username.toLowerCase()}:`);
-        clearCacheByPrefix(`dashboard:insights:${profile.chess_username.toLowerCase()}:`);
-        clearCacheByPrefix(`opening:${profile.chess_username.toLowerCase()}:`);
-
-        const [whiteReportData, blackReportData] = await Promise.all([
-          fetchReport(profile.chess_username, "white", timeClassFilter),
-          fetchReport(profile.chess_username, "black", timeClassFilter),
-        ]);
-        setReport(whiteReportData);
-        setReportBlack(blackReportData);
-
-        const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
-          fetchImportStatus(profile.chess_username),
-          fetchImportStatus(profile.chess_username, "lichess"),
-          fetchImportStatus(profile.chess_username, "chesscom"),
-        ]);
-        if (statusData) setImportStatus(statusData);
-        setLichessImportStatus(lichessStatus);
-        setChesscomImportStatus(chesscomStatus);
-
-        if (isAuthenticated) {
-          void fetchImportHistory();
-        }
-
-        const insightsData = await fetchInsights(profile.chess_username);
-        setInsights(insightsData);
-        clearCacheKey(getDashboardInsightsCacheKey(profile.chess_username));
-
-        // Always poll after import — the quick-scan/insights background jobs may not
-        // be visible in the first response yet due to race conditions.
-        if (result.imported > 0) {
-          setInsightsLoading(true);
-          const pollInsightsAfterImport = async () => {
-            let attempts = 0;
-            const maxAttempts = 120;
-            await new Promise(r => setTimeout(r, 3000));
-            while (attempts < maxAttempts) {
-              attempts++;
-              try {
-                const [data, whiteData, blackData] = await Promise.all([
-                  fetchInsights(profile.chess_username),
-                  fetchReport(profile.chess_username, "white", timeClassFilter),
-                  fetchReport(profile.chess_username, "black", timeClassFilter),
-                ]);
-                setInsights(data);
-                setCached<InsightsProfile | null>(
-                  getDashboardInsightsCacheKey(profile.chess_username),
-                  data,
-                );
-                setReport(whiteData);
-                setReportBlack(blackData);
-                if (!shouldKeepPolling(data)) {
-                  if (attempts < 5 && !data?.problem_spotter) {
-                    await new Promise(r => setTimeout(r, 5000));
-                    continue;
-                  }
-                  break;
-                }
-              } catch {
-                break;
-              }
-              await new Promise(r => setTimeout(r, 5000));
-            }
-            setInsightsLoading(false);
-          };
-          void pollInsightsAfterImport();
-        }
+        await refreshDashboardAfterImport(profile.chess_username, result);
 
         trackEvent("profile.imported", {
           properties: {
@@ -875,7 +776,7 @@ export default function DashboardPage() {
         setImportingProfile(null);
       }
     },
-    [isAuthenticated, session?.idToken, timeClassFilter]
+    [isAuthenticated, session?.idToken, refreshDashboardAfterImport]
   );
 
   // Handle deleting a profile
@@ -1238,248 +1139,6 @@ export default function DashboardPage() {
     if (user) {
       router.replace(`/dashboard?user=${encodeURIComponent(user)}`, { scroll: false });
       persistLastUser(user);
-    }
-  };
-
-  const handleImportLichess = async () => {
-    if (!lichessUsername.trim()) {
-      setError("Please enter a Lichess username");
-      return;
-    }
-
-    trackEvent("import.start", {
-      properties: {
-        site: "lichess",
-      },
-    });
-
-    setLoading(true);
-    setError(null);
-    setReport(null);
-    setReportBlack(null);
-    setImportResult(null);
-
-    const trimmedUsername = lichessUsername.trim();
-
-    if (!currentUsername || trimmedUsername.toLowerCase() !== currentUsername.toLowerCase()) {
-      setLichessImportStatus(null);
-      setChesscomImportStatus(null);
-    }
-
-    try {
-      const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/lichess`, {
-        method: "POST",
-        headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
-        body: JSON.stringify({ username: trimmedUsername }),
-      });
-
-      if (!importResponse.ok) {
-        const data = await importResponse.json().catch(() => ({}));
-        throw new Error(
-          data.detail || `Import failed: ${importResponse.status}`
-        );
-      }
-
-      const importData: ImportResponse = await importResponse.json();
-      setImportResult(importData);
-      trackEvent("import.success", {
-        properties: {
-          site: "lichess",
-          imported: importData.imported,
-          skipped: importData.skipped,
-        },
-      });
-
-      setUsername(trimmedUsername);
-      setCurrentUsername(trimmedUsername);
-      updateUrl(trimmedUsername);
-      setGuestImportHistory(
-        saveGuestHistoryEntry({
-          username: trimmedUsername,
-          site: "lichess",
-          imported_at: new Date().toISOString(),
-        }),
-      );
-      setReportRefreshNotice(null);
-      clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
-
-      const [whiteReportData, blackReportData] = await Promise.all([
-        fetchReport(trimmedUsername, "white", timeClassFilter),
-        fetchReport(trimmedUsername, "black", timeClassFilter),
-      ]);
-      setReport(whiteReportData);
-      setReportBlack(blackReportData);
-      setCached<DashboardReportCacheData>(
-        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
-        {
-          reportWhite: whiteReportData,
-          reportBlack: blackReportData,
-          importStatus: null,
-          lichessImportStatus: null,
-          chesscomImportStatus: null,
-        },
-      );
-
-      const [status, lichessStatus, chesscomStatus] = await Promise.all([
-        fetchImportStatus(trimmedUsername),
-        fetchImportStatus(trimmedUsername, "lichess"),
-        fetchImportStatus(trimmedUsername, "chesscom"),
-      ]);
-      if (status) {
-        setImportStatus(status);
-      }
-      setLichessImportStatus(lichessStatus);
-      setChesscomImportStatus(chesscomStatus);
-      setCached<DashboardReportCacheData>(
-        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
-        {
-          reportWhite: whiteReportData,
-          reportBlack: blackReportData,
-          importStatus: status,
-          lichessImportStatus: lichessStatus,
-          chesscomImportStatus: chesscomStatus,
-        },
-      );
-      if (isAuthenticated) {
-        void fetchImportHistory();
-      }
-      const insightsData = await fetchInsights(trimmedUsername);
-      setInsights(insightsData);
-      setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
-    } catch (err) {
-      trackEvent("import.failed", {
-        properties: {
-          site: "lichess",
-          reason: err instanceof Error ? err.message : "An error occurred",
-        },
-      });
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleImportChesscom = async () => {
-    if (!chesscomUsername.trim()) {
-      setError("Please enter a Chess.com username");
-      return;
-    }
-
-    trackEvent("import.start", {
-      properties: {
-        site: "chesscom",
-      },
-    });
-
-    setLoading(true);
-    setError(null);
-    setReport(null);
-    setReportBlack(null);
-    setImportResult(null);
-
-    const trimmedUsername = chesscomUsername.trim();
-
-    if (!currentUsername || trimmedUsername.toLowerCase() !== currentUsername.toLowerCase()) {
-      setLichessImportStatus(null);
-      setChesscomImportStatus(null);
-    }
-
-    try {
-      const importResponse = await fetch(`${API_BASE_URL}/api/v1/import/chesscom`, {
-        method: "POST",
-        headers: withTrackingHeaders({ "Content-Type": "application/json", ...authHeaders } as Record<string, string>),
-        body: JSON.stringify({ username: trimmedUsername }),
-      });
-
-      if (!importResponse.ok) {
-        const data = await importResponse.json().catch(() => ({}));
-        throw new Error(
-          data.detail || `Import failed: ${importResponse.status}`
-        );
-      }
-
-      const importData: ImportResponse = await importResponse.json();
-      setImportResult(importData);
-      trackEvent("import.success", {
-        properties: {
-          site: "chesscom",
-          imported: importData.imported,
-          skipped: importData.skipped,
-        },
-      });
-
-      setUsername(trimmedUsername);
-      setCurrentUsername(trimmedUsername);
-      updateUrl(trimmedUsername);
-      setGuestImportHistory(
-        saveGuestHistoryEntry({
-          username: trimmedUsername,
-          site: "chesscom",
-          imported_at: new Date().toISOString(),
-        }),
-      );
-      setReportRefreshNotice(null);
-      clearCacheByPrefix(`dashboard:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:variations:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:insights:${trimmedUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`opening:${trimmedUsername.toLowerCase()}:`);
-
-      const [whiteReportData, blackReportData] = await Promise.all([
-        fetchReport(trimmedUsername, "white", timeClassFilter),
-        fetchReport(trimmedUsername, "black", timeClassFilter),
-      ]);
-      setReport(whiteReportData);
-      setReportBlack(blackReportData);
-      setCached<DashboardReportCacheData>(
-        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
-        {
-          reportWhite: whiteReportData,
-          reportBlack: blackReportData,
-          importStatus: null,
-          lichessImportStatus: null,
-          chesscomImportStatus: null,
-        },
-      );
-
-      const [status, lichessStatus, chesscomStatus] = await Promise.all([
-        fetchImportStatus(trimmedUsername),
-        fetchImportStatus(trimmedUsername, "lichess"),
-        fetchImportStatus(trimmedUsername, "chesscom"),
-      ]);
-      if (status) {
-        setImportStatus(status);
-      }
-      setLichessImportStatus(lichessStatus);
-      setChesscomImportStatus(chesscomStatus);
-      setCached<DashboardReportCacheData>(
-        getDashboardBundleCacheKey(trimmedUsername, colorFilter, timeClassFilter),
-        {
-          reportWhite: whiteReportData,
-          reportBlack: blackReportData,
-          importStatus: status,
-          lichessImportStatus: lichessStatus,
-          chesscomImportStatus: chesscomStatus,
-        },
-      );
-      if (isAuthenticated) {
-        void fetchImportHistory();
-      }
-      const insightsData = await fetchInsights(trimmedUsername);
-      setInsights(insightsData);
-      setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(trimmedUsername), insightsData);
-    } catch (err) {
-      trackEvent("import.failed", {
-        properties: {
-          site: "chesscom",
-          reason: err instanceof Error ? err.message : "An error occurred",
-        },
-      });
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      setLoading(false);
     }
   };
 
