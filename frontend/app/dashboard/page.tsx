@@ -426,6 +426,24 @@ export default function DashboardPage() {
     total: number;
   } | null>(null);
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<ChessProfile | null>(null);
+  const [problemSpotter, setProblemSpotter] = useState<{
+    total_problems: number;
+    by_theme: Array<{ theme: string; label?: string; count: number }>;
+    by_phase: Record<string, number>;
+    by_classification: { blunders: number; mistakes: number };
+    recent_problems: Array<{
+      classification: string;
+      tactic_type?: string;
+      phase?: string;
+      site: string;
+      site_game_id: string;
+      time_class?: string;
+      opponent?: string;
+      played_at?: string;
+      ply?: number;
+    }>;
+  } | null>(null);
+  const [problemSpotterLoading, setProblemSpotterLoading] = useState(false);
 
   const importHistory = useMemo(() => {
     if (isAuthenticated) {
@@ -534,19 +552,21 @@ export default function DashboardPage() {
             if (progress.status === "complete") {
               setImportProgress(null);
               
-              // Fetch final reports and import status
-              const [whiteData, blackData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
+              // Fetch final reports, import status, and problem spotter
+              const [whiteData, blackData, statusData, lichessStatus, chesscomStatus, problemSpotterData] = await Promise.all([
                 fetchReport(targetUsername, "white", timeClassFilter),
                 fetchReport(targetUsername, "black", timeClassFilter),
                 fetchImportStatus(targetUsername),
                 fetchImportStatus(targetUsername, "lichess"),
                 fetchImportStatus(targetUsername, "chesscom"),
+                fetchProblemSpotter(targetUsername),
               ]);
               setReport(whiteData);
               setReportBlack(blackData);
               if (statusData) setImportStatus(statusData);
               setLichessImportStatus(lichessStatus);
               setChesscomImportStatus(chesscomStatus);
+              setProblemSpotter(problemSpotterData);
               break;
             }
           } else {
@@ -951,6 +971,23 @@ export default function DashboardPage() {
   //   };
   // }, [status, session?.idToken, currentUsername, authHeaders, authUserId]);
 
+  // Fetch problem spotter (tactical analysis) - defined before useEffect that uses it
+  const fetchProblemSpotter = async (user: string) => {
+    const params = new URLSearchParams();
+    params.set("username", user);
+    params.set("site", "all");
+    const response = await fetch(
+      `${API_BASE_URL}/api/v1/tactical/problem-spotter?${params}`,
+      { headers: withTrackingHeaders(authHeaders) }
+    );
+    if (!response.ok) {
+      return null;
+    }
+    return response.json();
+  };
+
+  // Problem spotter is now fetched inside loadDashboardBundle alongside other data
+
   // Fetch combined report across all sites
   const fetchReport = async (
     user: string,
@@ -1119,18 +1156,20 @@ export default function DashboardPage() {
     }
 
     try {
-      const [whiteReportData, blackReportData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
+      const [whiteReportData, blackReportData, statusData, lichessStatus, chesscomStatus, problemSpotterData] = await Promise.all([
         fetchReport(user, "white", timeClass),
         fetchReport(user, "black", timeClass),
         fetchImportStatus(user),
         fetchImportStatus(user, "lichess"),
         fetchImportStatus(user, "chesscom"),
+        fetchProblemSpotter(user),
       ]);
       setReport(whiteReportData);
       setReportBlack(blackReportData);
       setImportStatus(statusData);
       setLichessImportStatus(lichessStatus);
       setChesscomImportStatus(chesscomStatus);
+      setProblemSpotter(problemSpotterData);
       setCached<DashboardReportCacheData>(cacheKey, {
         reportWhite: whiteReportData,
         reportBlack: blackReportData,
@@ -2256,7 +2295,7 @@ export default function DashboardPage() {
         )}
 
         {/* Problem Spotter section */}
-        {currentUsername && insights?.problem_spotter && insights.problem_spotter.total_problems > 0 && (
+        {currentUsername && problemSpotter && problemSpotter.total_problems > 0 && (
           <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl">
             <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
               <div>
@@ -2269,8 +2308,8 @@ export default function DashboardPage() {
             {/* Scan summary */}
             <div className="mb-8">
               {(() => {
-                const cls = insights.problem_spotter.by_classification;
-                const gamesScanned = insights.scan_progress?.total || insights.coverage?.games_total || 0;
+                const cls = problemSpotter.by_classification;
+                const gamesScanned = importStatus?.total_games || 0;
                 return (
                   <p className="text-base text-[color:var(--zen-muted)]">
                     Scanned {gamesScanned} games and found {cls.blunders} tactical blunder{cls.blunders !== 1 ? "s" : ""}.
@@ -2280,8 +2319,8 @@ export default function DashboardPage() {
             </div>
 
             {/* Tactical fail categories grid */}
-            {insights.problem_spotter.by_theme.length > 0 && (() => {
-              const themes = insights.problem_spotter.by_theme.slice(0, 6);
+            {problemSpotter.by_theme.length > 0 && (() => {
+              const themes = problemSpotter.by_theme.slice(0, 6);
               const maxCount = Math.max(...themes.map((t) => t.count), 1);
               return (
                 <div className="mb-10">
@@ -2301,10 +2340,10 @@ export default function DashboardPage() {
             })()}
 
             {/* Recent problems list - Terminal style table */}
-            {insights.problem_spotter.recent_problems.length > 0 && (
+            {problemSpotter.recent_problems.length > 0 && (
               <div className="mt-8">
                 {(() => {
-                  const blundersOnly = insights.problem_spotter.recent_problems.filter(p => p.classification === "blunder" && p.tactic_type);
+                  const blundersOnly = problemSpotter.recent_problems.filter(p => p.classification === "blunder" && p.tactic_type);
                   const recentBlunders = blundersOnly.slice(0, 6);
 
                   return (
@@ -2410,19 +2449,19 @@ export default function DashboardPage() {
               </div>
             )}
 
-            {/* Scan in progress indicator */}
-            {insights.scan_progress && (insights.scan_progress.status === "running" || insights.scan_progress.status === "queued") && (
+            {/* Scan in progress indicator - shows during import */}
+            {importProgress && importProgress.status === "processing" && (
               <div className="mt-6">
                 <div className="w-full h-1.5 rounded-full bg-[color:var(--zen-border)] overflow-hidden">
                   <div
                     className="h-full rounded-full bg-[color:var(--zen-accent)] transition-all duration-700"
                     style={{
-                      width: `${insights.scan_progress.total > 0 ? Math.max((insights.scan_progress.done / insights.scan_progress.total) * 100, 3) : 5}%`,
+                      width: `${importProgress.total > 0 ? Math.max((importProgress.done / importProgress.total) * 100, 3) : 5}%`,
                     }}
                   />
                 </div>
                 <p className="mt-2 text-xs text-[color:var(--zen-muted)] text-center">
-                  Scanning games for tactical problems... Results update progressively.
+                  Processing games... Tactical analysis updates when complete.
                 </p>
               </div>
             )}

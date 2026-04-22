@@ -166,3 +166,23 @@ async def get_problems_by_theme_endpoint(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/tactical/problem-spotter")
+async def get_tactical_problem_spotter(
+    username: str = Query(..., min_length=1, max_length=50),
+    site: str = Query(default="all", pattern="^(all|lichess|chesscom)$"),
+    conn: psycopg.Connection = Depends(get_db),
+):
+    """Get tactical problem spotter data from quick scans.
+    
+    Returns aggregated tactical blunders/mistakes data without requiring
+    the full AI insights pipeline. Data comes directly from game_quick_scans table.
+    """
+    site = validate_site(site)
+    username = username.strip().lower()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+
+    problem_data = get_quick_scan_problem_spotter(conn, username, site)
+    return problem_data
