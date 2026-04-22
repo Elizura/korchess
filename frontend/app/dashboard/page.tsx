@@ -520,15 +520,21 @@ export default function DashboardPage() {
       while (attempts < maxAttempts) {
         attempts++;
         try {
-          const [data, whiteData, blackData] = await Promise.all([
+          const [data, whiteData, blackData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
             fetchInsights(targetUsername),
             fetchReport(targetUsername, "white", timeClassFilter),
             fetchReport(targetUsername, "black", timeClassFilter),
+            fetchImportStatus(targetUsername),
+            fetchImportStatus(targetUsername, "lichess"),
+            fetchImportStatus(targetUsername, "chesscom"),
           ]);
           setInsights(data);
           setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(targetUsername), data);
           setReport(whiteData);
           setReportBlack(blackData);
+          if (statusData) setImportStatus(statusData);
+          setLichessImportStatus(lichessStatus);
+          setChesscomImportStatus(chesscomStatus);
           if (!shouldKeepPolling(data)) {
             if (attempts < 5 && !data?.problem_spotter) {
               await new Promise(r => setTimeout(r, 5000));
@@ -1757,7 +1763,7 @@ export default function DashboardPage() {
         )}
 
         {/* Data freshness — guest / no saved profile (when large profile card is not shown) */}
-        {importStatus?.imported_at &&
+        {(importStatus?.imported_at || (importStatus?.total_games ?? 0) > 0) &&
           currentUsername &&
           !loading &&
           !(isAuthenticated && chessProfiles.some((p) => p.chess_username.toLowerCase() === currentUsername.toLowerCase())) && (
@@ -1765,14 +1771,14 @@ export default function DashboardPage() {
               <p className="text-sm text-[color:var(--zen-muted)]">
                 Report generated from{" "}
                 <span className="text-[color:var(--zen-text)] font-medium">
-                  {importStatus.total_games}
+                  {importStatus!.total_games}
                 </span>{" "}
                 games
-                {importStatus.total_games > 0 && (
+                {importStatus!.total_games > 0 && (importStatus!.imported_at || importStatus!.last_synced_at) && (
                   <>
                     {" "}
-                    ({importStatus.last_synced_at ? "last sync" : "last import"}:{" "}
-                    {new Date(importStatus.last_synced_at || importStatus.imported_at!).toLocaleString("en-US", {
+                    ({importStatus!.last_synced_at ? "last sync" : "last import"}:{" "}
+                    {new Date(importStatus!.last_synced_at || importStatus!.imported_at!).toLocaleString("en-US", {
                       year: "numeric",
                       month: "short",
                       day: "numeric",
@@ -1953,22 +1959,22 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {importStatus?.imported_at &&
+              {(importStatus?.imported_at || (importStatus?.total_games ?? 0) > 0) &&
                 !loading &&
-                importStatus.username.toLowerCase() === selectedProfile.chess_username.toLowerCase() ? (
+                importStatus!.username.toLowerCase() === selectedProfile.chess_username.toLowerCase() ? (
                   <div className="mt-6 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-border)]/80">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                       <p className="text-sm text-[color:var(--zen-muted)]">
                         Report generated from{" "}
                         <span className="text-[color:var(--zen-text)] font-medium">
-                          {importStatus.total_games}
+                          {importStatus!.total_games}
                         </span>{" "}
                         games
-                        {importStatus.total_games > 0 && (
+                        {importStatus!.total_games > 0 && (importStatus!.imported_at || importStatus!.last_synced_at) && (
                           <>
                             {" "}
-                            ({importStatus.last_synced_at ? "last sync" : "last import"}:{" "}
-                            {new Date(importStatus.last_synced_at || importStatus.imported_at!).toLocaleString("en-US", {
+                            ({importStatus!.last_synced_at ? "last sync" : "last import"}:{" "}
+                            {new Date(importStatus!.last_synced_at || importStatus!.imported_at!).toLocaleString("en-US", {
                               year: "numeric",
                               month: "short",
                               day: "numeric",
