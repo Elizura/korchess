@@ -239,7 +239,6 @@ def parse_pgn_games(
     pgn_text: str,
     target_username: str,
     db_con: psycopg.Connection,
-    max_plies: int = 40
 ) -> tuple[list[dict], int]:
     """
     Parse multi-game PGN text and extract game data.
@@ -298,7 +297,7 @@ def parse_pgn_games(
         # Determine opening via canonical UCI prefix match
         opening = None
         try:
-            uci_plies = game_to_uci_plies(game, max_plies=max_plies)
+            uci_plies = game_to_uci_plies(game)
             opening = best_opening_match(db_con, uci_plies)
         except Exception:
             opening = None
