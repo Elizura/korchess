@@ -18,6 +18,18 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6390:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     volumes:
       - ./backend:/app
@@ -25,9 +37,43 @@ services:
       - .env
     ports:
       - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "tasks", "worker", "--loglevel=info", "--concurrency=4"]
+    volumes:
+      - ./backend:/app
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "tasks", "flower", "--port=5555"]
+    ports:
+      - "5555:5555"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
         condition: service_healthy
 
   frontend:
@@ -50,3 +96,4 @@ services:
 volumes:
   frontend-node-modules:
   postgres-data:
+  redis-data:

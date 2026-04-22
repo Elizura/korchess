@@ -1984,7 +1984,7 @@ def get_games_for_insights(
     conn: psycopg.Connection,
     username: str,
     site: str = "all",
-    limit: int = 500,
+    limit: int = 250,
 ) -> list[dict]:
     """Fetch recent games with PGN and metadata for insights processing."""
     cursor = conn.cursor()
@@ -2425,7 +2425,7 @@ def get_quick_scan_problem_spotter(
     conn: psycopg.Connection,
     username: str,
     site: str = "all",
-    recent_limit: int = 500,
+    recent_limit: int = 250,
 ) -> dict:
     """Build aggregated problem-spotter data from all quick-scan results.
     

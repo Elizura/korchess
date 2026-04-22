@@ -478,13 +478,8 @@ def schedule_quick_scan(
     finally:
         conn.close()
 
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(
-            run_quick_scan_batch(job_id, canonical, site)
-        )
-    except RuntimeError:
-        pass
+    from tasks import run_scan
+    run_scan.delay(job_id, canonical, site)
 
     return {
         "scheduled": True,

@@ -37,7 +37,7 @@ class ChesscomStreamError(Exception):
 
 def stream_lichess_pgns(
     username: str,
-    max_games: int = 500,
+    max_games: int = 250,
     since: int | None = None,
     games_per_chunk: int = GAMES_PER_CHUNK,
 ) -> Iterator[list[str]]:
@@ -210,7 +210,7 @@ def _fetch_archive_games(
 
 def stream_chesscom_games(
     username: str,
-    max_games: int = 500,
+    max_games: int = 250,
     since: datetime | None = None,
     games_per_chunk: int = GAMES_PER_CHUNK,
 ) -> Iterator[list[dict]]:

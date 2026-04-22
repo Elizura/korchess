@@ -1236,18 +1236,8 @@ def schedule_insights_refresh(
     finally:
         conn.close()
 
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(
-            run_insights_pipeline(
-                job_id,
-                canonical_username,
-                site,
-                trigger_quick_scan=force,
-            )
-        )
-    except RuntimeError:
-        pass
+    from tasks import run_insights
+    run_insights.delay(job_id, canonical_username, site, trigger_quick_scan=force)
 
     return {
         "scheduled": True,

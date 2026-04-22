@@ -639,6 +639,44 @@ export default function DashboardPage() {
 
         const insightsData = await fetchInsights(trimmedUsername);
         setInsights(insightsData);
+
+        if (importData.imported > 0) {
+          setInsightsLoading(true);
+          const pollAfterGuestImport = async () => {
+            let attempts = 0;
+            const maxAttempts = 120;
+            await new Promise(r => setTimeout(r, 3000));
+            while (attempts < maxAttempts) {
+              attempts++;
+              try {
+                const [data, whiteData, blackData] = await Promise.all([
+                  fetchInsights(trimmedUsername),
+                  fetchReport(trimmedUsername, "white", timeClassFilter),
+                  fetchReport(trimmedUsername, "black", timeClassFilter),
+                ]);
+                setInsights(data);
+                setCached<InsightsProfile | null>(
+                  getDashboardInsightsCacheKey(trimmedUsername),
+                  data,
+                );
+                setReport(whiteData);
+                setReportBlack(blackData);
+                if (!shouldKeepPolling(data)) {
+                  if (attempts < 5 && !data?.problem_spotter) {
+                    await new Promise(r => setTimeout(r, 5000));
+                    continue;
+                  }
+                  break;
+                }
+              } catch {
+                break;
+              }
+              await new Promise(r => setTimeout(r, 5000));
+            }
+            setInsightsLoading(false);
+          };
+          void pollAfterGuestImport();
+        }
       }
     } catch (err) {
       trackEvent("import.failed", {
@@ -792,19 +830,23 @@ export default function DashboardPage() {
           const pollInsightsAfterImport = async () => {
             let attempts = 0;
             const maxAttempts = 120;
-            // Wait a short initial delay to let backend jobs register
             await new Promise(r => setTimeout(r, 3000));
             while (attempts < maxAttempts) {
               attempts++;
               try {
-                const data = await fetchInsights(profile.chess_username);
+                const [data, whiteData, blackData] = await Promise.all([
+                  fetchInsights(profile.chess_username),
+                  fetchReport(profile.chess_username, "white", timeClassFilter),
+                  fetchReport(profile.chess_username, "black", timeClassFilter),
+                ]);
                 setInsights(data);
                 setCached<InsightsProfile | null>(
                   getDashboardInsightsCacheKey(profile.chess_username),
                   data,
                 );
+                setReport(whiteData);
+                setReportBlack(blackData);
                 if (!shouldKeepPolling(data)) {
-                  // One final check — if scan hasn't started yet, keep waiting a bit
                   if (attempts < 5 && !data?.problem_spotter) {
                     await new Promise(r => setTimeout(r, 5000));
                     continue;
@@ -2457,54 +2499,6 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Tactical Analysis skeleton — visible while quick scan is running or insights are loading after import */}
-        {currentUsername && !insights?.problem_spotter &&
-          ((insights?.scan_progress && (insights.scan_progress.status === "running" || insights.scan_progress.status === "queued")) ||
-           (insightsLoading && (importStatus?.total_games ?? 0) > 0)) && (
-          <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl animate-pulse">
-            <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-              <div>
-                <h3 className="text-2xl sm:text-3xl font-semibold text-[color:var(--zen-text)] mt-1">
-                  Tactical Analysis
-                </h3>
-              </div>
-            </div>
-            <div className="h-4 w-64 bg-[color:var(--zen-border)]/30 rounded mb-6" />
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="zen-surface-flat p-5 rounded-lg border border-[color:var(--zen-border)] min-h-[140px]">
-                  <div className="flex items-start justify-between gap-2 mb-3">
-                    <div className="h-3 w-28 bg-[color:var(--zen-border)]/30 rounded" />
-                    <div className="w-10 h-10 bg-[color:var(--zen-border)]/20 rounded" />
-                  </div>
-                  <div className="h-8 w-16 bg-[color:var(--zen-border)]/30 rounded mb-3" />
-                  <div className="space-y-2">
-                    <div className="h-3 w-full bg-[color:var(--zen-border)]/20 rounded" />
-                    <div className="h-3 w-3/4 bg-[color:var(--zen-border)]/20 rounded" />
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="mt-6">
-              <div className="w-full h-1.5 rounded-full bg-[color:var(--zen-border)] overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-[color:var(--zen-accent)] transition-all duration-700"
-                  style={{
-                    width: `${insights?.scan_progress && insights.scan_progress.total > 0
-                      ? Math.round((insights.scan_progress.done / insights.scan_progress.total) * 100)
-                      : 5}%`
-                  }}
-                />
-              </div>
-              <p className="mt-2 text-xs text-[color:var(--zen-muted)]">
-                {insights?.scan_progress
-                  ? `Scanning games for tactical problems... ${insights.scan_progress.done}/${insights.scan_progress.total}`
-                  : "Starting tactical analysis..."}
-              </p>
-            </div>
-          </div>
-        )}
-
         {/* Problem Spotter section */}
         {currentUsername && insights?.problem_spotter && insights.problem_spotter.total_problems > 0 && (
           <div className="zen-surface opening-frame p-8 sm:p-10 border border-[color:var(--zen-border)] rounded-2xl">
@@ -2679,8 +2673,8 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Top openings - split by color (only show when games have been imported) */}
-        {(importStatus?.total_games ?? 0) > 0 && (
+        {/* Top openings - split by color (show when we have import history OR report data) */}
+        {((importStatus?.total_games ?? 0) > 0 || (report && report.length > 0) || (reportBlack && reportBlack.length > 0)) && (
         <div className="zen-surface opening-frame p-5 sm:p-6 border border-[color:var(--zen-border)] rounded-2xl">
         {currentUsername && (
           <div className="mb-4 flex flex-wrap items-center gap-2">

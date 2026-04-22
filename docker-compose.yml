@@ -9,6 +9,7 @@ services:
       - .env
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
       - ENVIRONMENT=production
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
@@ -16,6 +17,20 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - ENVIRONMENT=production
+    depends_on:
+      - backend
 
   frontend:
     build:

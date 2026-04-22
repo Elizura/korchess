@@ -80,7 +80,7 @@ def _fetch_archive_pgns(client: httpx.Client, archive_url: str, headers: dict, m
     return []
 
 
-def fetch_chesscom_pgn_stream(username: str, games_per_chunk: int = 5, max_games: int = 500) -> Iterator[str]:
+def fetch_chesscom_pgn_stream(username: str, games_per_chunk: int = 5, max_games: int = 250) -> Iterator[str]:
     """
     Stream PGN text from Chess.com in chunks, walking through monthly
     archives from newest to oldest — mirrors explore.py's Lichess stream.

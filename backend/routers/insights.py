@@ -3,7 +3,10 @@
 Insights are shared by (username, site) - not owned by individual users.
 """
 
+import os
+
 import psycopg
+import redis as redis_lib
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import (
@@ -16,6 +19,32 @@ from insights import get_insights_state, schedule_insights_refresh
 from schemas import InsightsProfileResponse, InsightsRequest, ProblemsByThemeResponse
 
 router = APIRouter(tags=["insights"])
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+_redis = redis_lib.from_url(REDIS_URL, decode_responses=True)
+
+
+def _get_import_progress(username: str) -> dict | None:
+    """Check Redis for an active import across both sites. Returns combined progress."""
+    canonical = username.strip().lower()
+    total_done = 0
+    total_total = 0
+    any_active = False
+
+    for site in ("lichess", "chesscom"):
+        status_raw = _redis.get(f"import:{canonical}:{site}:status")
+        if status_raw in ("streaming", "processing"):
+            any_active = True
+            done_raw = _redis.get(f"import:{canonical}:{site}:done")
+            total_raw = _redis.get(f"import:{canonical}:{site}:total")
+            total_done += int(done_raw) if done_raw else 0
+            total_total += int(total_raw) if total_raw else 0
+
+    if not any_active:
+        return None
+
+    status = "streaming" if total_total == 0 else "processing"
+    return {"status": status, "done": total_done, "total": total_total}
 
 
 def _build_profile_response(state: dict, conn: psycopg.Connection) -> InsightsProfileResponse:
@@ -56,6 +85,16 @@ def _build_profile_response(state: dict, conn: psycopg.Connection) -> InsightsPr
             "done": scan_job.get("games_done", 0),
             "total": scan_job.get("total_games", 0),
         }
+
+    import_progress = _get_import_progress(username)
+    if import_progress and import_progress["status"] in ("streaming", "processing"):
+        existing_scan = response_payload.get("scan_progress")
+        if not existing_scan or existing_scan["status"] not in ("running", "queued"):
+            response_payload["scan_progress"] = {
+                "status": "running",
+                "done": import_progress["done"],
+                "total": import_progress["total"],
+            }
 
     problem_data = get_quick_scan_problem_spotter(conn, username, site)
     if problem_data and problem_data.get("total_problems", 0) > 0:

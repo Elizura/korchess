@@ -25,7 +25,7 @@ def fetch_lichess_pgn_stream(username: str, games_per_chunk: int = 5) -> Iterato
         "rated": "true",
         "opening": "true",
         "clocks": "true",
-        "max": 500,
+        "max": 250,
     }
 
     with httpx.Client(timeout=60.0) as client:
@@ -107,7 +107,7 @@ def fetch_lichess_pgn(username: str) -> str:
         "rated": "true",
         "opening": "true",
         "clocks": "true",
-        "max": 500,
+        "max": 250,
     }
 
     def make_request() -> httpx.Response:

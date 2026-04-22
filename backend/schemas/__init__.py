@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class ImportRequest(BaseModel):
     """Request body for importing games."""
     username: str = Field(..., min_length=1, max_length=50)
-    max_games: int = Field(default=500, ge=1, le=10000)
+    max_games: int = Field(default=250, ge=1, le=10000)
 
 
 class ImportResponse(BaseModel):
@@ -382,6 +382,15 @@ class AnalyticsIdentifyRequest(BaseModel):
     """Authenticated identity stitch request."""
     anonymous_id: str = Field(..., min_length=1, max_length=128)
     session_id: str | None = Field(default=None, max_length=128)
+
+
+class ImportProgressResponse(BaseModel):
+    """Progress of an in-flight game import."""
+    username: str
+    site: str
+    status: str  # "streaming" | "processing" | "complete"
+    total: int = 0
+    done: int = 0
 
 
 class ChessProfileCreate(BaseModel):
