@@ -8,7 +8,7 @@ from typing import Any
 
 import chess
 
-from insights_utils import cp_for_mover, clamp
+from utils.insights_utils import cp_for_mover, clamp
 
 _PIECE_CP = {
     chess.PAWN: 100,

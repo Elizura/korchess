@@ -8,7 +8,7 @@ import unittest
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
-from game_insights_narration import (  # noqa: E402
+from services.game_insights_narration import (  # noqa: E402
     NARRATION_SCHEMA_VERSION,
     _build_fallback_narration,
     _compact_events,

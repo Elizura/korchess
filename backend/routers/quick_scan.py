@@ -6,7 +6,7 @@ Quick scans are shared by (username, site) - not owned by individual users.
 from fastapi import APIRouter, Depends, HTTPException
 
 from dependencies import get_db
-from quick_scan import schedule_quick_scan
+from services.quick_scan import schedule_quick_scan
 from schemas import InsightsRequest
 
 router = APIRouter(tags=["quick-scan"])

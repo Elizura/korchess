@@ -6,7 +6,7 @@ Game data is shared by (username, site) - not owned by individual users.
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from db import (
+from repository.db import (
     get_games_by_opening,
     get_import_status,
     get_openings_stats,

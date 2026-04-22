@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from analytics import hash_username, track_server_event
-from db import (
+from services.analytics import hash_username, track_server_event
+from repository.db import (
     count_user_ai_gemini_success_utc_day,
     create_analysis_job,
     delete_analysis_job,
@@ -28,9 +28,9 @@ from db import (
     save_full_analysis,
     save_full_analysis_insights,
 )
-from full_analysis import run_full_analysis
-from game_insights_narration import ensure_narration, is_current_clean_narration_payload
-from single_game_insights import compute_single_game_insights
+from services.full_analysis import run_full_analysis
+from services.game_insights_narration import ensure_narration, is_current_clean_narration_payload
+from services.single_game_insights import compute_single_game_insights
 
 from schemas import (
     AIInsightsResponse,

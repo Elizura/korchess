@@ -66,7 +66,7 @@ def get_registered_user(
 ) -> dict[str, Any]:
     """Verify token and require that the user is registered."""
     user = get_current_user(credentials)
-    from db import get_user_by_id
+    from repository.db import get_user_by_id
 
     existing = get_user_by_id(conn, user["id"])
 

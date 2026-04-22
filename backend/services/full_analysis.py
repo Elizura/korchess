@@ -13,8 +13,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
-from tactical_detection import detect_tactical_annotation
-from insights_utils import cp_for_mover
+from services.tactical_detection import detect_tactical_annotation
+from utils.insights_utils import cp_for_mover
 
 # Engine configuration
 STOCKFISH_PATH = "/usr/games/stockfish"

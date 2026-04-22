@@ -52,7 +52,7 @@ except ModuleNotFoundError:
     sys.modules["google.auth.transport"] = transport_mod
     sys.modules["google.auth.transport.requests"] = requests_mod
 
-from analytics import AnalyticsValidationError
+from services.analytics import AnalyticsValidationError
 from auth import get_registered_user
 from dependencies import get_db
 from routers import analytics as analytics_router

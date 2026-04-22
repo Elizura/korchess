@@ -12,7 +12,7 @@ from typing import Any
 import chess
 import chess.pgn
 
-from db import (
+from repository.db import (
     create_scan_job,
     get_active_scan_job,
     get_connection,
@@ -24,15 +24,15 @@ from db import (
     upsert_game_quick_scan,
     upsert_player_insights,
 )
-from full_analysis import (
+from services.full_analysis import (
     _analyse_with_recovery,
     _compute_cp_loss,
     classify_move,
     score_to_cp,
 )
-from insights_aggregate import aggregate_scan_features
-from insights_utils import phase_for_ply, utc_now_iso
-from quick_scan_constants import (
+from services.insights_aggregate import aggregate_scan_features
+from utils.insights_utils import phase_for_ply, utc_now_iso
+from utils.quick_scan_constants import (
     MAX_CONCURRENT_SCANS,
     QUICK_SCAN_CONCURRENCY,
     QUICK_SCAN_CP_THRESHOLD,
@@ -40,7 +40,7 @@ from quick_scan_constants import (
     QUICK_SCAN_MAX_GAMES,
     QUICK_SCAN_TIME_MS,
 )
-from tactical_detection import detect_tactical_annotation
+from services.tactical_detection import detect_tactical_annotation
 
 logger = logging.getLogger(__name__)
 

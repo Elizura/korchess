@@ -6,14 +6,14 @@ Insights are shared by (username, site) - not owned by individual users.
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from db import (
+from repository.db import (
     get_latest_scan_job,
     get_problems_by_theme,
     get_quick_scan_problem_spotter,
 )
 from dependencies import get_db, validate_site
-from insights import get_insights_state, schedule_insights_refresh
-from redis_client import redis_client as _redis
+from services.insights import get_insights_state, schedule_insights_refresh
+from repository.redis_client import redis_client as _redis
 from schemas import InsightsProfileResponse, InsightsRequest, ProblemsByThemeResponse
 
 router = APIRouter(tags=["insights"])

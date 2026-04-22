@@ -8,7 +8,7 @@ import unittest
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
-from single_game_insights import (
+from services.single_game_insights import (
     _detect_turning_points,
     _grade_to_rating_5,
     _score_to_rating_5,

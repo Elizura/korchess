@@ -4,9 +4,9 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from analytics import track_server_event
+from services.analytics import track_server_event
 from auth import get_current_user
-from db import (
+from repository.db import (
     LESSON_CONSENT_CHANNEL_EMAIL,
     LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY,
     create_user_if_missing,

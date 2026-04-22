@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from db import init_db
+from repository.db import init_db
 from routers import (
     health,
     import_ as import_router,

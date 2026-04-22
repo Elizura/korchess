@@ -19,7 +19,7 @@ from typing import Any
 import psycopg
 
 # Re-export core connection utilities for backwards compatibility
-from db_connection import (
+from repository.db_connection import (
     get_connection,
     LESSON_CONSENT_CHANNEL_EMAIL,
     LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY,

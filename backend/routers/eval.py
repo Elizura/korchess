@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 
-from full_analysis import evaluate_position
+from services.full_analysis import evaluate_position
 from schemas import EvalRequest, EvalResponse
 from auth import get_optional_user
 

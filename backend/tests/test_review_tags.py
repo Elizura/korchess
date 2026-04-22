@@ -8,7 +8,7 @@ import unittest
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
-from full_analysis import _derive_review_tag
+from services.full_analysis import _derive_review_tag
 
 
 class ReviewTagDerivationTest(unittest.TestCase):

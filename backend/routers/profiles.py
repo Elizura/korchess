@@ -11,18 +11,18 @@ from typing import Literal
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from analytics import hash_username, track_server_event
-from chesscom import fetch_chesscom_profile, ChesscomAPIError
-from db import (
+from services.analytics import hash_username, track_server_event
+from services.chesscom import fetch_chesscom_profile, ChesscomAPIError
+from repository.db import (
     delete_all_user_site_data,
     delete_chess_profile,
     get_chess_profile,
     get_chess_profiles,
     upsert_chess_profile,
 )
-from game_streamer import ChesscomStreamError, LichessStreamError
-from import_service import import_chesscom_games, import_lichess_games
-from lichess import fetch_lichess_profile, LichessAPIError
+from services.game_streamer import ChesscomStreamError, LichessStreamError
+from services.import_service import import_chesscom_games, import_lichess_games
+from services.lichess import fetch_lichess_profile, LichessAPIError
 
 from schemas import (
     ChessProfile,

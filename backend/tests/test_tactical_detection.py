@@ -8,7 +8,7 @@ import unittest
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
-from tactical_detection import TacticalConfig, detect_tactical_annotation
+from services.tactical_detection import TacticalConfig, detect_tactical_annotation
 
 
 CFG = TacticalConfig(

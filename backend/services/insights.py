@@ -13,7 +13,7 @@ import chess
 import chess.pgn
 import httpx
 
-from db import (
+from repository.db import (
     clear_insights_data,
     clear_quick_scan_data,
     create_insight_job,
@@ -29,8 +29,8 @@ from db import (
     upsert_insight_game_feature,
     upsert_player_insights,
 )
-from full_analysis import run_full_analysis
-from insights_constants import (
+from services.full_analysis import run_full_analysis
+from utils.insights_constants import (
     DEEP_ANALYSIS_DEPTH,
     DEEP_ANALYSIS_MULTIPV,
     DEEP_ANALYSIS_TIME_MS,
@@ -47,7 +47,7 @@ from insights_constants import (
     NARRATIVE_TIMEOUT_S,
     NARRATIVE_VERSION,
 )
-from insights_utils import (
+from utils.insights_utils import (
     add_fact,
     clamp01,
     extract_clock_seconds,
@@ -56,7 +56,7 @@ from insights_utils import (
     safe_parse_datetime,
     utc_now_iso,
 )
-from insights_aggregate import (
+from services.insights_aggregate import (
     aggregate_light_features,
     aggregate_deep_features,
     compute_style_scores,

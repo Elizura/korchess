@@ -10,7 +10,7 @@ import psycopg
 import chess.pgn
 import httpx
 
-from opening_match import game_to_uci_plies, best_opening_match
+from services.opening_match import game_to_uci_plies, best_opening_match
 LICHESS_API_BASE = "https://lichess.org/api"
 
 

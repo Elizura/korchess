@@ -12,11 +12,11 @@ from typing import Literal
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from analytics import hash_username, track_server_event
-from db import get_import_history, get_import_status
-from game_streamer import ChesscomStreamError, LichessStreamError
-from import_service import import_chesscom_games, import_lichess_games, import_key
-from redis_client import redis_client as _redis
+from services.analytics import hash_username, track_server_event
+from repository.db import get_import_history, get_import_status
+from services.game_streamer import ChesscomStreamError, LichessStreamError
+from services.import_service import import_chesscom_games, import_lichess_games, import_key
+from repository.redis_client import redis_client as _redis
 from schemas import (
     ImportRequest,
     ImportResponse,

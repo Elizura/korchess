@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from insights_constants import (
+from utils.insights_constants import (
     FEATURE_VERSION,
     MIN_BASELINE_GAMES,
 )
-from insights_utils import (
+from utils.insights_utils import (
     add_fact,
     clamp01,
     mean,

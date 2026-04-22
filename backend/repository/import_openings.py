@@ -102,7 +102,7 @@ def main() -> None:
     total_openings = 0
     total_plies = 0
 
-    base_dir = Path(__file__).resolve().parent / "openings"
+    base_dir = Path(__file__).resolve().parent.parent / "openings"
     ct = 0
     for filename in ["a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv"]:
       ct += 1

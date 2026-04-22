@@ -5,7 +5,7 @@ from __future__ import annotations
 import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 
-from analytics import (
+from services.analytics import (
     AnalyticsValidationError,
     ingest_client_events,
     link_identity,

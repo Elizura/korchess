@@ -5,8 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from celery_app import app
-from db import (
+from repository.celery_app import app
+from repository.db import (
     bulk_upsert_games,
     get_connection,
     get_featured_game_ids,
@@ -22,18 +22,18 @@ from db import (
     upsert_insight_game_feature,
     upsert_player_insights,
 )
-from insights import (
+from services.insights import (
     _build_aggregate_features,
     _build_fallback_narrative,
     build_narrative,
     extract_light_game_features,
 )
-from insights_aggregate import aggregate_scan_features
-from insights_constants import FEATURE_VERSION, MAX_GAMES_WINDOW, NARRATIVE_VERSION
-from insights_utils import utc_now_iso
-from quick_scan import run_quick_scan_single
-from quick_scan_constants import QUICK_SCAN_MAX_GAMES
-from redis_client import redis_client as _redis
+from services.insights_aggregate import aggregate_scan_features
+from utils.insights_constants import FEATURE_VERSION, MAX_GAMES_WINDOW, NARRATIVE_VERSION
+from utils.insights_utils import utc_now_iso
+from services.quick_scan import run_quick_scan_single
+from utils.quick_scan_constants import QUICK_SCAN_MAX_GAMES
+from repository.redis_client import redis_client as _redis
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ Games are shared by (username, site) - not owned by individual users.
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
-from db import get_game_by_id
+from repository.db import get_game_by_id
 from schemas import GameResponse
 from dependencies import get_db, validate_site
 

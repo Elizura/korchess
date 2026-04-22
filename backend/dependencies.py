@@ -5,7 +5,7 @@ from collections.abc import Generator
 import psycopg
 from fastapi import HTTPException
 
-from db import get_connection
+from repository.db import get_connection
 
 VALID_SITES = {"lichess", "chesscom", "all"}
 

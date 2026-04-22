@@ -1,7 +1,7 @@
 
 import time
-from backend.db import get_connection
-from opening_match import best_opening_match
+from repository.db import get_connection
+from services.opening_match import best_opening_match
 
 
 

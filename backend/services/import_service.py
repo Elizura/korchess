@@ -13,17 +13,17 @@ from datetime import datetime
 import chess.pgn
 import psycopg
 
-from chesscom import parse_chesscom_game
-from db import get_import_status
-from game_streamer import (
+from services.chesscom import parse_chesscom_game
+from repository.db import get_import_status
+from services.game_streamer import (
     stream_chesscom_games,
     stream_lichess_pgns,
 )
-from lichess import parse_pgn_games
-from opening_match import best_opening_match, game_to_uci_plies
-from redis_client import redis_client as _redis
+from services.lichess import parse_pgn_games
+from services.opening_match import best_opening_match, game_to_uci_plies
+from repository.redis_client import redis_client as _redis
 from schemas import ImportResponse
-from tasks import process_game
+from repository.tasks import process_game
 
 logger = logging.getLogger(__name__)
 

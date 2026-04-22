@@ -10,7 +10,7 @@ import chess.pgn
 import httpx
 import psycopg
 
-from opening_match import game_to_uci_plies, best_opening_match
+from services.opening_match import game_to_uci_plies, best_opening_match
 
 CHESSCOM_API_BASE = "https://api.chess.com/pub"
 USER_AGENT = "Korchess/1.0 (Chess opening analyzer)"
