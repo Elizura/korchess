@@ -39,7 +39,7 @@ import { importGames, type ImportResponse } from "@/lib/import";
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
 
-const SHOW_COACHING_SUMMARY = true;
+const SHOW_COACHING_SUMMARY = false;
 
 const DASHBOARD_LAST_USER_KEY = "korchess_dashboard_last_user";
 
@@ -419,6 +419,12 @@ export default function DashboardPage() {
   const [syncingProfile, setSyncingProfile] = useState<string | null>(null);
   const [importingProfile, setImportingProfile] = useState<string | null>(null);
   const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<{
+    site: string;
+    status: string;
+    done: number;
+    total: number;
+  } | null>(null);
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<ChessProfile | null>(null);
 
   const importHistory = useMemo(() => {
@@ -510,82 +516,85 @@ export default function DashboardPage() {
     loadChessProfiles();
   }, [isAuthenticated, session?.idToken]);
 
-  // Shared: poll insights + reports after any import until processing is done.
+  // Poll Redis for import progress, then fetch reports when complete
   const pollAfterImport = useCallback(
-    async (targetUsername: string) => {
-      setInsightsLoading(true);
+    async (targetUsername: string, site: "lichess" | "chesscom") => {
       let attempts = 0;
-      const maxAttempts = 120;
-      await new Promise(r => setTimeout(r, 3000));
+      const maxAttempts = 300; // Up to 5 minutes at 1s intervals
+      
       while (attempts < maxAttempts) {
         attempts++;
         try {
-          const [data, whiteData, blackData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
-            fetchInsights(targetUsername),
-            fetchReport(targetUsername, "white", timeClassFilter),
-            fetchReport(targetUsername, "black", timeClassFilter),
-            fetchImportStatus(targetUsername),
-            fetchImportStatus(targetUsername, "lichess"),
-            fetchImportStatus(targetUsername, "chesscom"),
-          ]);
-          setInsights(data);
-          setCached<InsightsProfile | null>(getDashboardInsightsCacheKey(targetUsername), data);
-          setReport(whiteData);
-          setReportBlack(blackData);
-          if (statusData) setImportStatus(statusData);
-          setLichessImportStatus(lichessStatus);
-          setChesscomImportStatus(chesscomStatus);
-          if (!shouldKeepPolling(data)) {
-            if (attempts < 5 && !data?.problem_spotter) {
-              await new Promise(r => setTimeout(r, 5000));
-              continue;
+          const progress = await fetchImportProgress(targetUsername, site);
+          
+          if (progress) {
+            setImportProgress(progress);
+            
+            // When complete, fetch final data and stop polling
+            if (progress.status === "complete") {
+              setImportProgress(null);
+              
+              // Fetch final reports and import status
+              const [whiteData, blackData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
+                fetchReport(targetUsername, "white", timeClassFilter),
+                fetchReport(targetUsername, "black", timeClassFilter),
+                fetchImportStatus(targetUsername),
+                fetchImportStatus(targetUsername, "lichess"),
+                fetchImportStatus(targetUsername, "chesscom"),
+              ]);
+              setReport(whiteData);
+              setReportBlack(blackData);
+              if (statusData) setImportStatus(statusData);
+              setLichessImportStatus(lichessStatus);
+              setChesscomImportStatus(chesscomStatus);
+              break;
             }
+          } else {
+            // No progress data means import might not have started or already finished
+            setImportProgress(null);
             break;
           }
         } catch {
+          setImportProgress(null);
           break;
         }
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 1000)); // Poll every 1 second
       }
-      setInsightsLoading(false);
+      
+      // Clear progress if we hit max attempts
+      setImportProgress(null);
     },
     [timeClassFilter]
   );
 
-  // Shared: refresh reports, import status, insights after any import.
+  // Shared: refresh reports and import status after any import (insights disabled)
   const refreshDashboardAfterImport = useCallback(
-    async (targetUsername: string, importResult: ImportResponse) => {
+    async (targetUsername: string, site: "lichess" | "chesscom", importResult: ImportResponse) => {
       clearCacheByPrefix(`dashboard:${targetUsername.toLowerCase()}:`);
       clearCacheByPrefix(`dashboard:variations:${targetUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:insights:${targetUsername.toLowerCase()}:`);
       clearCacheByPrefix(`opening:${targetUsername.toLowerCase()}:`);
-
-      const [whiteReportData, blackReportData] = await Promise.all([
-        fetchReport(targetUsername, "white", timeClassFilter),
-        fetchReport(targetUsername, "black", timeClassFilter),
-      ]);
-      setReport(whiteReportData);
-      setReportBlack(blackReportData);
-
-      const [statusData, lichessStatus, chesscomStatus] = await Promise.all([
-        fetchImportStatus(targetUsername),
-        fetchImportStatus(targetUsername, "lichess"),
-        fetchImportStatus(targetUsername, "chesscom"),
-      ]);
-      if (statusData) setImportStatus(statusData);
-      setLichessImportStatus(lichessStatus);
-      setChesscomImportStatus(chesscomStatus);
 
       if (isAuthenticated) {
         void fetchImportHistory();
       }
 
-      const insightsData = await fetchInsights(targetUsername);
-      setInsights(insightsData);
-      clearCacheKey(getDashboardInsightsCacheKey(targetUsername));
-
       if (importResult.imported > 0) {
-        void pollAfterImport(targetUsername);
+        // Start polling Redis progress - will fetch reports when complete
+        void pollAfterImport(targetUsername, site);
+      } else {
+        // No games imported, just fetch current state
+        const [whiteReportData, blackReportData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
+          fetchReport(targetUsername, "white", timeClassFilter),
+          fetchReport(targetUsername, "black", timeClassFilter),
+          fetchImportStatus(targetUsername),
+          fetchImportStatus(targetUsername, "lichess"),
+          fetchImportStatus(targetUsername, "chesscom"),
+        ]);
+        setReport(whiteReportData);
+        setReportBlack(blackReportData);
+        if (statusData) setImportStatus(statusData);
+        setLichessImportStatus(lichessStatus);
+        setChesscomImportStatus(chesscomStatus);
       }
     },
     [isAuthenticated, timeClassFilter, pollAfterImport]
@@ -674,7 +683,7 @@ export default function DashboardPage() {
         setInputUsername("");
         setReportRefreshNotice(null);
 
-        await refreshDashboardAfterImport(trimmedUsername, importData);
+        await refreshDashboardAfterImport(trimmedUsername, selectedPlatform, importData);
       }
     } catch (err) {
       trackEvent("import.failed", {
@@ -732,7 +741,7 @@ export default function DashboardPage() {
           currentUsername.toLowerCase() === profile.chess_username.toLowerCase()
         ) {
           setImportResult(result.sync_result);
-          await refreshDashboardAfterImport(profile.chess_username, result.sync_result);
+          await refreshDashboardAfterImport(profile.chess_username, profile.site as "lichess" | "chesscom", result.sync_result);
         }
 
         trackEvent("profile.synced", {
@@ -768,7 +777,7 @@ export default function DashboardPage() {
         );
 
         setImportResult(result);
-        await refreshDashboardAfterImport(profile.chess_username, result);
+        await refreshDashboardAfterImport(profile.chess_username, profile.site as "lichess" | "chesscom", result);
 
         trackEvent("profile.imported", {
           properties: {
@@ -876,70 +885,71 @@ export default function DashboardPage() {
     setAccountImportHistory([]);
   }, [isAuthenticated, authUserId]);
 
-  useEffect(() => {
-    if (!currentUsername) {
-      setInsights(null);
-      return;
-    }
-    if (status === "loading") return;
+  // Insights loading disabled (SHOW_COACHING_SUMMARY = false)
+  // useEffect(() => {
+  //   if (!currentUsername) {
+  //     setInsights(null);
+  //     return;
+  //   }
+  //   if (status === "loading") return;
 
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+  //   let cancelled = false;
+  //   let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const cacheKey = getDashboardInsightsCacheKey(currentUsername);
+  //   const cacheKey = getDashboardInsightsCacheKey(currentUsername);
 
-    const loadInsights = async (force = false) => {
-      const cached = force ? null : getCached<InsightsProfile | null>(cacheKey);
-      const hasCached = Boolean(cached);
-      const cachedData = cached?.data || null;
-      const cachedLifecycleStatus = cachedData?.lifecycle_status;
-      const shouldPollCached =
-        cachedData !== null && shouldKeepPolling(cachedData);
-      const shouldFetch =
-        force ||
-        !cached ||
-        !isFresh(cached, PAGE_DATA_CACHE_TTL_MS) ||
-        shouldPollCached;
+  //   const loadInsights = async (force = false) => {
+  //     const cached = force ? null : getCached<InsightsProfile | null>(cacheKey);
+  //     const hasCached = Boolean(cached);
+  //     const cachedData = cached?.data || null;
+  //     const cachedLifecycleStatus = cachedData?.lifecycle_status;
+  //     const shouldPollCached =
+  //       cachedData !== null && shouldKeepPolling(cachedData);
+  //     const shouldFetch =
+  //       force ||
+  //       !cached ||
+  //       !isFresh(cached, PAGE_DATA_CACHE_TTL_MS) ||
+  //       shouldPollCached;
 
-      if (!cancelled && cached) {
-        setInsights(cachedData);
-        setInsightsLoading(false);
-      }
+  //     if (!cancelled && cached) {
+  //       setInsights(cachedData);
+  //       setInsightsLoading(false);
+  //     }
 
-      if (!shouldFetch) {
-        return;
-      }
+  //     if (!shouldFetch) {
+  //       return;
+  //     }
 
-      if (!cancelled && !hasCached) {
-        setInsightsLoading(true);
-      }
+  //     if (!cancelled && !hasCached) {
+  //       setInsightsLoading(true);
+  //     }
 
-      try {
-        const data = await fetchInsights(currentUsername);
-        if (cancelled) return;
-        setInsights(data);
-        setCached<InsightsProfile | null>(cacheKey, data);
-        if (shouldKeepPolling(data)) {
-          timer = setTimeout(() => {
-            void loadInsights();
-          }, 8000);
-        }
-      } finally {
-        if (!cancelled) {
-          setInsightsLoading(false);
-        }
-      }
-    };
+  //     try {
+  //       const data = await fetchInsights(currentUsername);
+  //       if (cancelled) return;
+  //       setInsights(data);
+  //       setCached<InsightsProfile | null>(cacheKey, data);
+  //       if (shouldKeepPolling(data)) {
+  //         timer = setTimeout(() => {
+  //           void loadInsights();
+  //         }, 8000);
+  //       }
+  //     } finally {
+  //       if (!cancelled) {
+  //         setInsightsLoading(false);
+  //       }
+  //     }
+  //   };
 
-    void loadInsights();
+  //   void loadInsights();
 
-    return () => {
-      cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, [status, session?.idToken, currentUsername, authHeaders, authUserId]);
+  //   return () => {
+  //     cancelled = true;
+  //     if (timer) {
+  //       clearTimeout(timer);
+  //     }
+  //   };
+  // }, [status, session?.idToken, currentUsername, authHeaders, authUserId]);
 
   // Fetch combined report across all sites
   const fetchReport = async (
@@ -982,6 +992,24 @@ export default function DashboardPage() {
     return response.json();
   };
 
+  const fetchImportProgress = async (user: string, site: "lichess" | "chesscom") => {
+    const response = await fetch(
+      `${API_BASE_URL}/api/v1/import/progress/${site}/${encodeURIComponent(user)}`,
+      { headers: withTrackingHeaders(authHeaders) }
+    );
+    
+    if (!response.ok) {
+      return null;
+    }
+    
+    return response.json() as Promise<{
+      username: string;
+      site: string;
+      status: string;
+      total: number;
+      done: number;
+    }>;
+  };
 
   const fetchImportHistory = async () => {
     if (!session?.idToken) {
@@ -1762,8 +1790,40 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Import progress — guest / no saved profile */}
+        {importProgress &&
+          currentUsername &&
+          !(isAuthenticated && chessProfiles.some((p) => p.chess_username.toLowerCase() === currentUsername.toLowerCase())) && (
+            <div className="mt-5 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-accent)]/40 bg-[color:var(--zen-accent)]/5">
+              <div className="flex items-center gap-3">
+                <div className="animate-spin h-4 w-4 border-2 border-[color:var(--zen-accent)] border-t-transparent rounded-full" />
+                <p className="text-sm text-[color:var(--zen-text)]">
+                  {importProgress.status === "streaming" ? (
+                    "Streaming games from server..."
+                  ) : (
+                    <>
+                      Processing{" "}
+                      <span className="font-medium">{importProgress.done}</span>
+                      {" / "}
+                      <span className="font-medium">{importProgress.total}</span>
+                      {" games..."}
+                    </>
+                  )}
+                </p>
+              </div>
+              {importProgress.status === "processing" && importProgress.total > 0 && (
+                <div className="mt-2 h-1.5 bg-[color:var(--zen-border)] rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-[color:var(--zen-accent)] transition-all duration-300"
+                    style={{ width: `${Math.round((importProgress.done / importProgress.total) * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
         {/* Data freshness — guest / no saved profile (when large profile card is not shown) */}
-        {(importStatus?.imported_at || (importStatus?.total_games ?? 0) > 0) &&
+        {!importProgress && (importStatus?.imported_at || (importStatus?.total_games ?? 0) > 0) &&
           currentUsername &&
           !loading &&
           !(isAuthenticated && chessProfiles.some((p) => p.chess_username.toLowerCase() === currentUsername.toLowerCase())) && (
@@ -1959,7 +2019,38 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {(importStatus?.imported_at || (importStatus?.total_games ?? 0) > 0) &&
+              {/* Import progress indicator */}
+              {importProgress && (
+                <div className="mt-6 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-accent)]/40 bg-[color:var(--zen-accent)]/5">
+                  <div className="flex items-center gap-3">
+                    <div className="animate-spin h-4 w-4 border-2 border-[color:var(--zen-accent)] border-t-transparent rounded-full" />
+                    <p className="text-sm text-[color:var(--zen-text)]">
+                      {importProgress.status === "streaming" ? (
+                        "Streaming games from server..."
+                      ) : (
+                        <>
+                          Processing{" "}
+                          <span className="font-medium">{importProgress.done}</span>
+                          {" / "}
+                          <span className="font-medium">{importProgress.total}</span>
+                          {" games..."}
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  {importProgress.status === "processing" && importProgress.total > 0 && (
+                    <div className="mt-2 h-1.5 bg-[color:var(--zen-border)] rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-[color:var(--zen-accent)] transition-all duration-300"
+                        style={{ width: `${Math.round((importProgress.done / importProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Report info or empty state (only when not showing progress) */}
+              {!importProgress && (importStatus?.imported_at || (importStatus?.total_games ?? 0) > 0) &&
                 !loading &&
                 importStatus!.username.toLowerCase() === selectedProfile.chess_username.toLowerCase() ? (
                   <div className="mt-6 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-border)]/80">
@@ -1996,7 +2087,7 @@ export default function DashboardPage() {
                       )}
                     </div>
                   </div>
-                ) : !loading && !importingProfile && (
+                ) : !importProgress && !loading && !importingProfile && (
                   <div className="mt-6 zen-surface-flat px-4 py-3 rounded-lg border border-[color:var(--zen-border)]/80">
                     <p className="text-sm text-[color:var(--zen-muted)]">
                       No games imported yet. Click <strong className="text-[color:var(--zen-text)]">Import</strong> to fetch games from this account.

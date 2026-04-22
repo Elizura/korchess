@@ -16,8 +16,6 @@ import psycopg
 from chesscom import parse_chesscom_game
 from db import get_import_status
 from game_streamer import (
-    ChesscomStreamError,
-    LichessStreamError,
     stream_chesscom_games,
     stream_lichess_pgns,
 )

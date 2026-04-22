@@ -109,15 +109,16 @@ def process_game(self, game_data: dict, username: str, site: str) -> dict:
     done_key = _import_key(canonical, site, "done")
     total_key = _import_key(canonical, site, "total")
     meta_key = _import_key(canonical, site, "meta")
+    status_key = _import_key(canonical, site, "status")
 
     done = _redis.incr(done_key)
     total_raw = _redis.get(total_key)
     total = int(total_raw) if total_raw is not None else None
 
-    if total is not None and done >= total:
-        meta_raw = _redis.get(meta_key)
-        import_meta = json.loads(meta_raw) if meta_raw else {}
-        finalize_import.delay(canonical, site, import_meta)
+    if total is not None and done == total:
+        # Mark as complete and clean up Redis keys (skip finalize_import for now)
+        _redis.set(status_key, "complete", ex=3600)
+        _redis.delete(done_key, total_key, meta_key)
 
     return {
         "site_game_id": site_game_id,
