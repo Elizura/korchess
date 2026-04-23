@@ -22,7 +22,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: ["celery", "-A", "celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    command: ["celery", "-A", "repository.celery_app:app", "worker", "--loglevel=info", "--concurrency=4"]
     env_file:
       - .env
     environment:

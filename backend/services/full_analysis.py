@@ -7,6 +7,7 @@ import chess.pgn
 import os
 import io
 import math
+import queue
 import re
 import threading
 import time
@@ -32,6 +33,9 @@ FULL_ANALYSIS_ENGINE_THREADS = max(
     int(os.environ.get("FULL_ANALYSIS_ENGINE_THREADS", "2" if _CPU_COUNT >= 4 else "1")),
 )
 FULL_ANALYSIS_ENGINE_HASH_MB = max(16, int(os.environ.get("FULL_ANALYSIS_ENGINE_HASH_MB", "128")))
+
+# Engine pool size (number of reusable Stockfish processes)
+ENGINE_POOL_SIZE = max(1, int(os.environ.get("ENGINE_POOL_SIZE", "2")))
 
 # PGN comment parsing patterns
 _CLOCK_RE = re.compile(r"\[%clk\s+([0-9:.]+)\]")
@@ -309,21 +313,134 @@ def _shutdown_engines() -> None:
             pass
 
 
+class EnginePool:
+    """Thread-safe pool of reusable Stockfish engines.
+    
+    Engines are created once at startup and reused across all analysis requests.
+    This avoids the overhead of spawning/killing engine processes per game or chunk.
+    """
+    
+    def __init__(self, size: int):
+        self.size = size
+        self._pool: queue.Queue[chess.engine.SimpleEngine] = queue.Queue()
+        self._engines: list[chess.engine.SimpleEngine] = []
+        self._started = False
+        self._lock = threading.Lock()
+    
+    def start(self) -> None:
+        """Create all engines upfront. Safe to call multiple times."""
+        with self._lock:
+            if self._started:
+                return
+            for _ in range(self.size):
+                engine = _create_engine()
+                self._engines.append(engine)
+                self._pool.put(engine)
+            self._started = True
+    
+    def acquire(self, timeout: float | None = None) -> chess.engine.SimpleEngine:
+        """Get an engine from the pool (blocks if none available)."""
+        if not self._started:
+            self.start()
+        try:
+            return self._pool.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError("Engine pool exhausted and timeout reached")
+    
+    def release(self, engine: chess.engine.SimpleEngine) -> None:
+        """Return an engine to the pool."""
+        self._pool.put(engine)
+    
+    def shutdown(self) -> None:
+        """Close all engines and reset the pool."""
+        with self._lock:
+            for engine in self._engines:
+                try:
+                    engine.quit()
+                except Exception:
+                    pass
+                _unregister_engine(engine)
+            self._engines.clear()
+            while not self._pool.empty():
+                try:
+                    self._pool.get_nowait()
+                except queue.Empty:
+                    break
+            self._started = False
+    
+    @property
+    def is_started(self) -> bool:
+        return self._started
+
+
+# Global engine pool instance - lazily initialized on first use
+_ENGINE_POOL: EnginePool | None = None
+_ENGINE_POOL_LOCK = threading.Lock()
+
+
+def get_engine_pool() -> EnginePool:
+    """Get or create the global engine pool."""
+    global _ENGINE_POOL
+    if _ENGINE_POOL is None:
+        with _ENGINE_POOL_LOCK:
+            if _ENGINE_POOL is None:
+                _ENGINE_POOL = EnginePool(ENGINE_POOL_SIZE)
+    return _ENGINE_POOL
+
+
+def init_engine_pool(size: int | None = None) -> EnginePool:
+    """Initialize the global engine pool with specified size.
+    
+    Call this at application startup to pre-warm engines.
+    If size is None, uses ENGINE_POOL_SIZE from environment.
+    """
+    global _ENGINE_POOL
+    with _ENGINE_POOL_LOCK:
+        if _ENGINE_POOL is not None and _ENGINE_POOL.is_started:
+            _ENGINE_POOL.shutdown()
+        pool_size = size if size is not None else ENGINE_POOL_SIZE
+        _ENGINE_POOL = EnginePool(pool_size)
+        _ENGINE_POOL.start()
+    return _ENGINE_POOL
+
+
+def shutdown_engine_pool() -> None:
+    """Shutdown the global engine pool. Call at application shutdown."""
+    global _ENGINE_POOL
+    with _ENGINE_POOL_LOCK:
+        if _ENGINE_POOL is not None:
+            _ENGINE_POOL.shutdown()
+            _ENGINE_POOL = None
+
+
+@atexit.register
+def _shutdown_engine_pool_at_exit() -> None:
+    """Ensure engine pool is cleaned up on process exit."""
+    shutdown_engine_pool()
+
+
 def _analyse_with_recovery(
     board: chess.Board,
     depth: int,
     time_limit_ms: int,
     multipv: int = 1,
 ) -> Any:
+    """Analyze a position using an engine from the pool with error recovery."""
     limit = chess.engine.Limit(depth=depth, time=time_limit_ms / 1000)
     multipv = max(1, min(5, multipv))
-    engine = _get_thread_engine()
+    
+    pool = get_engine_pool()
+    engine = pool.acquire()
+    
     try:
         return engine.analyse(board, limit, multipv=multipv)
     except Exception:
-        _close_thread_engine()
-        engine = _get_thread_engine()
+        # Engine might have crashed - create a fresh one
+        _close_engine(engine)
+        engine = _create_engine()
         return engine.analyse(board, limit, multipv=multipv)
+    finally:
+        pool.release(engine)
 
 
 def _analyse_fen_with_recovery(
@@ -348,13 +465,43 @@ def _analyse_fen_chunk(
     time_limit_ms: int,
     multipv: int,
 ) -> dict[str, Any]:
+    """Analyze a chunk of FENs using an engine from the pool.
+    
+    Acquires an engine from the global pool, uses it for all FENs in the chunk,
+    then releases it back. No engine spawning/killing per chunk.
+    """
+    pool = get_engine_pool()
+    engine = pool.acquire()
     results: dict[str, Any] = {}
+    
+    limit = chess.engine.Limit(depth=depth, time=time_limit_ms / 1000)
+    multipv = max(1, min(5, multipv))
+    
     try:
         for fen in fens:
-            results[fen] = _analyse_fen_with_recovery(fen, depth, time_limit_ms, multipv)
+            try:
+                board = chess.Board(fen)
+            except Exception:
+                results[fen] = None
+                continue
+            try:
+                results[fen] = engine.analyse(board, limit, multipv=multipv)
+            except Exception:
+                # Engine might have crashed - try to recover
+                try:
+                    pool.release(engine)
+                except Exception:
+                    pass
+                # Get a fresh engine and retry
+                _close_engine(engine)
+                engine = _create_engine()
+                try:
+                    results[fen] = engine.analyse(board, limit, multipv=multipv)
+                except Exception:
+                    results[fen] = None
     finally:
-        # Worker threads are short-lived; close their engine process explicitly.
-        _close_thread_engine()
+        pool.release(engine)
+    
     return results
 
 
@@ -373,10 +520,8 @@ def _analyse_positions_for_game(
 
     worker_count = min(FULL_ANALYSIS_POSITION_WORKERS, unique_count)
     if worker_count <= 1:
-        info_by_fen = {
-            fen: _analyse_fen_with_recovery(fen, depth, time_limit_ms, multipv)
-            for fen in unique_fens
-        }
+        # Single worker: use _analyse_fen_chunk which handles pool acquire/release
+        info_by_fen = _analyse_fen_chunk(unique_fens, depth, time_limit_ms, multipv)
     else:
         chunk_size = math.ceil(unique_count / worker_count)
         chunks = [unique_fens[i : i + chunk_size] for i in range(0, unique_count, chunk_size)]

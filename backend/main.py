@@ -1,9 +1,12 @@
 """FastAPI application for Korchess."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from repository.db import init_db
+from services.full_analysis import init_engine_pool, shutdown_engine_pool
 from routers import (
     health,
     import_ as import_router,
@@ -45,6 +48,12 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     init_db()
+    init_engine_pool()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    shutdown_engine_pool()
 
 
 app.include_router(health.router)
