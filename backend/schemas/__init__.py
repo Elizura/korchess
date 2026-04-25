@@ -246,29 +246,6 @@ class SingleGameInsightsResponse(BaseModel):
     narration_meta: dict | None = None
 
 
-class EvalRequest(BaseModel):
-    """Request body for position evaluation."""
-    fen: str
-    depth: int = Field(default=18, ge=1, le=30)
-    multipv: int = Field(default=1, ge=1, le=5)
-
-
-class EvalLineResult(BaseModel):
-    """Single evaluation line."""
-    cp: int | None = None
-    mate: int | None = None
-    depth: int = 0
-    pv_uci: list[str] = []
-    pv_san: list[str] = []
-
-
-class EvalResponse(BaseModel):
-    """Response for position evaluation."""
-    eval: EvalLineResult | None = None
-    multipv: list[EvalLineResult] | None = None
-    fen: str
-
-
 class InsightsRequest(BaseModel):
     """Request body for scheduling user insights refresh."""
     username: str = Field(..., min_length=1, max_length=50)
