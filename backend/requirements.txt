@@ -9,3 +9,7 @@ requests>=2.32.3
 celery[redis]>=5.4.0
 redis>=5.0.0
 flower>=2.0.0
+lmdb>=1.4.1
+zstandard>=0.22.0
+orjson>=3.10.0
+msgpack>=1.0.8

@@ -64,3 +64,6 @@ ENV/
 # Misc
 *.bak
 .cache/
+
+
+backend/lmdb_cache
