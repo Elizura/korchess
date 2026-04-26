@@ -5,12 +5,15 @@ services:
       dockerfile: Dockerfile
     expose:
       - "8000"
+    volumes:
+      - lmdb-cache:/app/lmdb_cache:ro
     env_file:
       - .env
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
       - ENVIRONMENT=production
+      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
       interval: 30s
@@ -23,12 +26,15 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     command: ["celery", "-A", "repository.celery_app:app", "worker", "--loglevel=info", "--concurrency=4"]
+    volumes:
+      - lmdb-cache:/app/lmdb_cache:ro
     env_file:
       - .env
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
       - ENVIRONMENT=production
+      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
     depends_on:
       - backend
 
@@ -79,3 +85,11 @@ services:
   #   entrypoint: /bin/sh -c
   #   command: >
   #     "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h; done"
+
+volumes:
+  lmdb-cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/backend/lmdb_cache

@@ -33,12 +33,14 @@ services:
   backend:
     volumes:
       - ./backend:/app
+      - ./backend/lmdb_cache:/app/lmdb_cache:ro
     env_file:
       - .env
     ports:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       db:
@@ -53,10 +55,12 @@ services:
     command: ["celery", "-A", "repository.celery_app:app", "worker", "--loglevel=info", "--concurrency=4"]
     volumes:
       - ./backend:/app
+      - ./backend/lmdb_cache:/app/lmdb_cache:ro
     env_file:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
     depends_on:
       redis:
         condition: service_healthy

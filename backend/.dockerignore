@@ -14,3 +14,7 @@ venv/
 .coverage
 htmlcov/
 *.db
+
+# LMDB eval cache (mounted as volume, not baked into image)
+lmdb_cache/
+*.mdb

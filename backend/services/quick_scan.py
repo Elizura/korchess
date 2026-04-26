@@ -44,6 +44,7 @@ from utils.quick_scan_constants import (
     QUICK_SCAN_TIME_MS,
 )
 from services.tactical_detection import detect_tactical_annotation
+from lmdb_magic.reader import lookup_fens
 
 logger = logging.getLogger(__name__)
 
@@ -130,40 +131,57 @@ def run_quick_scan_single(
         return _empty_scan_result()
 
     # -------------------------------------------------------------------------
-    # PHASE 2: Batch analyze all unique FENs in parallel
+    # PHASE 2a: LMDB bulk lookup (free, no engine needed)
     # -------------------------------------------------------------------------
     unique_fens = list(fens_to_analyze)
     info_by_fen: dict[str, Any] = {}
 
     if unique_fens:
-        worker_count = min(QUICK_SCAN_POSITION_WORKERS, len(unique_fens))
-        if worker_count <= 1:
-            info_by_fen = _analyse_fen_chunk(
-                unique_fens, QUICK_SCAN_DEPTH, QUICK_SCAN_TIME_MS, 1
-            )
-        else:
-            chunk_size = math.ceil(len(unique_fens) / worker_count)
-            chunks = [
-                unique_fens[i : i + chunk_size]
-                for i in range(0, len(unique_fens), chunk_size)
-            ]
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                futures = [
-                    executor.submit(
-                        _analyse_fen_chunk,
-                        chunk,
-                        QUICK_SCAN_DEPTH,
-                        QUICK_SCAN_TIME_MS,
-                        1,
+        info_by_fen = lookup_fens(unique_fens)
+        remaining_fens = [f for f in unique_fens if f not in info_by_fen]
+        lmdb_hits = len(info_by_fen)
+
+        logger.info(
+            "LMDB cache: hits=%d, misses=%d, total=%d",
+            lmdb_hits,
+            len(remaining_fens),
+            len(unique_fens),
+        )
+
+        # ---------------------------------------------------------------------
+        # PHASE 2b: Stockfish only for cache misses
+        # ---------------------------------------------------------------------
+        if remaining_fens:
+            worker_count = min(QUICK_SCAN_POSITION_WORKERS, len(remaining_fens))
+            if worker_count <= 1:
+                info_by_fen.update(
+                    _analyse_fen_chunk(
+                        remaining_fens, QUICK_SCAN_DEPTH, QUICK_SCAN_TIME_MS, 1
                     )
-                    for chunk in chunks
-                    if chunk
+                )
+            else:
+                chunk_size = math.ceil(len(remaining_fens) / worker_count)
+                chunks = [
+                    remaining_fens[i : i + chunk_size]
+                    for i in range(0, len(remaining_fens), chunk_size)
                 ]
-                for future in futures:
-                    try:
-                        info_by_fen.update(future.result())
-                    except Exception:
-                        continue
+                with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    futures = [
+                        executor.submit(
+                            _analyse_fen_chunk,
+                            chunk,
+                            QUICK_SCAN_DEPTH,
+                            QUICK_SCAN_TIME_MS,
+                            1,
+                        )
+                        for chunk in chunks
+                        if chunk
+                    ]
+                    for future in futures:
+                        try:
+                            info_by_fen.update(future.result())
+                        except Exception:
+                            continue
 
     # -------------------------------------------------------------------------
     # PHASE 3: Process results using pre-computed analysis lookup
