@@ -65,6 +65,9 @@ def run_quick_scan_single(
 
     Returns a dict with 'problems', 'move_stats', and 'summary' keys.
     """
+    game_start_time = time.perf_counter()
+    game_id = game_row.get("site_game_id", "unknown")
+
     pgn = game_row.get("pgn") or ""
     if not pgn.strip():
         return _empty_scan_result()
@@ -139,6 +142,10 @@ def run_quick_scan_single(
     # -------------------------------------------------------------------------
     unique_fens = list(fens_to_analyze)
     info_by_fen: dict[str, Any] = {}
+    lmdb_elapsed = 0.0
+    stockfish_elapsed = 0.0
+    lmdb_hits = 0
+    stockfish_positions = 0
 
     if unique_fens:
         lmdb_start = time.perf_counter()
@@ -147,6 +154,7 @@ def run_quick_scan_single(
 
         remaining_fens = [f for f in unique_fens if f not in info_by_fen]
         lmdb_hits = len(info_by_fen)
+        stockfish_positions = len(remaining_fens)
 
         # Calculate cache hit/miss by game phase (ply ranges)
         hit_plies = [fen_to_ply.get(f, -1) for f in info_by_fen.keys()]
@@ -160,7 +168,8 @@ def run_quick_scan_single(
         endgame_misses = sum(1 for p in miss_plies if p >= 40)
 
         logger.info(
-            "LMDB cache: hits=%d, misses=%d, total=%d, lookup_time=%.3fs (%.3fms/fen)",
+            "[%s] LMDB lookup: hits=%d, misses=%d, total=%d, time=%.3fs (%.3fms/fen)",
+            game_id,
             lmdb_hits,
             len(remaining_fens),
             len(unique_fens),
@@ -168,8 +177,9 @@ def run_quick_scan_single(
             (lmdb_elapsed * 1000 / len(unique_fens)) if unique_fens else 0,
         )
         logger.info(
-            "LMDB cache by phase: opening(ply<20) hits=%d misses=%d | "
-            "middlegame(20<=ply<40) hits=%d misses=%d | endgame(ply>=40) hits=%d misses=%d",
+            "[%s] LMDB by phase: opening(ply<20) hits=%d miss=%d | "
+            "middle(20-40) hits=%d miss=%d | endgame(40+) hits=%d miss=%d",
+            game_id,
             opening_hits, opening_misses,
             middlegame_hits, middlegame_misses,
             endgame_hits, endgame_misses,
@@ -213,7 +223,8 @@ def run_quick_scan_single(
 
             stockfish_elapsed = time.perf_counter() - stockfish_start
             logger.info(
-                "Stockfish analysis: positions=%d, total_time=%.3fs (%.3fms/fen avg)",
+                "[%s] Stockfish: positions=%d, time=%.3fs (%.3fms/fen)",
+                game_id,
                 len(remaining_fens),
                 stockfish_elapsed,
                 (stockfish_elapsed * 1000 / len(remaining_fens)) if remaining_fens else 0,
@@ -363,6 +374,22 @@ def run_quick_scan_single(
             "tactic_type": tactic_type,
             "tactic_types": tactic_types,
         })
+
+    # Log per-game summary
+    game_total_time = time.perf_counter() - game_start_time
+    logger.info(
+        "[%s] GAME SUMMARY: total_time=%.3fs | lmdb_lookup=%.3fs (%d fens) | "
+        "stockfish=%.3fs (%d fens) | blunders=%d mistakes=%d inaccuracies=%d",
+        game_id,
+        game_total_time,
+        lmdb_elapsed,
+        lmdb_hits + stockfish_positions,
+        stockfish_elapsed,
+        stockfish_positions,
+        blunders,
+        mistakes,
+        inaccuracies,
+    )
 
     return {
         "problems": problems,
