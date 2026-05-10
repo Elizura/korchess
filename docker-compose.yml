@@ -6,7 +6,7 @@ services:
     expose:
       - "8000"
     volumes:
-      - lmdb-cache:/app/lmdb_cache:ro
+      - ./backend/lmdb_cache:/app/lmdb_cache:ro
     env_file:
       - .env
     healthcheck:
@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
     command: ["celery", "-A", "repository.celery_app:app", "worker", "--loglevel=info", "--concurrency=4"]
     volumes:
-      - lmdb-cache:/app/lmdb_cache:ro
+      - ./backend/lmdb_cache:/app/lmdb_cache:ro
     env_file:
       - .env
     depends_on:
@@ -76,10 +76,3 @@ services:
   #   command: >
   #     "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h; done"
 
-volumes:
-  lmdb-cache:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${PWD}/backend/lmdb_cache
