@@ -69,7 +69,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Max entries to dump")
     args = parser.parse_args()
 
-    db_path = "/Users/elisurf/hustle/en-passant/backend/lmdb_cache"
+    db_path = os.environ.get("LICHESS_EVAL_DB_PATH")
     if not db_path:
         print("Error: LICHESS_EVAL_DB_PATH env var not set")
         sys.exit(1)

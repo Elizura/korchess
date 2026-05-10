@@ -38,9 +38,6 @@ services:
       - .env
     ports:
       - "8000:8000"
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       db:
@@ -60,7 +57,7 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
+      - LICHESS_EVAL_DB_PATH=${LICHESS_EVAL_DB_PATH:-/app/lmdb_cache}
     depends_on:
       redis:
         condition: service_healthy
