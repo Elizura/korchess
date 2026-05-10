@@ -94,7 +94,7 @@ async def import_games(
     existing_games = int(existing.get("total_games") or 0)
     is_sync = existing_games > 0
 
-    track_server_event(
+    await track_server_event(
         conn,
         event_name="import.start",
         user_id=current_user["id"] if current_user else None,
@@ -114,7 +114,7 @@ async def import_games(
         else:
             import_result = import_chesscom_games(username, conn, max_games)
     except (LichessStreamError, ChesscomStreamError) as e:
-        track_server_event(
+        await track_server_event(
             conn,
             event_name="import.failed",
             user_id=current_user["id"] if current_user else None,

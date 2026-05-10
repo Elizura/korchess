@@ -31,10 +31,8 @@ _evals_db: Any = None
 
 
 def _get_env() -> tuple[lmdb.Environment, Any] | None:
-    """Return the singleton (env, evals_db) pair, opening on first call.
-
-    Returns ``None`` when ``LICHESS_EVAL_DB_PATH`` is not set or the
-    directory does not exist -- callers should treat this as "no cache".
+    """
+    Returns the singleton (env, evals_db) pair, opening on first call.
     """
     global _env, _evals_db
 

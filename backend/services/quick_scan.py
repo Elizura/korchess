@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import math
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -89,6 +90,7 @@ def run_quick_scan_single(
     # -------------------------------------------------------------------------
     user_moves_data: list[dict[str, Any]] = []
     fens_to_analyze: set[str] = set()
+    fen_to_ply: dict[str, int] = {}  # Track which ply each FEN belongs to
     current_board = board.copy()
 
     for ply, move in enumerate(moves_list):
@@ -124,8 +126,10 @@ def run_quick_scan_single(
         })
 
         fens_to_analyze.add(fen_before)
+        fen_to_ply[fen_before] = ply
         if not is_checkmate and not is_game_over:
             fens_to_analyze.add(fen_after)
+            fen_to_ply[fen_after] = ply
 
     if not user_moves_data:
         return _empty_scan_result()
@@ -137,21 +141,45 @@ def run_quick_scan_single(
     info_by_fen: dict[str, Any] = {}
 
     if unique_fens:
+        lmdb_start = time.perf_counter()
         info_by_fen = lookup_fens(unique_fens)
+        lmdb_elapsed = time.perf_counter() - lmdb_start
+
         remaining_fens = [f for f in unique_fens if f not in info_by_fen]
         lmdb_hits = len(info_by_fen)
 
+        # Calculate cache hit/miss by game phase (ply ranges)
+        hit_plies = [fen_to_ply.get(f, -1) for f in info_by_fen.keys()]
+        miss_plies = [fen_to_ply.get(f, -1) for f in remaining_fens]
+
+        opening_hits = sum(1 for p in hit_plies if 0 <= p < 20)
+        opening_misses = sum(1 for p in miss_plies if 0 <= p < 20)
+        middlegame_hits = sum(1 for p in hit_plies if 20 <= p < 40)
+        middlegame_misses = sum(1 for p in miss_plies if 20 <= p < 40)
+        endgame_hits = sum(1 for p in hit_plies if p >= 40)
+        endgame_misses = sum(1 for p in miss_plies if p >= 40)
+
         logger.info(
-            "LMDB cache: hits=%d, misses=%d, total=%d",
+            "LMDB cache: hits=%d, misses=%d, total=%d, lookup_time=%.3fs (%.3fms/fen)",
             lmdb_hits,
             len(remaining_fens),
             len(unique_fens),
+            lmdb_elapsed,
+            (lmdb_elapsed * 1000 / len(unique_fens)) if unique_fens else 0,
+        )
+        logger.info(
+            "LMDB cache by phase: opening(ply<20) hits=%d misses=%d | "
+            "middlegame(20<=ply<40) hits=%d misses=%d | endgame(ply>=40) hits=%d misses=%d",
+            opening_hits, opening_misses,
+            middlegame_hits, middlegame_misses,
+            endgame_hits, endgame_misses,
         )
 
         # ---------------------------------------------------------------------
         # PHASE 2b: Stockfish only for cache misses
         # ---------------------------------------------------------------------
         if remaining_fens:
+            stockfish_start = time.perf_counter()
             worker_count = min(QUICK_SCAN_POSITION_WORKERS, len(remaining_fens))
             if worker_count <= 1:
                 info_by_fen.update(
@@ -182,6 +210,14 @@ def run_quick_scan_single(
                             info_by_fen.update(future.result())
                         except Exception:
                             continue
+
+            stockfish_elapsed = time.perf_counter() - stockfish_start
+            logger.info(
+                "Stockfish analysis: positions=%d, total_time=%.3fs (%.3fms/fen avg)",
+                len(remaining_fens),
+                stockfish_elapsed,
+                (stockfish_elapsed * 1000 / len(remaining_fens)) if remaining_fens else 0,
+            )
 
     # -------------------------------------------------------------------------
     # PHASE 3: Process results using pre-computed analysis lookup

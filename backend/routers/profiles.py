@@ -211,7 +211,7 @@ async def import_profile_games(
             raise HTTPException(status_code=404, detail=e.message)
         raise HTTPException(status_code=502, detail=e.message)
 
-    track_server_event(
+    await track_server_event(
         conn,
         event_name="profile.imported",
         user_id=user_id,
