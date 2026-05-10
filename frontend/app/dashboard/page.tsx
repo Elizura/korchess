@@ -1537,7 +1537,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="min-w-0 space-y-6">
+      <div className="min-w-0 space-y-8">
         <div className="zen-surface opening-frame p-5 sm:p-6">
         {/* Unified import input */}
         <div className="flex flex-col gap-3">
@@ -2381,143 +2381,236 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {report && reportBlack && !loading && (
-          <div>
-            <div className="flex items-baseline justify-between gap-2 mb-4">
-              <h2 className="text-lg sm:text-xl font-semibold text-[color:var(--zen-text)]">
-                Top openings by color
+        {report && !loading && (
+          <div className="zen-surface rounded-2xl p-6 sm:p-8 border border-[color:var(--zen-border)]">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-6 h-6 rounded bg-gradient-to-br from-white to-gray-200 border border-gray-300 shadow-sm" />
+              <h2 className="text-xl sm:text-2xl font-semibold text-[color:var(--zen-text)]">
+                Top openings as White
               </h2>
             </div>
 
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              {[
-                {
-                  title: "Top 5 as White",
-                  rows: processedWhiteReport || [],
-                  source: "dashboard_openings_white_table",
-                  color: "white" as const,
-                },
-                {
-                  title: "Top 5 as Black",
-                  rows: processedBlackReport || [],
-                  source: "dashboard_openings_black_table",
-                  color: "black" as const,
-                },
-              ].map((section) => (
-                <div
-                  key={section.title}
-                  className="overflow-hidden rounded-2xl border border-[color:var(--zen-border)]"
-                >
-                  <div className="px-4 py-3 bg-[color:var(--zen-surface-2)] border-b border-[color:var(--zen-border)]">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-[color:var(--zen-text)]">
-                      {section.title}
-                    </h3>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="opening-table min-w-full">
-                      <thead className="bg-[color:var(--zen-surface-2)]">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
-                            Opening
-                          </th>
-                          <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Games</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Wins</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Draws</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Losses</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Score %</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[color:var(--zen-border)]">
-                        {section.rows.map((opening) => {
-                          const parsed = parseOpeningName(opening.opening_label);
-                          const badgeText =
-                            opening.opening_key === "unknown"
-                              ? "UNK"
-                              : opening.opening_key.slice(0, 3).toUpperCase();
-                          return (
-                            <tr
-                              key={`${section.title}-${opening.opening_key}`}
-                              onClick={() => {
-                                if (currentUsername) {
-                                  trackEvent("opening.view", {
-                                    properties: {
-                                      source: section.source,
-                                    },
-                                  });
-                                  const detailParams = new URLSearchParams({
-                                    site: "all",
-                                    color: section.color,
-                                    time_class: timeClassFilter,
-                                  });
-                                  router.push(
-                                    `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.opening_key)}?${detailParams.toString()}`
-                                  );
-                                }
-                              }}
-                              className="opening-list-row group cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
-                            >
-                              <td className="px-4 py-4">
-                                <div className="opening-row-main font-semibold text-base sm:text-lg flex items-center gap-2 sm:gap-3 flex-wrap">
-                                  <span
-                                    className="eco-badge"
-                                    style={{
-                                      borderColor:
-                                        opening.score_pct >= 55
-                                          ? "var(--zen-success)"
-                                          : opening.score_pct <= 45
-                                            ? "var(--zen-danger)"
-                                            : "var(--zen-accent)",
-                                      color:
-                                        opening.score_pct >= 55
-                                          ? "var(--zen-success)"
-                                          : opening.score_pct <= 45
-                                            ? "var(--zen-danger)"
-                                            : "var(--zen-accent)",
-                                    }}
-                                  >
-                                    {badgeText}
-                                  </span>
-                                  <span>{parsed.main}</span>
-                                  {parsed.variation && (
-                                    <span className="font-normal text-[color:var(--zen-muted)]">
-                                      {" : "}
-                                      {parsed.variation}
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="opening-row-stat px-4 py-4 text-right tabular-nums">{opening.games}</td>
-                              <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-success)] font-medium">{opening.wins}</td>
-                              <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-muted)]">{opening.draws}</td>
-                              <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-danger)] font-medium">{opening.losses}</td>
-                              <td className="opening-row-stat px-4 py-4 text-right tabular-nums">
-                                <span
-                                  className="font-semibold"
-                                  style={{
-                                    color:
-                                      opening.score_pct >= 55
-                                        ? "var(--zen-success)"
-                                        : opening.score_pct <= 45
-                                          ? "var(--zen-danger)"
-                                          : "var(--zen-text)",
-                                  }}
-                                >
-                                  {opening.score_pct.toFixed(1)}%
+            <div className="overflow-hidden rounded-xl border border-[color:var(--zen-border)]">
+              <div className="overflow-x-auto">
+                <table className="opening-table min-w-full">
+                  <thead className="bg-[color:var(--zen-surface-2)]">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                        Opening
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Games</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Wins</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Draws</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Losses</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Score %</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[color:var(--zen-border)]">
+                    {(processedWhiteReport || []).map((opening) => {
+                      const parsed = parseOpeningName(opening.opening_label);
+                      const badgeText =
+                        opening.opening_key === "unknown"
+                          ? "UNK"
+                          : opening.opening_key.slice(0, 3).toUpperCase();
+                      return (
+                        <tr
+                          key={`white-${opening.opening_key}`}
+                          onClick={() => {
+                            if (currentUsername) {
+                              trackEvent("opening.view", {
+                                properties: {
+                                  source: "dashboard_openings_white_table",
+                                },
+                              });
+                              const detailParams = new URLSearchParams({
+                                site: "all",
+                                color: "white",
+                                time_class: timeClassFilter,
+                              });
+                              router.push(
+                                `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.opening_key)}?${detailParams.toString()}`
+                              );
+                            }
+                          }}
+                          className="opening-list-row group cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
+                        >
+                          <td className="px-4 py-4">
+                            <div className="opening-row-main font-semibold text-base sm:text-lg flex items-center gap-2 sm:gap-3 flex-wrap">
+                              <span
+                                className="eco-badge"
+                                style={{
+                                  borderColor:
+                                    opening.score_pct >= 55
+                                      ? "var(--zen-success)"
+                                      : opening.score_pct <= 45
+                                        ? "var(--zen-danger)"
+                                        : "var(--zen-accent)",
+                                  color:
+                                    opening.score_pct >= 55
+                                      ? "var(--zen-success)"
+                                      : opening.score_pct <= 45
+                                        ? "var(--zen-danger)"
+                                        : "var(--zen-accent)",
+                                }}
+                              >
+                                {badgeText}
+                              </span>
+                              <span>{parsed.main}</span>
+                              {parsed.variation && (
+                                <span className="font-normal text-[color:var(--zen-muted)]">
+                                  {" : "}
+                                  {parsed.variation}
                                 </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    {section.rows.length === 0 && (
-                      <div className="p-8 text-center text-[color:var(--zen-muted)]">
-                        No openings found for this color.
-                      </div>
-                    )}
+                              )}
+                            </div>
+                          </td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums">{opening.games}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-success)] font-medium">{opening.wins}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-muted)]">{opening.draws}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-danger)] font-medium">{opening.losses}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums">
+                            <span
+                              className="font-semibold"
+                              style={{
+                                color:
+                                  opening.score_pct >= 55
+                                    ? "var(--zen-success)"
+                                    : opening.score_pct <= 45
+                                      ? "var(--zen-danger)"
+                                      : "var(--zen-text)",
+                              }}
+                            >
+                              {opening.score_pct.toFixed(1)}%
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {(processedWhiteReport || []).length === 0 && (
+                  <div className="p-8 text-center text-[color:var(--zen-muted)]">
+                    No openings found as White.
                   </div>
-                </div>
-              ))}
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {reportBlack && !loading && (
+          <div className="zen-surface rounded-2xl p-6 sm:p-8 border border-[color:var(--zen-border)]">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-6 h-6 rounded bg-gradient-to-br from-gray-800 to-black border border-gray-600 shadow-sm" />
+              <h2 className="text-xl sm:text-2xl font-semibold text-[color:var(--zen-text)]">
+                Top openings as Black
+              </h2>
+            </div>
+
+            <div className="overflow-hidden rounded-xl border border-[color:var(--zen-border)]">
+              <div className="overflow-x-auto">
+                <table className="opening-table min-w-full">
+                  <thead className="bg-[color:var(--zen-surface-2)]">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">
+                        Opening
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Games</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Wins</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Draws</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Losses</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-[color:var(--zen-muted)]">Score %</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[color:var(--zen-border)]">
+                    {(processedBlackReport || []).map((opening) => {
+                      const parsed = parseOpeningName(opening.opening_label);
+                      const badgeText =
+                        opening.opening_key === "unknown"
+                          ? "UNK"
+                          : opening.opening_key.slice(0, 3).toUpperCase();
+                      return (
+                        <tr
+                          key={`black-${opening.opening_key}`}
+                          onClick={() => {
+                            if (currentUsername) {
+                              trackEvent("opening.view", {
+                                properties: {
+                                  source: "dashboard_openings_black_table",
+                                },
+                              });
+                              const detailParams = new URLSearchParams({
+                                site: "all",
+                                color: "black",
+                                time_class: timeClassFilter,
+                              });
+                              router.push(
+                                `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.opening_key)}?${detailParams.toString()}`
+                              );
+                            }
+                          }}
+                          className="opening-list-row group cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
+                        >
+                          <td className="px-4 py-4">
+                            <div className="opening-row-main font-semibold text-base sm:text-lg flex items-center gap-2 sm:gap-3 flex-wrap">
+                              <span
+                                className="eco-badge"
+                                style={{
+                                  borderColor:
+                                    opening.score_pct >= 55
+                                      ? "var(--zen-success)"
+                                      : opening.score_pct <= 45
+                                        ? "var(--zen-danger)"
+                                        : "var(--zen-accent)",
+                                  color:
+                                    opening.score_pct >= 55
+                                      ? "var(--zen-success)"
+                                      : opening.score_pct <= 45
+                                        ? "var(--zen-danger)"
+                                        : "var(--zen-accent)",
+                                }}
+                              >
+                                {badgeText}
+                              </span>
+                              <span>{parsed.main}</span>
+                              {parsed.variation && (
+                                <span className="font-normal text-[color:var(--zen-muted)]">
+                                  {" : "}
+                                  {parsed.variation}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums">{opening.games}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-success)] font-medium">{opening.wins}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-muted)]">{opening.draws}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums text-[color:var(--zen-danger)] font-medium">{opening.losses}</td>
+                          <td className="opening-row-stat px-4 py-4 text-right tabular-nums">
+                            <span
+                              className="font-semibold"
+                              style={{
+                                color:
+                                  opening.score_pct >= 55
+                                    ? "var(--zen-success)"
+                                    : opening.score_pct <= 45
+                                      ? "var(--zen-danger)"
+                                      : "var(--zen-text)",
+                              }}
+                            >
+                              {opening.score_pct.toFixed(1)}%
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {(processedBlackReport || []).length === 0 && (
+                  <div className="p-8 text-center text-[color:var(--zen-muted)]">
+                    No openings found as Black.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
