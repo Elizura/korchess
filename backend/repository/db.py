@@ -34,7 +34,12 @@ def init_db() -> None:
     Shared data (games, imports, insights, analysis) is keyed by (username, site).
     User-specific data (AI quotas, consent) is keyed by user_id.
     """
-    conn = get_connection()
+    with get_connection() as conn:
+        _init_db_schema(conn)
+
+
+def _init_db_schema(conn: psycopg.Connection) -> None:
+    """Internal helper to create all schema elements."""
     cursor = conn.cursor()
 
     # Users table - for authenticated users only
@@ -447,7 +452,6 @@ def init_db() -> None:
     cursor.execute("DROP TABLE IF EXISTS analytics_identities")
 
     conn.commit()
-    conn.close()
 
 
 def ensure_openings_table(conn: psycopg.Connection) -> None:

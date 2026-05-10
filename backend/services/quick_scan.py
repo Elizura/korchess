@@ -18,7 +18,6 @@ import chess.pgn
 from repository.db import (
     create_scan_job,
     get_active_scan_job,
-    get_connection,
     get_games_for_insights,
     get_player_insights,
     get_quick_scan_results,
@@ -27,6 +26,7 @@ from repository.db import (
     upsert_game_quick_scan,
     upsert_player_insights,
 )
+from repository.db_connection import get_connection
 from services.full_analysis import (
     _analyse_fen_chunk,
     _compute_cp_loss,
@@ -425,16 +425,12 @@ async def run_quick_scan_batch(
     canonical = username.strip().lower()
     started_at = utc_now_iso()
 
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         update_scan_job(conn, job_id, status="running", started_at=started_at)
         conn.commit()
-    finally:
-        conn.close()
 
     try:
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             games = get_games_for_insights(
                 conn,
                 username=canonical,
@@ -442,8 +438,6 @@ async def run_quick_scan_batch(
                 limit=QUICK_SCAN_MAX_GAMES,
             )
             already_scanned = get_scanned_game_ids(conn, canonical, site)
-        finally:
-            conn.close()
 
         to_scan = [
             g for g in games
@@ -451,8 +445,7 @@ async def run_quick_scan_batch(
         ]
 
         if not to_scan:
-            conn = get_connection()
-            try:
+            with get_connection() as conn:
                 update_scan_job(
                     conn, job_id,
                     status="completed",
@@ -460,17 +453,12 @@ async def run_quick_scan_batch(
                     finished_at=utc_now_iso(),
                 )
                 conn.commit()
-            finally:
-                conn.close()
             await _merge_and_update_insights(canonical, site, job_id)
             return
 
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             update_scan_job(conn, job_id, games_done=0)
             conn.commit()
-        finally:
-            conn.close()
 
         semaphore = asyncio.Semaphore(QUICK_SCAN_CONCURRENCY)
         done_count = 0
@@ -485,8 +473,7 @@ async def run_quick_scan_batch(
                     problems_str = json.dumps(result)
                     summary_str = json.dumps(result.get("summary", {}))
 
-                    conn2 = get_connection()
-                    try:
+                    with get_connection() as conn2:
                         upsert_game_quick_scan(
                             conn2,
                             username=canonical,
@@ -496,8 +483,6 @@ async def run_quick_scan_batch(
                             summary_json=summary_str,
                         )
                         conn2.commit()
-                    finally:
-                        conn2.close()
                 except Exception:
                     logger.exception(
                         "Quick scan failed for game %s/%s",
@@ -507,18 +492,14 @@ async def run_quick_scan_batch(
 
                 done_count += 1
                 if done_count % 5 == 0 or done_count == len(to_scan):
-                    conn3 = get_connection()
-                    try:
+                    with get_connection() as conn3:
                         update_scan_job(conn3, job_id, games_done=done_count)
                         conn3.commit()
-                    finally:
-                        conn3.close()
 
         tasks = [asyncio.create_task(_scan_one(game)) for game in to_scan]
         await asyncio.gather(*tasks)
 
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             update_scan_job(
                 conn, job_id,
                 status="completed",
@@ -526,15 +507,12 @@ async def run_quick_scan_batch(
                 finished_at=utc_now_iso(),
             )
             conn.commit()
-        finally:
-            conn.close()
 
         await _merge_and_update_insights(canonical, site, job_id)
 
     except Exception as exc:
         logger.exception("Quick scan batch failed: %s", exc)
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             update_scan_job(
                 conn, job_id,
                 status="failed",
@@ -542,8 +520,6 @@ async def run_quick_scan_batch(
                 finished_at=utc_now_iso(),
             )
             conn.commit()
-        finally:
-            conn.close()
 
 
 async def _merge_and_update_insights(
@@ -552,12 +528,9 @@ async def _merge_and_update_insights(
     job_id: str,
 ) -> None:
     """Merge scan aggregates into the player_insights row."""
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         scan_rows = get_quick_scan_results(conn, username, site)
         existing = get_player_insights(conn, username, site)
-    finally:
-        conn.close()
 
     if not scan_rows:
         return
@@ -573,8 +546,7 @@ async def _merge_and_update_insights(
     features["time_pressure"]["blunders_from_scan"] = True
     features["scan_aggregate"] = scan_agg
 
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         if existing:
             upsert_player_insights(
                 conn,
@@ -590,8 +562,6 @@ async def _merge_and_update_insights(
                 source_job_id=job_id,
             )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def schedule_quick_scan(
@@ -600,8 +570,7 @@ def schedule_quick_scan(
 ) -> dict[str, Any]:
     """Create a quick-scan job and fire-and-forget the background task."""
     canonical = username.strip().lower()
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         active = get_active_scan_job(conn, canonical, site)
         if active:
             return {"scheduled": False, "job": active}
@@ -625,8 +594,6 @@ def schedule_quick_scan(
         job_id = str(uuid.uuid4())
         create_scan_job(conn, job_id, canonical, site, total)
         conn.commit()
-    finally:
-        conn.close()
 
     from tasks import run_scan
     run_scan.delay(job_id, canonical, site)

@@ -5,18 +5,15 @@ from collections.abc import Generator
 import psycopg
 from fastapi import HTTPException
 
-from repository.db import get_connection
+from repository.db_connection import get_connection
 
 VALID_SITES = {"lichess", "chesscom", "all"}
 
 
 def get_db() -> Generator[psycopg.Connection, None, None]:
-    """Provide a database connection per request. Closes on exit."""
-    conn = get_connection()
-    try:
+    """Provide a database connection per request. Returns to pool on exit."""
+    with get_connection() as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 def validate_site(site: str) -> str:

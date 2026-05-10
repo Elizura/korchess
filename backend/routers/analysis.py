@@ -20,7 +20,6 @@ from repository.db import (
     delete_analysis_job,
     get_ai_game_insights,
     get_analysis_job,
-    get_connection,
     get_full_analysis,
     get_game_by_id,
     log_ai_insights_request,
@@ -28,6 +27,7 @@ from repository.db import (
     save_full_analysis,
     save_full_analysis_insights,
 )
+from repository.db_connection import get_connection
 from services.full_analysis import run_full_analysis
 from services.game_insights_narration import ensure_narration, is_current_clean_narration_payload
 from services.single_game_insights import compute_single_game_insights
@@ -141,8 +141,7 @@ async def run_analysis_background(
             "meta": result["meta"],
         }
 
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             save_full_analysis(
                 conn, username, game_id,
                 depth=depth,
@@ -174,13 +173,10 @@ async def run_analysis_background(
             delete_analysis_job(conn, job_id)
             conn.commit()
             print(f"[Analysis] Completed for game {game_id} on {site}")
-        finally:
-            conn.close()
 
     except Exception as e:
         print(f"[Analysis] Failed for game {game_id} on {site}: {e}")
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             await track_server_event(
                 conn,
                 event_name="analysis.deep.failed",
@@ -199,8 +195,6 @@ async def run_analysis_background(
             )
             delete_analysis_job(conn, job_id)
             conn.commit()
-        finally:
-            conn.close()
 
     finally:
         async with active_analysis_lock:

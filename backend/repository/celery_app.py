@@ -25,13 +25,17 @@ app.conf.update(
 
 @worker_process_init.connect
 def init_worker_process(**kwargs):
-    """Initialize engine pool when Celery worker process starts."""
+    """Initialize connection pool and engine pool when Celery worker process starts."""
+    from repository.db_connection import init_pool
     from services.full_analysis import init_engine_pool
+    init_pool()
     init_engine_pool()
 
 
 @worker_process_shutdown.connect
 def shutdown_worker_process(**kwargs):
-    """Cleanup engine pool when Celery worker process shuts down."""
+    """Cleanup engine pool and connection pool when Celery worker process shuts down."""
+    from repository.db_connection import close_pool
     from services.full_analysis import shutdown_engine_pool
     shutdown_engine_pool()
+    close_pool()

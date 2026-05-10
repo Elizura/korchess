@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from repository.db import init_db
+from repository.db_connection import close_pool, init_pool
 from services.full_analysis import init_engine_pool, shutdown_engine_pool
 from lmdb_magic.reader import close as close_lmdb
 from routers import (
@@ -47,6 +48,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
+    init_pool()
     init_db()
     init_engine_pool()
 
@@ -55,6 +57,7 @@ async def startup_event():
 async def shutdown_event():
     shutdown_engine_pool()
     close_lmdb()
+    close_pool()
 
 
 app.include_router(health.router)

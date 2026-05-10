@@ -18,7 +18,6 @@ from repository.db import (
     clear_quick_scan_data,
     create_insight_job,
     get_active_insight_job,
-    get_connection,
     get_featured_game_ids,
     get_full_analysis,
     get_games_for_insights,
@@ -29,6 +28,7 @@ from repository.db import (
     upsert_insight_game_feature,
     upsert_player_insights,
 )
+from repository.db_connection import get_connection
 from services.full_analysis import run_full_analysis
 from utils.insights_constants import (
     DEEP_ANALYSIS_DEPTH,
@@ -440,8 +440,7 @@ def _load_cached_full_analysis_payload(
     site: str,
     site_game_id: str,
 ) -> dict[str, Any] | None:
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         cached = get_full_analysis(
             conn,
             owner_user_id,
@@ -451,8 +450,6 @@ def _load_cached_full_analysis_payload(
             DEEP_ANALYSIS_MULTIPV,
             site,
         )
-    finally:
-        conn.close()
 
     if not cached:
         return None
@@ -474,8 +471,7 @@ def _save_full_analysis_cache_payload(
     site_game_id: str,
     full_analysis: dict[str, Any],
 ) -> None:
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         save_full_analysis(
             conn,
             owner_user_id,
@@ -490,8 +486,6 @@ def _save_full_analysis_cache_payload(
             site=site,
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _build_deep_feature_with_cache(
@@ -968,8 +962,7 @@ async def _save_snapshot(
     narrative: dict[str, Any],
     source_job_id: str | None,
 ) -> None:
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         upsert_player_insights(
             conn,
             username=username,
@@ -984,8 +977,6 @@ async def _save_snapshot(
             source_job_id=source_job_id,
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 async def run_insights_pipeline(
@@ -1000,8 +991,7 @@ async def run_insights_pipeline(
     """
     started_at = utc_now_iso()
     async with _INSIGHTS_SEMAPHORE:
-        conn = get_connection()
-        try:
+        with get_connection() as conn:
             update_insight_job(
                 conn,
                 job_id,
@@ -1011,12 +1001,9 @@ async def run_insights_pipeline(
                 started_at=started_at,
             )
             conn.commit()
-        finally:
-            conn.close()
 
         try:
-            conn = get_connection()
-            try:
+            with get_connection() as conn:
                 games = get_games_for_insights(
                     conn,
                     username=username,
@@ -1029,8 +1016,6 @@ async def run_insights_pipeline(
                     site=site,
                     feature_version=FEATURE_VERSION,
                 )
-            finally:
-                conn.close()
 
             if not games:
                 empty_features = {
@@ -1066,8 +1051,7 @@ async def run_insights_pipeline(
                     narrative=narrative,
                     source_job_id=job_id,
                 )
-                conn = get_connection()
-                try:
+                with get_connection() as conn:
                     update_insight_job(
                         conn,
                         job_id,
@@ -1076,8 +1060,6 @@ async def run_insights_pipeline(
                         finished_at=utc_now_iso(),
                     )
                     conn.commit()
-                finally:
-                    conn.close()
                 return
 
             new_games = [
@@ -1087,8 +1069,7 @@ async def run_insights_pipeline(
 
             for game in new_games:
                 light_feature = await asyncio.to_thread(extract_light_game_features, game)
-                conn = get_connection()
-                try:
+                with get_connection() as conn:
                     upsert_insight_game_feature(
                         conn,
                         username=username,
@@ -1099,19 +1080,14 @@ async def run_insights_pipeline(
                         deep=None,
                     )
                     conn.commit()
-                finally:
-                    conn.close()
 
-            conn = get_connection()
-            try:
+            with get_connection() as conn:
                 stored_features = get_insight_game_features(
                     conn,
                     username=username,
                     site=site,
                     feature_version=FEATURE_VERSION,
                 )
-            finally:
-                conn.close()
 
             features, coverage, fact_map = _build_aggregate_features(stored_features)
             narrative = build_narrative(features, fact_map)
@@ -1129,8 +1105,7 @@ async def run_insights_pipeline(
             )
 
             if not coverage.get("has_enough_games"):
-                conn = get_connection()
-                try:
+                with get_connection() as conn:
                     update_insight_job(
                         conn,
                         job_id,
@@ -1139,8 +1114,6 @@ async def run_insights_pipeline(
                         finished_at=utc_now_iso(),
                     )
                     conn.commit()
-                finally:
-                    conn.close()
                 return
 
             await _save_snapshot(
@@ -1154,8 +1127,7 @@ async def run_insights_pipeline(
                 source_job_id=job_id,
             )
 
-            conn = get_connection()
-            try:
+            with get_connection() as conn:
                 update_insight_job(
                     conn,
                     job_id,
@@ -1164,8 +1136,6 @@ async def run_insights_pipeline(
                     finished_at=utc_now_iso(),
                 )
                 conn.commit()
-            finally:
-                conn.close()
 
             if trigger_quick_scan:
                 from quick_scan import schedule_quick_scan
@@ -1175,8 +1145,7 @@ async def run_insights_pipeline(
                     pass
 
         except Exception as exc:  # pragma: no cover - last resort error path
-            conn = get_connection()
-            try:
+            with get_connection() as conn:
                 update_insight_job(
                     conn,
                     job_id,
@@ -1186,8 +1155,6 @@ async def run_insights_pipeline(
                     finished_at=utc_now_iso(),
                 )
                 conn.commit()
-            finally:
-                conn.close()
 
 
 def schedule_insights_refresh(
@@ -1203,8 +1170,7 @@ def schedule_insights_refresh(
     jobs so that everything is rebuilt from scratch.
     """
     canonical_username = username.strip().lower()
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         if force:
             clear_insights_data(conn, canonical_username, site)
             clear_quick_scan_data(conn, canonical_username, site)
@@ -1233,8 +1199,6 @@ def schedule_insights_refresh(
             },
         )
         conn.commit()
-    finally:
-        conn.close()
 
     from tasks import run_insights
     run_insights.delay(job_id, canonical_username, site, trigger_quick_scan=force)
@@ -1256,12 +1220,9 @@ def get_insights_state(
 ) -> dict[str, Any]:
     """Fetch current insights snapshot + job status for API responses."""
     canonical_username = username.strip().lower()
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         snapshot = get_player_insights(conn, canonical_username, site)
         active_job = get_active_insight_job(conn, canonical_username, site)
-    finally:
-        conn.close()
 
     lifecycle_status = "missing"
     if snapshot:
