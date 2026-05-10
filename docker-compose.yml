@@ -6,7 +6,7 @@ services:
     expose:
       - "8000"
     volumes:
-      - ${LICHESS_EVAL_DB_PATH}:/app/lmdb_cache:ro
+      - ${LICHESS_EVAL_DB_HOST_PATH}:/app/lmdb_cache:ro
     env_file:
       - .env
     healthcheck:
@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
     command: ["celery", "-A", "repository.celery_app:app", "worker", "--loglevel=info", "--concurrency=4"]
     volumes:
-      - ${LICHESS_EVAL_DB_PATH}:/app/lmdb_cache:ro
+      - ${LICHESS_EVAL_DB_HOST_PATH}:/app/lmdb_cache:ro
     env_file:
       - .env
     depends_on:
