@@ -1,6 +1,6 @@
 """Shared game import logic for Lichess and Chess.com.
 
-This module is the single source of truth for streaming, parsing, and enqueuing
+This module is the single source of truth for fetching, parsing, and enqueuing
 games into the Celery queue. Both the public import router (anonymous/optional auth)
 and the authenticated profiles router delegate to functions here.
 """
@@ -13,13 +13,9 @@ from datetime import datetime
 import chess.pgn
 import psycopg
 
-from services.chesscom import parse_chesscom_game
+from services.chesscom import fetch_chesscom_games, parse_chesscom_game
 from repository.db import get_import_status
-from services.game_streamer import (
-    stream_chesscom_games,
-    stream_lichess_pgns,
-)
-from services.lichess import parse_pgn_games
+from services.lichess import parse_pgn_games, fetch_lichess_pgn
 from services.opening_match import best_opening_match, game_to_uci_plies
 from repository.redis_client import redis_client as _redis
 from schemas import ImportResponse
@@ -51,7 +47,10 @@ def parse_single_lichess_pgn(
     target_username: str,
     conn: psycopg.Connection,
 ) -> tuple[list[dict], int]:
-    """Parse a single PGN text (may contain one or a few games)."""
+    """Parse a single PGN text (may contain one or a few games).
+    
+    Useful for streaming imports where PGNs arrive in chunks.
+    """
     return parse_pgn_games(pgn_text, target_username, conn)
 
 
@@ -60,7 +59,10 @@ def parse_single_chesscom_json(
     target_username: str,
     conn: psycopg.Connection,
 ) -> dict | None:
-    """Parse a single Chess.com game JSON into a game_data dict with opening matching."""
+    """Parse a single Chess.com game JSON into a game_data dict with opening matching.
+    
+    Useful for streaming imports where games arrive individually.
+    """
     target_lower = target_username.strip().lower()
     game_data = parse_chesscom_game(game_json, target_lower)
     if game_data is None:
@@ -92,13 +94,13 @@ def parse_single_chesscom_json(
 def import_lichess_games(
     username: str,
     conn: psycopg.Connection,
-    max_games: int = 250,
+    max_games: int = 150,
 ) -> ImportResponse:
-    """Stream Lichess games and fire each into the Celery queue immediately.
+    """Fetch Lichess games and enqueue each into the Celery queue.
 
     Works for both anonymous and authenticated callers — auth context is not
     needed here; it belongs in the calling router for analytics/profile checks.
-    Raises LichessStreamError on upstream failures (let the router handle HTTP codes).
+    Raises LichessAPIError on upstream failures (let the router handle HTTP codes).
     """
     canonical = username.strip().lower()
     existing = get_import_status(conn, username, "lichess")
@@ -110,31 +112,31 @@ def import_lichess_games(
     if is_sync and last_synced_at is not None:
         since_ms = datetime_to_lichess_ms(last_synced_at)
 
-    _redis.set(import_key(canonical, "lichess", "status"), "streaming", ex=3600)
+    _redis.set(import_key(canonical, "lichess", "status"), "fetching", ex=3600)
 
-    total_enqueued = 0
-    parse_skipped = 0
+    logger.info(f"Fetching {max_games} games for {username} since {since_ms}")
 
-    for pgn_chunk in stream_lichess_pgns(username, max_games, since=since_ms):
-        for pgn_text in pgn_chunk:
-            parsed_games, skipped = parse_single_lichess_pgn(pgn_text, username, conn)
-            parse_skipped += skipped
-            for game_data in parsed_games:
-                process_game.delay(game_data, username, "lichess")
-                total_enqueued += 1
+    pgn_text = fetch_lichess_pgn(username, max_games, since=since_ms)
+    parsed_games, parse_skipped = parse_pgn_games(pgn_text, username, conn)
 
-    if total_enqueued == 0:
+    if not parsed_games:
         _redis.delete(import_key(canonical, "lichess", "status"))
         return ImportResponse(username=username, imported=0, skipped=parse_skipped, is_sync=is_sync)
+
+    _redis.set(import_key(canonical, "lichess", "total"), len(parsed_games), ex=3600)
+    _redis.set(import_key(canonical, "lichess", "status"), "processing", ex=3600)
+
+    total_enqueued = 0
+    for game_data in parsed_games:
+        process_game.delay(game_data, username, "lichess")
+        total_enqueued += 1
 
     import_meta = {
         "max_games": max_games,
         "is_sync": is_sync,
         "parse_skipped": parse_skipped,
     }
-    _redis.set(import_key(canonical, "lichess", "total"), total_enqueued, ex=3600)
     _redis.set(import_key(canonical, "lichess", "meta"), json.dumps(import_meta), ex=3600)
-    _redis.set(import_key(canonical, "lichess", "status"), "processing", ex=3600)
 
     return ImportResponse(
         username=username,
@@ -147,13 +149,13 @@ def import_lichess_games(
 def import_chesscom_games(
     username: str,
     conn: psycopg.Connection,
-    max_games: int = 250,
+    max_games: int = 150,
 ) -> ImportResponse:
-    """Stream Chess.com games and fire each into the Celery queue immediately.
+    """Fetch Chess.com games and enqueue each into the Celery queue.
 
     Works for both anonymous and authenticated callers — auth context is not
     needed here; it belongs in the calling router for analytics/profile checks.
-    Raises ChesscomStreamError on upstream failures (let the router handle HTTP codes).
+    Raises ChesscomAPIError on upstream failures (let the router handle HTTP codes).
     """
     canonical = username.strip().lower()
     existing = get_import_status(conn, username, "chesscom")
@@ -163,36 +165,34 @@ def import_chesscom_games(
 
     since_dt: datetime | None = last_synced_at if is_sync else None
 
-    _redis.set(import_key(canonical, "chesscom", "status"), "streaming", ex=3600)
+    _redis.set(import_key(canonical, "chesscom", "status"), "fetching", ex=3600)
+
+    logger.info(f"Fetching {max_games} games for {username} since {since_dt}")
+
+    games = fetch_chesscom_games(username, max_games, conn=conn, since=since_dt)
+
+    if not games:
+        _redis.delete(import_key(canonical, "chesscom", "status"))
+        return ImportResponse(username=username, imported=0, skipped=0, is_sync=is_sync)
+
+    _redis.set(import_key(canonical, "chesscom", "total"), len(games), ex=3600)
+    _redis.set(import_key(canonical, "chesscom", "status"), "processing", ex=3600)
 
     total_enqueued = 0
-    parse_skipped = 0
-
-    for game_json_chunk in stream_chesscom_games(username, max_games, since=since_dt):
-        for game_json in game_json_chunk:
-            game_data = parse_single_chesscom_json(game_json, username, conn)
-            if game_data is None:
-                parse_skipped += 1
-                continue
-            process_game.delay(game_data, username, "chesscom")
-            total_enqueued += 1
-
-    if total_enqueued == 0:
-        _redis.delete(import_key(canonical, "chesscom", "status"))
-        return ImportResponse(username=username, imported=0, skipped=parse_skipped, is_sync=is_sync)
+    for game_data in games:
+        process_game.delay(game_data, username, "chesscom")
+        total_enqueued += 1
 
     import_meta = {
         "max_games": max_games,
         "is_sync": is_sync,
-        "parse_skipped": parse_skipped,
+        "parse_skipped": 0,
     }
-    _redis.set(import_key(canonical, "chesscom", "total"), total_enqueued, ex=3600)
     _redis.set(import_key(canonical, "chesscom", "meta"), json.dumps(import_meta), ex=3600)
-    _redis.set(import_key(canonical, "chesscom", "status"), "processing", ex=3600)
 
     return ImportResponse(
         username=username,
         imported=total_enqueued,
-        skipped=parse_skipped,
+        skipped=0,
         is_sync=is_sync,
     )
