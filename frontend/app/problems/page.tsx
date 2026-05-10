@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { withTrackingHeaders } from "@/lib/analytics/client";
@@ -77,11 +77,6 @@ export default function ProblemsPage() {
   const username = searchParams.get("user") || "";
   const theme = searchParams.get("theme") || "";
 
-  const authHeaders = useMemo((): Record<string, string> => {
-    if (!session?.idToken) return {};
-    return { Authorization: `Bearer ${session.idToken}` };
-  }, [session?.idToken]);
-
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<ProblemsByThemeResponse | null>(null);
   const [page, setPage] = useState(0);
@@ -91,45 +86,52 @@ export default function ProblemsPage() {
   const themeLabel = TACTIC_CARD_LABEL[theme] || theme.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
   const themeBlurb = TACTIC_BLURB[theme] || "";
 
-  const fetchProblems = useCallback(async (
-    currentPage: number,
-    timeControl: string,
-    phase: string
-  ) => {
-    if (!username || !theme) return;
-
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({
-        username,
-        theme,
-        site: "all",
-        page: currentPage.toString(),
-        page_size: PAGE_SIZE.toString(),
-      });
-      if (timeControl) params.set("time_control", timeControl);
-      if (phase) params.set("phase", phase);
-
-      const res = await fetch(
-        `${API_BASE_URL}/api/v1/insights/problems-by-theme?${params}`,
-        { headers: withTrackingHeaders(authHeaders) }
-      );
-      if (!res.ok) {
-        setData(null);
-        return;
-      }
-      const responseData: ProblemsByThemeResponse = await res.json();
-      setData(responseData);
-    } catch {
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [username, theme, authHeaders]);
+  // Track last fetched params to prevent duplicate calls
+  const lastFetchParams = useRef<string | null>(null);
 
   useEffect(() => {
-    fetchProblems(page, timeControlFilter, phaseFilter);
-  }, [fetchProblems, page, timeControlFilter, phaseFilter]);
+    if (!username || !theme) return;
+
+    const authHeaders: Record<string, string> = session?.idToken
+      ? { Authorization: `Bearer ${session.idToken}` }
+      : {};
+
+    const params = new URLSearchParams({
+      username,
+      theme,
+      site: "all",
+      page: page.toString(),
+      page_size: PAGE_SIZE.toString(),
+    });
+    if (timeControlFilter) params.set("time_control", timeControlFilter);
+    if (phaseFilter) params.set("phase", phaseFilter);
+
+    const paramsKey = params.toString();
+    if (lastFetchParams.current === paramsKey) return;
+    lastFetchParams.current = paramsKey;
+
+    const fetchProblems = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/v1/insights/problems-by-theme?${params}`,
+          { headers: withTrackingHeaders(authHeaders) }
+        );
+        if (!res.ok) {
+          setData(null);
+          return;
+        }
+        const responseData: ProblemsByThemeResponse = await res.json();
+        setData(responseData);
+      } catch {
+        setData(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProblems();
+  }, [username, theme, page, timeControlFilter, phaseFilter, session?.idToken]);
 
   const handleTimeControlChange = (value: string) => {
     setTimeControlFilter(value);

@@ -4,6 +4,10 @@
 
 /* Zen Architect theme tokens */
 :root {
+  /* fonts */
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono-stack: var(--font-mono), "Fira Code", "Monaco", "Consolas", monospace;
+
   /* surfaces */
   --zen-bg: #f6f7f9;
   --zen-surface: rgba(255, 255, 255, 0.78);
@@ -62,6 +66,7 @@ body {
     ),
     var(--zen-bg);
   color: var(--zen-text);
+  font-family: var(--font-sans);
   font-size: 1rem;
   line-height: 1.6;
 }

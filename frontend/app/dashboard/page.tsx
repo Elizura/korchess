@@ -13,19 +13,6 @@ import {
   mergeHistory,
   saveGuestHistoryEntry,
 } from "@/lib/guestHistory";
-import {
-  PAGE_DATA_CACHE_TTL_MS,
-  buildAuthProfileCacheKey,
-  buildChessProfilesCacheKey,
-  buildDashboardCacheKey,
-  buildDashboardInsightsCacheKey,
-  clearAllCache,
-  clearCacheByPrefix,
-  clearCacheKey,
-  getCached,
-  isFresh,
-  setCached,
-} from "@/lib/pageDataCache";
 import { PlatformSelector, type Platform } from "@/components/PlatformSelector";
 import { ChessProfileCard, type ChessProfile } from "@/components/ChessProfileCard";
 import {
@@ -195,27 +182,6 @@ interface InsightsProfile {
 
 type ColorFilter = "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
-
-type DashboardReportCacheData = {
-  reportWhite: OpeningStats[] | null;
-  reportBlack: OpeningStats[] | null;
-  importStatus: ImportStatus | null;
-  lichessImportStatus: ImportStatus | null;
-  chesscomImportStatus: ImportStatus | null;
-};
-
-type DashboardImportHistoryCacheData = {
-  history: ImportHistoryItem[];
-};
-
-type AuthProfileCacheData = {
-  username: string;
-  avatar: string;
-};
-
-type ChessProfilesCacheData = {
-  profiles: ChessProfile[];
-};
 
 const INSIGHTS_ACTIVE_STATUSES = new Set<InsightsProfile["lifecycle_status"]>([
   "queued",
@@ -398,12 +364,10 @@ export default function DashboardPage() {
     useState<TimeClassFilter>("all");
   const [currentUsername, setCurrentUsername] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
-  const [lichessImportStatus, setLichessImportStatus] = useState<ImportStatus | null>(null);
-  const [chesscomImportStatus, setChesscomImportStatus] = useState<ImportStatus | null>(null);
   const [profileUsername, setProfileUsername] = useState<string>("");
   const [profileAvatar, setProfileAvatar] = useState<string>("pawn");
-  const [initialized, setInitialized] = useState(false);
   const hasAutoLoadedFromHistory = useRef(false);
+  const profilesFetchedRef = useRef(false);
   const [guestImportHistory, setGuestImportHistory] = useState<ImportHistoryItem[]>([]);
   const [accountImportHistory, setAccountImportHistory] = useState<ImportHistoryItem[]>([]);
   const [insights, setInsights] = useState<InsightsProfile | null>(null);
@@ -457,20 +421,6 @@ export default function DashboardPage() {
     if (!isAuthenticated) return;
 
     const fetchProfile = async () => {
-      const cacheKey = buildAuthProfileCacheKey(authUserId);
-      
-      // Try to load from cache first
-      const cached = getCached<AuthProfileCacheData>(cacheKey);
-      if (cached) {
-        setProfileUsername(cached.data.username);
-        setProfileAvatar(cached.data.avatar);
-        
-        // If cache is fresh, skip the fetch
-        if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
-          return;
-        }
-      }
-      
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/v1/auth/profile`,
@@ -478,14 +428,8 @@ export default function DashboardPage() {
         );
         if (!res.ok) return;
         const profile = await res.json();
-        const username = profile.username || "";
-        const avatar = profile.avatar || "pawn";
-        
-        setProfileUsername(username);
-        setProfileAvatar(avatar);
-        
-        // Cache the profile data
-        setCached<AuthProfileCacheData>(cacheKey, { username, avatar });
+        setProfileUsername(profile.username || "");
+        setProfileAvatar(profile.avatar || "pawn");
       } catch {
         // Ignore; user can still use dashboard
       }
@@ -494,45 +438,13 @@ export default function DashboardPage() {
     fetchProfile();
   }, [isAuthenticated, session?.idToken]);
 
-  // Fetch chess profiles when authenticated
+  // Clear chess profiles when signed out
   useEffect(() => {
-    if (!isAuthenticated || !session?.idToken) {
+    if (!isAuthenticated) {
       setChessProfiles([]);
-      return;
+      profilesFetchedRef.current = false;
     }
-
-    const loadChessProfiles = async () => {
-      if (!session?.idToken) return;
-      
-      const cacheKey = buildChessProfilesCacheKey(authUserId);
-      
-      // Try to load from cache first
-      const cached = getCached<ChessProfilesCacheData>(cacheKey);
-      if (cached) {
-        setChessProfiles(cached.data.profiles);
-        
-        // If cache is fresh, skip the fetch
-        if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
-          return;
-        }
-      }
-      
-      try {
-        setProfilesLoading(true);
-        const profiles = await fetchProfiles(session.idToken);
-        setChessProfiles(profiles);
-        
-        // Cache the profiles data
-        setCached<ChessProfilesCacheData>(cacheKey, { profiles });
-      } catch {
-        // Ignore errors; profiles are optional enhancement
-      } finally {
-        setProfilesLoading(false);
-      }
-    };
-
-    loadChessProfiles();
-  }, [isAuthenticated, session?.idToken]);
+  }, [isAuthenticated]);
 
   // Poll Redis for import progress, then fetch reports when complete
   const pollAfterImport = useCallback(
@@ -553,19 +465,15 @@ export default function DashboardPage() {
               setImportProgress(null);
               
               // Fetch final reports, import status, and problem spotter
-              const [whiteData, blackData, statusData, lichessStatus, chesscomStatus, problemSpotterData] = await Promise.all([
+              const [whiteData, blackData, statusData, problemSpotterData] = await Promise.all([
                 fetchReport(targetUsername, "white", timeClassFilter),
                 fetchReport(targetUsername, "black", timeClassFilter),
                 fetchImportStatus(targetUsername),
-                fetchImportStatus(targetUsername, "lichess"),
-                fetchImportStatus(targetUsername, "chesscom"),
                 fetchProblemSpotter(targetUsername),
               ]);
               setReport(whiteData);
               setReportBlack(blackData);
               if (statusData) setImportStatus(statusData);
-              setLichessImportStatus(lichessStatus);
-              setChesscomImportStatus(chesscomStatus);
               setProblemSpotter(problemSpotterData);
               break;
             }
@@ -590,10 +498,6 @@ export default function DashboardPage() {
   // Shared: refresh reports and import status after any import (insights disabled)
   const refreshDashboardAfterImport = useCallback(
     async (targetUsername: string, site: "lichess" | "chesscom", importResult: ImportResponse) => {
-      clearCacheByPrefix(`dashboard:${targetUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`dashboard:variations:${targetUsername.toLowerCase()}:`);
-      clearCacheByPrefix(`opening:${targetUsername.toLowerCase()}:`);
-
       if (isAuthenticated) {
         void fetchImportHistory();
       }
@@ -603,18 +507,14 @@ export default function DashboardPage() {
         void pollAfterImport(targetUsername, site);
       } else {
         // No games imported, just fetch current state
-        const [whiteReportData, blackReportData, statusData, lichessStatus, chesscomStatus] = await Promise.all([
+        const [whiteReportData, blackReportData, statusData] = await Promise.all([
           fetchReport(targetUsername, "white", timeClassFilter),
           fetchReport(targetUsername, "black", timeClassFilter),
           fetchImportStatus(targetUsername),
-          fetchImportStatus(targetUsername, "lichess"),
-          fetchImportStatus(targetUsername, "chesscom"),
         ]);
         setReport(whiteReportData);
         setReportBlack(blackReportData);
         if (statusData) setImportStatus(statusData);
-        setLichessImportStatus(lichessStatus);
-        setChesscomImportStatus(chesscomStatus);
       }
     },
     [isAuthenticated, timeClassFilter, pollAfterImport]
@@ -660,9 +560,6 @@ export default function DashboardPage() {
         })();
         
         setChessProfiles(updatedProfiles);
-        
-        clearCacheKey(buildChessProfilesCacheKey(authUserId));
-        setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
 
         setUsername(result.profile.chess_username);
         setCurrentUsername(result.profile.chess_username);
@@ -752,9 +649,6 @@ export default function DashboardPage() {
         );
         
         setChessProfiles(updatedProfiles);
-        
-        // Update chess profiles cache
-        setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
 
         if (
           currentUsername &&
@@ -837,15 +731,6 @@ export default function DashboardPage() {
         );
 
         setChessProfiles(updatedProfiles);
-
-        // Update chess profiles cache
-        setCached<ChessProfilesCacheData>(buildChessProfilesCacheKey(authUserId), { profiles: updatedProfiles });
-
-        // Clear all caches for this user
-        clearCacheByPrefix(`dashboard:${profile.chess_username.toLowerCase()}:`);
-        clearCacheByPrefix(`dashboard:variations:${profile.chess_username.toLowerCase()}:`);
-        clearCacheByPrefix(`dashboard:insights:${profile.chess_username.toLowerCase()}:`);
-        clearCacheByPrefix(`opening:${profile.chess_username.toLowerCase()}:`);
 
         // If this was the current user, clear the view
         if (currentUsername?.toLowerCase() === profile.chess_username.toLowerCase()) {
@@ -1016,9 +901,9 @@ export default function DashboardPage() {
     return (await response.json()) as OpeningStats[];
   };
 
-  const fetchImportStatus = async (user: string, site: "all" | "lichess" | "chesscom" = "all") => {
+  const fetchImportStatus = async (user: string) => {
     const response = await fetch(
-      `${API_BASE_URL}/api/v1/import-status/${site}/${encodeURIComponent(user)}`,
+      `${API_BASE_URL}/api/v1/import-status/all/${encodeURIComponent(user)}`,
       { headers: withTrackingHeaders(authHeaders) }
     );
     
@@ -1053,23 +938,13 @@ export default function DashboardPage() {
       setAccountImportHistory([]);
       return;
     }
-    const cacheKey = `dashboard:history:${authUserId}`;
-    const cached = getCached<DashboardImportHistoryCacheData>(cacheKey);
-    if (cached) {
-      setAccountImportHistory(cached.data.history || []);
-      if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
-        return;
-      }
-    }
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/import/history`, {
         headers: withTrackingHeaders(authHeaders),
       });
       if (response.ok) {
         const data = await response.json();
-        const nextHistory = data.history || [];
-        setAccountImportHistory(nextHistory);
-        setCached<DashboardImportHistoryCacheData>(cacheKey, { history: nextHistory });
+        setAccountImportHistory(data.history || []);
       }
     } catch {
       // Silently ignore - not critical
@@ -1111,101 +986,75 @@ export default function DashboardPage() {
     return (await response.json()) as InsightsProfile;
   };
 
-  const getDashboardBundleCacheKey = (
-    user: string,
-    color: ColorFilter,
-    timeClass: TimeClassFilter,
-  ): string => buildDashboardCacheKey(user, color, timeClass, authUserId);
-
-  const getDashboardInsightsCacheKey = (user: string): string =>
-    buildDashboardInsightsCacheKey(user, authUserId);
-
   const loadDashboardBundle = async (
     user: string,
     color: ColorFilter,
     timeClass: TimeClassFilter,
     options?: { force?: boolean },
   ) => {
-    const force = Boolean(options?.force);
-    const cacheKey = getDashboardBundleCacheKey(user, color, timeClass);
-    const cached = getCached<DashboardReportCacheData>(cacheKey);
-    const hasCached = Boolean(cached);
-    const shouldFetch = force || !cached || !isFresh(cached, PAGE_DATA_CACHE_TTL_MS);
+    setLoading(true);
 
-    if (cached) {
-      setReport(cached.data.reportWhite || null);
-      setReportBlack(cached.data.reportBlack || null);
-      setImportStatus(cached.data.importStatus || null);
-      setLichessImportStatus(cached.data.lichessImportStatus || null);
-      setChesscomImportStatus(cached.data.chesscomImportStatus || null);
-      setLoading(false);
-      setError(null);
-      setReportRefreshNotice(null);
-    } else if (!force) {
-      setLoading(true);
-    }
-
-    if (!shouldFetch) {
-      return;
-    }
-
-    if (hasCached) {
-      setReportRefreshing(true);
-    } else {
-      setLoading(true);
+    // Include profiles fetch on first load for authenticated users
+    const shouldFetchProfiles = isAuthenticated && session?.idToken && !profilesFetchedRef.current;
+    if (shouldFetchProfiles) {
+      setProfilesLoading(true);
     }
 
     try {
-      const [whiteReportData, blackReportData, statusData, lichessStatus, chesscomStatus, problemSpotterData] = await Promise.all([
+      const fetchPromises: Promise<unknown>[] = [
         fetchReport(user, "white", timeClass),
         fetchReport(user, "black", timeClass),
         fetchImportStatus(user),
-        fetchImportStatus(user, "lichess"),
-        fetchImportStatus(user, "chesscom"),
         fetchProblemSpotter(user),
-      ]);
-      setReport(whiteReportData);
-      setReportBlack(blackReportData);
-      setImportStatus(statusData);
-      setLichessImportStatus(lichessStatus);
-      setChesscomImportStatus(chesscomStatus);
-      setProblemSpotter(problemSpotterData);
-      setCached<DashboardReportCacheData>(cacheKey, {
-        reportWhite: whiteReportData,
-        reportBlack: blackReportData,
-        importStatus: statusData,
-        lichessImportStatus: lichessStatus,
-        chesscomImportStatus: chesscomStatus,
-      });
+      ];
+
+      // Add profiles fetch if needed (batched with other requests)
+      if (shouldFetchProfiles) {
+        fetchPromises.push(fetchProfiles(session.idToken));
+      }
+
+      const results = await Promise.all(fetchPromises);
+
+      setReport(results[0] as OpeningStats[] | null);
+      setReportBlack(results[1] as OpeningStats[] | null);
+      setImportStatus(results[2] as ImportStatus | null);
+      setProblemSpotter(results[3] as ProblemSpotterData | null);
+
+      // Set profiles if fetched
+      if (shouldFetchProfiles && results[4]) {
+        setChessProfiles(results[4] as ChessProfile[]);
+        profilesFetchedRef.current = true;
+      }
+
       setError(null);
       setReportRefreshNotice(null);
     } catch (err) {
-      if (hasCached) {
-        setReportRefreshNotice("Showing cached data; background refresh failed.");
-      } else {
-        setError(err instanceof Error ? err.message : "Failed to load data");
-      }
+      setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
       setLoading(false);
       setReportRefreshing(false);
+      if (shouldFetchProfiles) {
+        setProfilesLoading(false);
+      }
     }
   };
 
-  // Restore state from URL on mount
+  // Restore state from URL on mount or when URL user changes
+  const prevUserFromUrl = useRef<string | null>(null);
   useEffect(() => {
     if (!userFromUrl) return;
     if (status === "loading") return;
+    
+    // Skip if we already loaded this exact user
+    if (prevUserFromUrl.current === userFromUrl) return;
+    prevUserFromUrl.current = userFromUrl;
 
-    if (!initialized) {
-      setInitialized(true);
-      setUsername(userFromUrl);
-      setCurrentUsername(userFromUrl);
-      persistLastUser(userFromUrl);
-    }
-
+    setUsername(userFromUrl);
+    setCurrentUsername(userFromUrl);
+    persistLastUser(userFromUrl);
     setError(null);
     void loadDashboardBundle(userFromUrl, colorFilter, timeClassFilter);
-  }, [userFromUrl, initialized, colorFilter, timeClassFilter, authUserId, status]);
+  }, [userFromUrl, status]);
 
   // Update URL and persist last selected user
   const updateUrl = (user: string | null) => {
@@ -1246,7 +1095,6 @@ export default function DashboardPage() {
           },
         });
         setInsights(refreshed);
-        clearCacheKey(getDashboardInsightsCacheKey(currentUsername));
 
         const pollUntilComplete = async () => {
           let attempts = 0;
@@ -1257,10 +1105,6 @@ export default function DashboardPage() {
             try {
               const data = await fetchInsights(currentUsername);
               setInsights(data);
-              setCached<InsightsProfile | null>(
-                getDashboardInsightsCacheKey(currentUsername),
-                data,
-              );
               if (!shouldKeepPolling(data)) {
                 break;
               }
@@ -1300,7 +1144,6 @@ export default function DashboardPage() {
   };
 
   const handleSignOut = () => {
-    clearAllCache();
     void signOut();
   };
 

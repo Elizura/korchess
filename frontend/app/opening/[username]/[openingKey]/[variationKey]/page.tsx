@@ -10,13 +10,6 @@ import { Site } from "@/components/SourceSelector";
 import { useCountUp } from "@/hooks/useCountUp";
 import { useSession } from "next-auth/react";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
-import {
-  PAGE_DATA_CACHE_TTL_MS,
-  buildOpeningCacheKey,
-  getCached,
-  isFresh,
-  setCached,
-} from "@/lib/pageDataCache";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -45,14 +38,6 @@ interface OpeningSummary {
 interface OpeningGamesResponse {
   summary: OpeningSummary;
   games: GameDetail[];
-}
-
-interface OpeningPageCacheData {
-  games: GameDetail[];
-  summary: OpeningSummary | null;
-  openingName: string;
-  offset: number;
-  hasMore: boolean;
 }
 
 type ColorFilter = "all" | "white" | "black";
@@ -116,11 +101,6 @@ export default function OpeningDetailPage() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
-  const authUserId = useMemo(
-    () => (session?.user?.email || session?.user?.name || "anonymous").toLowerCase(),
-    [session?.user?.email, session?.user?.name],
-  );
 
   const statsVisible = !!summary && !loading;
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
@@ -132,54 +112,22 @@ export default function OpeningDetailPage() {
     return { Authorization: `Bearer ${session.idToken}` };
   }, [session?.idToken]);
 
-  const openingCacheKey = (targetOffset: number): string =>
-    buildOpeningCacheKey(
-      username,
-      openingKey,
-      variationKey || "_",
-      colorFilter,
-      timeClassFilter,
-      resultFilter,
-      targetOffset,
-      authUserId,
-    );
-
-  const fetchGames = async (resetOffset: boolean = false, options?: { force?: boolean }) => {
-    const force = Boolean(options?.force);
+  const fetchGames = async (resetOffset: boolean = false) => {
     const currentOffset = resetOffset ? 0 : offset;
-    let hasCached = false;
 
     if (resetOffset) {
-      const cached = force ? null : getCached<OpeningPageCacheData>(openingCacheKey(0));
-      if (cached) {
-        hasCached = true;
-        setGames(cached.data.games || []);
-        setSummary(cached.data.summary || null);
-        setOpeningName(cached.data.openingName || openingKey);
-        setOffset(cached.data.offset || 0);
-        setHasMore(Boolean(cached.data.hasMore));
-        setLoading(false);
-        setError(null);
-        setRefreshNotice(null);
-        if (isFresh(cached, PAGE_DATA_CACHE_TTL_MS)) {
-          return;
-        }
+      // Keep existing content visible during filter switches; only full-load on first visit.
+      if (games && games.length > 0) {
         setRefreshing(true);
+        setLoading(false);
       } else {
-        // Keep existing content visible during filter switches; only full-load on first visit.
-        if (games && games.length > 0) {
-          setRefreshing(true);
-          setLoading(false);
-        } else {
-          setLoading(true);
-        }
+        setLoading(true);
       }
     } else {
       setLoadingMore(true);
     }
 
     setError(null);
-    setRefreshNotice(null);
 
     try {
       const params = new URLSearchParams({
@@ -219,22 +167,8 @@ export default function OpeningDetailPage() {
         nextOpeningName = data.games[0].opening_name;
       }
       setOpeningName(nextOpeningName);
-
-      const cachePayload: OpeningPageCacheData = {
-        games: nextGames,
-        summary: data.summary,
-        openingName: nextOpeningName,
-        offset: nextOffset,
-        hasMore: data.games.length === 15,
-      };
-      setCached<OpeningPageCacheData>(openingCacheKey(nextOffset), cachePayload);
-      setCached<OpeningPageCacheData>(openingCacheKey(0), cachePayload);
     } catch (err) {
-      if (hasCached) {
-        setRefreshNotice("Showing cached data; background refresh failed.");
-      } else {
-        setError(err instanceof Error ? err.message : "An error occurred");
-      }
+      setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -246,7 +180,7 @@ export default function OpeningDetailPage() {
     if (username && openingKey) {
       void fetchGames(true);
     }
-  }, [username, openingKey, variationKey, colorFilter, timeClassFilter, resultFilter, site, authUserId]);
+  }, [username, openingKey, variationKey, colorFilter, timeClassFilter, resultFilter, site]);
 
   useEffect(() => {
     if (!username || !openingKey || !variationKey) return;
@@ -416,10 +350,6 @@ export default function OpeningDetailPage() {
 
       {refreshing && games && (
         <p className="mb-3 text-xs text-[color:var(--zen-muted)]">Refreshing...</p>
-      )}
-
-      {refreshNotice && games && (
-        <p className="mb-3 text-xs text-[color:var(--zen-muted)]">{refreshNotice}</p>
       )}
 
       {/* Loading */}
