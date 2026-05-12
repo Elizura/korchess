@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { signIn, signOut, useSession } from "next-auth/react";
+import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics/client";
 
 export default function LandingPage() {
-  const { data: session } = useSession();
+  const { user, signout } = useAuth();
 
   return (
     <div className="bg-background-dark font-mono text-gray-100 selection:bg-accent-green selection:text-black min-h-screen">
@@ -18,27 +18,27 @@ export default function LandingPage() {
             </span>
           </Link>
           {/* <div className="flex items-center gap-4">
-            {session?.user ? (
+            {user ? (
               <>
                 <span className="hidden md:block text-[9px] font-display uppercase opacity-50">
-                  USER: {(session.user.name ?? session.user.email ?? "USER")
+                  USER: {(user.username ?? user.email ?? "USER")
                     .toUpperCase()
                     .slice(0, 12)}
                 </span>
                 <button
-                  onClick={() => signOut()}
+                  onClick={() => signout()}
                   className="bg-primary hover:bg-primary/90 text-white px-3 py-1.5 font-display text-[9px] pixel-border-primary transition-all active:translate-y-1"
                 >
                   SIGN OUT
                 </button>
               </>
             ) : (
-              <button
-                onClick={() => signIn("google")}
+              <Link
+                href="/signin"
                 className="bg-primary hover:bg-primary/90 text-white px-3 py-1.5 font-display text-[9px] pixel-border-primary transition-all active:translate-y-1"
               >
                 SIGN IN
-              </button>
+              </Link>
             )}
           </div> */}
         </div>
