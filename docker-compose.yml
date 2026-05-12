@@ -44,8 +44,6 @@ services:
       - .env
     environment:
       - NODE_ENV=production
-      - NEXTAUTH_URL=${NEXTAUTH_URL:-https://korchess.com}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-}
 
   nginx:
     image: nginx:1.25-alpine
