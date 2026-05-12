@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
-import types
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -15,42 +14,6 @@ from fastapi.security import HTTPAuthorizationCredentials
 from starlette.requests import Request
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
-
-try:
-    import google.oauth2.id_token  # type: ignore  # noqa: F401
-    import google.auth.transport.requests  # type: ignore  # noqa: F401
-except ModuleNotFoundError:
-    google_mod = types.ModuleType("google")
-    oauth2_mod = types.ModuleType("google.oauth2")
-    id_token_mod = types.ModuleType("google.oauth2.id_token")
-
-    def _verify_oauth2_token(*_args, **_kwargs):  # pragma: no cover - test stub
-        return {}
-
-    id_token_mod.verify_oauth2_token = _verify_oauth2_token  # type: ignore[attr-defined]
-
-    auth_mod = types.ModuleType("google.auth")
-    transport_mod = types.ModuleType("google.auth.transport")
-    requests_mod = types.ModuleType("google.auth.transport.requests")
-
-    class _DummyGoogleRequest:  # pragma: no cover - test stub
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-    requests_mod.Request = _DummyGoogleRequest  # type: ignore[attr-defined]
-
-    google_mod.oauth2 = oauth2_mod  # type: ignore[attr-defined]
-    oauth2_mod.id_token = id_token_mod  # type: ignore[attr-defined]
-    google_mod.auth = auth_mod  # type: ignore[attr-defined]
-    auth_mod.transport = transport_mod  # type: ignore[attr-defined]
-    transport_mod.requests = requests_mod  # type: ignore[attr-defined]
-
-    sys.modules["google"] = google_mod
-    sys.modules["google.oauth2"] = oauth2_mod
-    sys.modules["google.oauth2.id_token"] = id_token_mod
-    sys.modules["google.auth"] = auth_mod
-    sys.modules["google.auth.transport"] = transport_mod
-    sys.modules["google.auth.transport.requests"] = requests_mod
 
 from services.analytics import AnalyticsValidationError
 from auth import get_registered_user
@@ -150,7 +113,7 @@ class RegisteredUserConnectionTest(unittest.TestCase):
         credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-token")
         conn = object()
 
-        with patch("auth._verify_google_token", return_value={"id": "user-1"}), patch(
+        with patch("auth.verify_access_token", return_value={"id": "user-1", "email": "a@b.com"}), patch(
             "db.get_user_by_id", return_value={"id": "user-1"}
         ) as get_user_by_id_mock, patch(
             "db.get_connection", side_effect=AssertionError("unexpected get_connection() call")
@@ -165,7 +128,7 @@ class RegisteredUserConnectionTest(unittest.TestCase):
         credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-token")
         conn = object()
 
-        with patch("auth._verify_google_token", return_value={"id": "user-2"}), patch(
+        with patch("auth.verify_access_token", return_value={"id": "user-2", "email": "a@b.com"}), patch(
             "db.get_user_by_id", return_value=None
         ):
             with self.assertRaises(HTTPException) as err:
