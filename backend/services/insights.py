@@ -1,4 +1,4 @@
-"""Tiered AI insights pipeline for chess game histories."""
+"""AI insights pipeline for chess game histories."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import io
 import json
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import chess
@@ -19,21 +18,16 @@ from repository.db import (
     create_insight_job,
     get_active_insight_job,
     get_featured_game_ids,
-    get_full_analysis,
     get_games_for_insights,
     get_insight_game_features,
     get_player_insights,
-    save_full_analysis,
+    get_quick_scan_results,
     update_insight_job,
     upsert_insight_game_feature,
     upsert_player_insights,
 )
 from repository.db_connection import get_connection
-from services.full_analysis import run_full_analysis
 from utils.insights_constants import (
-    DEEP_ANALYSIS_DEPTH,
-    DEEP_ANALYSIS_MULTIPV,
-    DEEP_ANALYSIS_TIME_MS,
     FEATURE_VERSION,
     LOW_TIME_FLOOR_SECONDS,
     LOW_TIME_RATIO,
@@ -53,12 +47,11 @@ from utils.insights_utils import (
     extract_clock_seconds,
     mean,
     phase_for_ply,
-    safe_parse_datetime,
     utc_now_iso,
 )
 from services.insights_aggregate import (
     aggregate_light_features,
-    aggregate_deep_features,
+    aggregate_scan_features,
     compute_style_scores,
     compute_opening_rankings,
     build_coverage_metrics,
@@ -235,308 +228,21 @@ def extract_light_game_features(game_row: dict[str, Any]) -> dict[str, Any]:
     return base
 
 
-def _select_deep_candidates(
-    games: list[dict[str, Any]],
-    features: list[dict[str, Any]],
-    budget: int,
-) -> list[dict[str, Any]]:
-    if budget <= 0:
-        return []
-
-    feature_by_key = {
-        (row["site"], row["site_game_id"]): row for row in features
-    }
-    unresolved = []
-    for game in games:
-        key = (game.get("site"), game.get("site_game_id"))
-        row = feature_by_key.get(key)
-        if row and row.get("deep"):
-            continue
-        if not (game.get("pgn") or "").strip():
-            continue
-        unresolved.append(game)
-
-    if not unresolved:
-        return []
-
-    unresolved.sort(
-        key=lambda item: safe_parse_datetime(item.get("played_at") or "") or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-
-    selected: list[dict[str, Any]] = []
-    seen_time_class: set[str] = set()
-    seen_color: set[str] = set()
-
-    for game in unresolved:
-        if len(selected) >= budget:
-            break
-        time_class = (game.get("time_class") or "unknown").lower()
-        color = (game.get("color") or "unknown").lower()
-        novelty = (time_class not in seen_time_class) or (color not in seen_color)
-        if novelty:
-            selected.append(game)
-            seen_time_class.add(time_class)
-            seen_color.add(color)
-
-    if len(selected) < budget:
-        selected_keys = {(item["site"], item["site_game_id"]) for item in selected}
-        for game in unresolved:
-            if len(selected) >= budget:
-                break
-            key = (game["site"], game["site_game_id"])
-            if key in selected_keys:
-                continue
-            selected.append(game)
-            selected_keys.add(key)
-
-    return selected
-
-
-def _extract_deep_game_features(
-    game_row: dict[str, Any],
-    light_feature: dict[str, Any],
-    deep_analysis: dict[str, Any],
-) -> dict[str, Any]:
-    """Build deep per-game artifacts from full engine analysis."""
-    moves = deep_analysis.get("moves") or []
-    color = (game_row.get("color") or "white").lower()
-    user_is_white = color == "white"
-    sign = 1 if user_is_white else -1
-
-    phase_profile = light_feature.get("phase_profile", {})
-    opening_end_ply = int(phase_profile.get("opening_end_ply") or 20)
-    endgame_start_ply = phase_profile.get("endgame_start_ply")
-    if isinstance(endgame_start_ply, str):
-        try:
-            endgame_start_ply = int(endgame_start_ply)
-        except ValueError:
-            endgame_start_ply = None
-
-    phase_stats = {
-        "opening": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-        "middlegame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-        "endgame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-    }
-    theme_counts: dict[str, int] = {}
-    cp_losses: list[float] = []
-    blunders_total = 0
-    blunders_low_time = 0
-    user_moves_with_clock = 0
-    user_moves_low_time = 0
-
-    clock_lookup = light_feature.get("clock_by_ply", {})
-    low_time_threshold = light_feature.get("time_pressure", {}).get("low_time_threshold_s")
-    low_time_cp_losses: list[float] = []
-
-    for move in moves:
-        raw_ply = int(move.get("ply", 0))
-        ply = raw_ply + 1
-        is_white_move = raw_ply % 2 == 0
-        is_user_move = (is_white_move and user_is_white) or ((not is_white_move) and (not user_is_white))
-        if not is_user_move:
-            continue
-
-        phase = phase_for_ply(ply, opening_end_ply, endgame_start_ply)
-        classification = move.get("classification") or "unknown"
-        cp_loss = move.get("cp_loss")
-
-        eval_before = (move.get("eval_before") or {}).get("cp")
-        user_eval_before: float | None = None
-        if isinstance(eval_before, (int, float)):
-            user_eval_before = float(eval_before) * sign
-
-        clock_seconds = clock_lookup.get(ply)
-        is_low_time_move = (
-            low_time_threshold is not None
-            and clock_seconds is not None
-            and clock_seconds <= int(low_time_threshold)
-        )
-        if clock_seconds is not None:
-            user_moves_with_clock += 1
-        if is_low_time_move:
-            user_moves_low_time += 1
-        if classification == "blunder":
-            blunders_total += 1
-            if is_low_time_move:
-                blunders_low_time += 1
-
-        if cp_loss is None:
-            continue
-
-        cp_loss_f = float(cp_loss)
-        cp_losses.append(cp_loss_f)
-        phase_stats[phase]["moves"] += 1
-        phase_stats[phase]["cp_loss_sum"] += cp_loss_f
-
-        if classification in {"mistake", "blunder"}:
-            phase_stats[phase]["mistakes"] += 1
-        if classification == "blunder":
-            phase_stats[phase]["blunders"] += 1
-
-        themes: list[str] = []
-        if cp_loss_f >= 300:
-            if phase == "opening":
-                themes.append("opening_blunder")
-            elif phase == "middlegame":
-                themes.append("tactical_oversight")
-            else:
-                themes.append("endgame_blunder")
-        elif cp_loss_f >= 120:
-            themes.append("critical_inaccuracy")
-
-        if user_eval_before is not None and cp_loss_f >= 120:
-            if user_eval_before > 120:
-                themes.append("conversion_miss")
-            elif user_eval_before < -120:
-                themes.append("defensive_slip")
-
-        if not themes and cp_loss_f >= 80:
-            themes.append("small_technique_error")
-
-        for theme in themes:
-            theme_counts[theme] = theme_counts.get(theme, 0) + 1
-
-        if is_low_time_move:
-            low_time_cp_losses.append(cp_loss_f)
-
-    for phase_name, stats in phase_stats.items():
-        moves_count = stats["moves"]
-        stats["avg_cp_loss"] = round((stats["cp_loss_sum"] / moves_count), 2) if moves_count > 0 else None
-        del stats["cp_loss_sum"]
-        stats["mistake_rate"] = round((stats["mistakes"] / moves_count), 4) if moves_count > 0 else None
-
-    return {
-        "version": FEATURE_VERSION,
-        "analysis_tier": "deep",
-        "computed_at": utc_now_iso(),
-        "engine_meta": deep_analysis.get("meta") or {},
-        "quality": {
-            "user_moves_analyzed": len(cp_losses),
-            "avg_cp_loss": round(mean(cp_losses), 2) if cp_losses else None,
-            "blunder_rate": round((blunders_total / len(cp_losses)), 4) if cp_losses else None,
-            "avg_cp_loss_low_time": round(mean(low_time_cp_losses), 2) if low_time_cp_losses else None,
-            "time_pressure": {
-                "user_moves_with_clock": user_moves_with_clock,
-                "user_moves_low_time": user_moves_low_time,
-                "blunders_total": blunders_total,
-                "blunders_low_time": blunders_low_time,
-                "blunder_share_low_time": round((blunders_low_time / blunders_total), 4)
-                if blunders_total > 0
-                else None,
-                "blunder_rate_low_time": round((blunders_low_time / user_moves_low_time), 4)
-                if user_moves_low_time > 0
-                else None,
-            },
-        },
-        "phase_stats": phase_stats,
-        "theme_counts": theme_counts,
-    }
-
-
-def _load_cached_full_analysis_payload(
-    owner_user_id: str,
-    username: str,
-    site: str,
-    site_game_id: str,
-) -> dict[str, Any] | None:
-    with get_connection() as conn:
-        cached = get_full_analysis(
-            conn,
-            owner_user_id,
-            username,
-            site_game_id,
-            DEEP_ANALYSIS_DEPTH,
-            DEEP_ANALYSIS_MULTIPV,
-            site,
-        )
-
-    if not cached:
-        return None
-
-    try:
-        return {
-            "moves": json.loads(cached.get("moves_json") or "[]"),
-            "summary": json.loads(cached.get("summary_json") or "{}"),
-            "meta": json.loads(cached.get("meta_json") or "{}"),
-        }
-    except (TypeError, json.JSONDecodeError):
-        return None
-
-
-def _save_full_analysis_cache_payload(
-    owner_user_id: str,
-    username: str,
-    site: str,
-    site_game_id: str,
-    full_analysis: dict[str, Any],
-) -> None:
-    with get_connection() as conn:
-        save_full_analysis(
-            conn,
-            owner_user_id,
-            username,
-            site_game_id,
-            depth=DEEP_ANALYSIS_DEPTH,
-            multipv=DEEP_ANALYSIS_MULTIPV,
-            moves_json=json.dumps(full_analysis.get("moves") or []),
-            summary_json=json.dumps(full_analysis.get("summary") or {}),
-            meta_json=json.dumps(full_analysis.get("meta") or {}),
-            insights_json=None,
-            site=site,
-        )
-        conn.commit()
-
-
-def _build_deep_feature_with_cache(
-    game: dict[str, Any],
-    light_feature: dict[str, Any],
-    *,
-    source_owner_id: str,
-    username: str,
-) -> dict[str, Any]:
-    site = str(game.get("site") or "lichess")
-    site_game_id = str(game.get("site_game_id") or "")
-    if not site_game_id:
-        raise ValueError("Missing site_game_id for deep feature build.")
-
-    full_analysis = _load_cached_full_analysis_payload(
-        source_owner_id,
-        username,
-        site,
-        site_game_id,
-    )
-    if full_analysis is None:
-        full_analysis = run_full_analysis(
-            game.get("pgn") or "",
-            DEEP_ANALYSIS_DEPTH,
-            DEEP_ANALYSIS_MULTIPV,
-            DEEP_ANALYSIS_TIME_MS,
-            opening_ply_count=game.get("opening_ply_count"),
-        )
-        _save_full_analysis_cache_payload(
-            source_owner_id,
-            username,
-            site,
-            site_game_id,
-            full_analysis,
-        )
-
-    return _extract_deep_game_features(game, light_feature, full_analysis)
-
 
 def _build_aggregate_features(
     feature_rows: list[dict[str, Any]],
+    scan_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Aggregate per-game features into user-level insights artifacts.
-    
+
+    Uses light features for win/loss/style metrics and quick-scan results
+    for engine-derived metrics (phase CP loss, themes, blunder rates).
+
     Returns:
         (features, coverage, fact_map) tuple for player insights.
     """
     light_features = [row["light"] for row in feature_rows if row.get("light")]
-    deep_features = [row["deep"] for row in feature_rows if row.get("deep")]
 
-    # Aggregate light feature metrics
     light_agg = aggregate_light_features(light_features)
     total_games = light_agg["total_games"]
     wins = light_agg["wins"]
@@ -547,30 +253,24 @@ def _build_aggregate_features(
     openings = light_agg["openings"]
     clock_games = light_agg["clock_games"]
     low_time_games = light_agg["low_time_games"]
-    
+
     overall_score_pct = round((mean(light_agg["overall_scores"]) * 100), 1) if light_agg["overall_scores"] else 0.0
     low_time_score_pct = round((mean(light_agg["low_time_scores"]) * 100), 1) if light_agg["low_time_scores"] else None
 
-    # Aggregate deep feature metrics
-    deep_agg = aggregate_deep_features(deep_features)
-    phase_performance = deep_agg["phase_performance"]
-    theme_counts = deep_agg["theme_counts"]
-    total_user_moves_deep = deep_agg["total_user_moves_deep"]
-    total_blunders_deep = deep_agg["total_blunders_deep"]
-    total_low_time_blunders_deep = deep_agg["total_low_time_blunders_deep"]
-    total_blunders_with_clock_deep = deep_agg["total_blunders_with_clock_deep"]
-    total_low_time_moves_deep = deep_agg["total_low_time_moves_deep"]
-    total_moves_with_clock_deep = deep_agg["total_moves_with_clock_deep"]
+    scan_agg = aggregate_scan_features(scan_rows) if scan_rows else None
+    phase_performance = scan_agg["phase_performance"] if scan_agg else {}
+    theme_counts = scan_agg["theme_counts"] if scan_agg else {}
+    total_user_moves_scan = scan_agg["total_user_moves"] if scan_agg else 0
+    total_blunders_scan = scan_agg["total_blunders"] if scan_agg else 0
+    games_scanned = scan_agg["games_scanned"] if scan_agg else 0
 
-    # Compute opening rankings
     best_openings, worst_openings = compute_opening_rankings(openings)
 
-    # Compute style classification
     draw_rate = (draws / total_games) if total_games > 0 else 0.0
     avg_early_capture = mean(light_agg["early_capture_rates"])
     avg_early_check = mean(light_agg["early_check_rates"])
     avg_game_len = mean(light_agg["game_lengths"])
-    blunder_rate = (total_blunders_deep / total_user_moves_deep) if total_user_moves_deep > 0 else 0.0
+    blunder_rate = (total_blunders_scan / total_user_moves_scan) if total_user_moves_scan > 0 else 0.0
 
     style = compute_style_scores(
         draw_rate=draw_rate,
@@ -579,36 +279,32 @@ def _build_aggregate_features(
         avg_game_len=avg_game_len,
         blunder_rate=blunder_rate,
         theme_counts=theme_counts,
-        deep_game_count=len(deep_features),
+        scanned_game_count=games_scanned,
     )
 
-    # Sort themes by count
     theme_items = sorted(
         [{"theme": theme, "count": count} for theme, count in theme_counts.items()],
         key=lambda item: item["count"],
         reverse=True,
     )
 
-    # Build coverage metrics
     coverage = build_coverage_metrics(
         total_games=total_games,
         light_count=len(light_features),
-        deep_count=len(deep_features),
+        scan_count=games_scanned,
         clock_games=clock_games,
         low_time_games=low_time_games,
     )
     confidence = coverage["confidence"]
 
-    # Build fact map for grounded narrative
     fact_map: dict[str, dict[str, Any]] = {}
     overall_games_fact = add_fact(fact_map, "overall_games", "Games analyzed", total_games, "games")
     overall_score_fact = add_fact(fact_map, "overall_score_pct", "Overall score", overall_score_pct, "pct")
     style_fact = add_fact(fact_map, "style_label", "Player style", style["label"])
-    deep_cov_fact = add_fact(fact_map, "deep_coverage", "Deep analysis coverage", coverage["deep_coverage"], "ratio")
+    scan_cov_fact = add_fact(fact_map, "scan_coverage", "Scan coverage", coverage["scan_coverage"], "ratio")
     clock_cov_fact = add_fact(fact_map, "clock_coverage", "Clock data coverage", coverage["clock_coverage"], "ratio")
     confidence_fact = add_fact(fact_map, "confidence", "Insights confidence", round(confidence, 3), "ratio")
 
-    # Phase facts
     phase_fact_ids: dict[str, str] = {}
     for phase_name, stats in phase_performance.items():
         if stats["avg_cp_loss"] is None:
@@ -621,7 +317,6 @@ def _build_aggregate_features(
             "cp",
         )
 
-    # Opening facts
     best_opening_fact_ids = [
         add_fact(fact_map, f"best_opening_{idx}", f"Best opening #{idx}",
                  f"{item['opening']} ({item['score_pct']}% over {item['games']} games)")
@@ -633,23 +328,12 @@ def _build_aggregate_features(
         for idx, item in enumerate(worst_openings, start=1)
     ]
 
-    # Time pressure facts
     time_pressure_fact_ids: list[str] = []
     if low_time_score_pct is not None:
         time_pressure_fact_ids.append(
             add_fact(fact_map, "low_time_score_pct", "Score in low-time games", low_time_score_pct, "pct")
         )
-    blunders_under_pressure_pct: float | None = None
-    if total_blunders_with_clock_deep > 0:
-        blunders_under_pressure_pct = round(
-            (total_low_time_blunders_deep / total_blunders_with_clock_deep) * 100, 1
-        )
-        time_pressure_fact_ids.append(
-            add_fact(fact_map, "blunders_under_time_pressure_pct",
-                     "Share of blunders under time pressure", blunders_under_pressure_pct, "pct")
-        )
 
-    # Build strengths, weaknesses, coaching focus
     strengths, weaknesses, coaching_focus = build_strengths_weaknesses(
         overall_score_pct=overall_score_pct,
         total_games=total_games,
@@ -666,7 +350,6 @@ def _build_aggregate_features(
         phase_fact_ids=phase_fact_ids,
     )
 
-    # Assemble final features payload
     features = {
         "version": FEATURE_VERSION,
         "computed_at": utc_now_iso(),
@@ -710,11 +393,7 @@ def _build_aggregate_features(
             "games_with_pressure": low_time_games,
             "score_pct_under_pressure": low_time_score_pct,
             "score_pct_overall": overall_score_pct,
-            "blunders_under_pressure": total_low_time_blunders_deep,
-            "blunders_total_with_clock": total_blunders_with_clock_deep,
-            "blunders_under_pressure_pct": blunders_under_pressure_pct,
-            "low_time_moves_deep": total_low_time_moves_deep,
-            "moves_with_clock_deep": total_moves_with_clock_deep,
+            "blunders_total": total_blunders_scan,
             "fact_ids": time_pressure_fact_ids + [clock_cov_fact],
         },
         "recurring_themes": theme_items[:5],
@@ -723,9 +402,12 @@ def _build_aggregate_features(
         "coaching_focus": coaching_focus,
         "confidence": {
             "value": round(confidence, 3),
-            "fact_ids": [confidence_fact, deep_cov_fact, clock_cov_fact],
+            "fact_ids": [confidence_fact, scan_cov_fact, clock_cov_fact],
         },
     }
+
+    if scan_agg:
+        features["scan_aggregate"] = scan_agg
 
     return features, coverage, fact_map
 
@@ -1033,8 +715,8 @@ async def run_insights_pipeline(
                 coverage = {
                     "games_total": 0,
                     "games_light": 0,
-                    "games_deep": 0,
-                    "deep_coverage": 0.0,
+                    "games_scanned": 0,
+                    "scan_coverage": 0.0,
                     "games_with_clock": 0,
                     "clock_coverage": 0.0,
                     "has_enough_games": False,
@@ -1088,8 +770,9 @@ async def run_insights_pipeline(
                     site=site,
                     feature_version=FEATURE_VERSION,
                 )
+                scan_rows = get_quick_scan_results(conn, username, site)
 
-            features, coverage, fact_map = _build_aggregate_features(stored_features)
+            features, coverage, fact_map = _build_aggregate_features(stored_features, scan_rows)
             narrative = build_narrative(features, fact_map)
 
             initial_status = "baseline_ready" if coverage.get("has_enough_games") else "not_enough_data"

@@ -26,7 +26,7 @@ import { importGames, type ImportResponse } from "@/lib/import";
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
 
-const SHOW_COACHING_SUMMARY = false;
+const SHOW_COACHING_SUMMARY = true;
 
 const DASHBOARD_LAST_USER_KEY = "korchess_dashboard_last_user";
 
@@ -81,8 +81,8 @@ interface InsightsProfile {
   coverage?: {
     games_total?: number;
     games_light?: number;
-    games_deep?: number;
-    deep_coverage?: number;
+    games_scanned?: number;
+    scan_coverage?: number;
     games_with_clock?: number;
     clock_coverage?: number;
     has_enough_games?: boolean;
@@ -126,11 +126,7 @@ interface InsightsProfile {
       games_with_pressure?: number;
       score_pct_under_pressure?: number | null;
       score_pct_overall?: number | null;
-      blunders_under_pressure?: number;
-      blunders_total_with_clock?: number;
-      blunders_under_pressure_pct?: number | null;
-      low_time_moves_deep?: number;
-      moves_with_clock_deep?: number;
+      blunders_total?: number;
     };
     confidence?: {
       value?: number;
@@ -182,6 +178,24 @@ interface InsightsProfile {
 
 type ColorFilter = "white" | "black";
 type TimeClassFilter = "all" | "blitz" | "rapid" | "classical";
+
+interface ProblemSpotterData {
+  total_problems: number;
+  by_theme: Array<{ theme: string; label?: string; count: number }>;
+  by_phase: Record<string, number>;
+  by_classification: { blunders: number; mistakes: number };
+  recent_problems: Array<{
+    classification: string;
+    tactic_type?: string;
+    phase?: string;
+    site: string;
+    site_game_id: string;
+    time_class?: string;
+    opponent?: string;
+    played_at?: string;
+    ply?: number;
+  }>;
+}
 
 const INSIGHTS_ACTIVE_STATUSES = new Set<InsightsProfile["lifecycle_status"]>([
   "queued",
@@ -390,23 +404,7 @@ export default function DashboardPage() {
     total: number;
   } | null>(null);
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<ChessProfile | null>(null);
-  const [problemSpotter, setProblemSpotter] = useState<{
-    total_problems: number;
-    by_theme: Array<{ theme: string; label?: string; count: number }>;
-    by_phase: Record<string, number>;
-    by_classification: { blunders: number; mistakes: number };
-    recent_problems: Array<{
-      classification: string;
-      tactic_type?: string;
-      phase?: string;
-      site: string;
-      site_game_id: string;
-      time_class?: string;
-      opponent?: string;
-      played_at?: string;
-      ply?: number;
-    }>;
-  } | null>(null);
+  const [problemSpotter, setProblemSpotter] = useState<ProblemSpotterData | null>(null);
   const [problemSpotterLoading, setProblemSpotterLoading] = useState(false);
 
   const importHistory = useMemo(() => {
@@ -461,20 +459,22 @@ export default function DashboardPage() {
             setImportProgress(progress);
             
             // When complete, fetch final data and stop polling
-            if (progress.status === "complete") {
+              if (progress.status === "complete") {
               setImportProgress(null);
               
-              // Fetch final reports, import status, and problem spotter
-              const [whiteData, blackData, statusData, problemSpotterData] = await Promise.all([
+              // Fetch final reports, import status, problem spotter, and insights
+              const [whiteData, blackData, statusData, problemSpotterData, insightsData] = await Promise.all([
                 fetchReport(targetUsername, "white", timeClassFilter),
                 fetchReport(targetUsername, "black", timeClassFilter),
                 fetchImportStatus(targetUsername),
                 fetchProblemSpotter(targetUsername),
+                fetchInsights(targetUsername),
               ]);
               setReport(whiteData);
               setReportBlack(blackData);
               if (statusData) setImportStatus(statusData);
               setProblemSpotter(problemSpotterData);
+              setInsights(insightsData);
               break;
             }
           } else {
@@ -542,8 +542,7 @@ export default function DashboardPage() {
     setImportResult(null);
 
     if (!currentUsername || trimmedUsername.toLowerCase() !== currentUsername.toLowerCase()) {
-      setLichessImportStatus(null);
-      setChesscomImportStatus(null);
+      setImportStatus(null);
     }
 
     try {
@@ -790,71 +789,37 @@ export default function DashboardPage() {
     setAccountImportHistory([]);
   }, [isAuthenticated, authUserId]);
 
-  // Insights loading disabled (SHOW_COACHING_SUMMARY = false)
-  // useEffect(() => {
-  //   if (!currentUsername) {
-  //     setInsights(null);
-  //     return;
-  //   }
-  //   if (status === "loading") return;
+  useEffect(() => {
+    if (!currentUsername) {
+      setInsights(null);
+      return;
+    }
+    if (status === "loading") return;
 
-  //   let cancelled = false;
-  //   let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-  //   const cacheKey = getDashboardInsightsCacheKey(currentUsername);
+    const loadInsights = async () => {
+      setInsightsLoading(true);
+      try {
+        const data = await fetchInsights(currentUsername);
+        if (cancelled) return;
+        setInsights(data);
+        if (shouldKeepPolling(data)) {
+          timer = setTimeout(() => void loadInsights(), 8000);
+        }
+      } finally {
+        if (!cancelled) setInsightsLoading(false);
+      }
+    };
 
-  //   const loadInsights = async (force = false) => {
-  //     const cached = force ? null : getCached<InsightsProfile | null>(cacheKey);
-  //     const hasCached = Boolean(cached);
-  //     const cachedData = cached?.data || null;
-  //     const cachedLifecycleStatus = cachedData?.lifecycle_status;
-  //     const shouldPollCached =
-  //       cachedData !== null && shouldKeepPolling(cachedData);
-  //     const shouldFetch =
-  //       force ||
-  //       !cached ||
-  //       !isFresh(cached, PAGE_DATA_CACHE_TTL_MS) ||
-  //       shouldPollCached;
+    void loadInsights();
 
-  //     if (!cancelled && cached) {
-  //       setInsights(cachedData);
-  //       setInsightsLoading(false);
-  //     }
-
-  //     if (!shouldFetch) {
-  //       return;
-  //     }
-
-  //     if (!cancelled && !hasCached) {
-  //       setInsightsLoading(true);
-  //     }
-
-  //     try {
-  //       const data = await fetchInsights(currentUsername);
-  //       if (cancelled) return;
-  //       setInsights(data);
-  //       setCached<InsightsProfile | null>(cacheKey, data);
-  //       if (shouldKeepPolling(data)) {
-  //         timer = setTimeout(() => {
-  //           void loadInsights();
-  //         }, 8000);
-  //       }
-  //     } finally {
-  //       if (!cancelled) {
-  //         setInsightsLoading(false);
-  //       }
-  //     }
-  //   };
-
-  //   void loadInsights();
-
-  //   return () => {
-  //     cancelled = true;
-  //     if (timer) {
-  //       clearTimeout(timer);
-  //     }
-  //   };
-  // }, [status, session?.idToken, currentUsername, authHeaders, authUserId]);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [status, currentUsername]);
 
   // Fetch problem spotter (tactical analysis) - defined before useEffect that uses it
   const fetchProblemSpotter = async (user: string) => {
@@ -1010,7 +975,7 @@ export default function DashboardPage() {
 
       // Add profiles fetch if needed (batched with other requests)
       if (shouldFetchProfiles) {
-        fetchPromises.push(fetchProfiles(session.idToken));
+        fetchPromises.push(fetchProfiles(session!.idToken!));
       }
 
       const results = await Promise.all(fetchPromises);
@@ -1270,11 +1235,7 @@ export default function DashboardPage() {
     const underPressurePct = insights.features?.time_pressure?.score_pct_under_pressure;
     const overallPressureBaselinePct = insights.features?.time_pressure?.score_pct_overall ?? overallScorePct ?? null;
     const pressureGames = Number(insights.features?.time_pressure?.games_with_pressure || 0);
-    const blundersUnderPressure = Number(insights.features?.time_pressure?.blunders_under_pressure || 0);
-    const blundersTotalWithClock = Number(insights.features?.time_pressure?.blunders_total_with_clock || 0);
-    const blundersUnderPressurePct = insights.features?.time_pressure?.blunders_under_pressure_pct;
-    const lowTimeMovesDeep = Number(insights.features?.time_pressure?.low_time_moves_deep || 0);
-    const movesWithClockDeep = Number(insights.features?.time_pressure?.moves_with_clock_deep || 0);
+    const blundersTotal = Number(insights.features?.time_pressure?.blunders_total || 0);
     const pressureDelta =
       typeof underPressurePct === "number" && typeof overallPressureBaselinePct === "number"
         ? underPressurePct - overallPressureBaselinePct
@@ -1292,59 +1253,28 @@ export default function DashboardPage() {
       underPressurePct,
       overallPressureBaselinePct,
       pressureGames,
-      blundersUnderPressure,
-      blundersTotalWithClock,
-      blundersUnderPressurePct,
-      lowTimeMovesDeep,
-      movesWithClockDeep,
+      blundersTotal,
       pressureDelta,
     };
   }, [insights]);
 
   const playerTypeDescription = useMemo(() => {
+    if (insights?.narrative?.player_type?.text) {
+      return insights.narrative.player_type.text;
+    }
     const styleLabel = insights?.features?.style?.label || "Developing profile";
     return `They currently profile as ${styleLabel}.`;
-  }, [insights?.features?.style?.label]);
+  }, [insights?.narrative?.player_type?.text, insights?.features?.style?.label]);
 
   const timePressureSummary = useMemo(() => {
+    if (insights?.narrative?.time_pressure?.text) {
+      return insights.narrative.time_pressure.text;
+    }
     if (!coachingTemplateData) return "Time-pressure signals are not ready yet.";
     const under = coachingTemplateData.underPressurePct;
     const baseline = coachingTemplateData.overallPressureBaselinePct;
     const delta = coachingTemplateData.pressureDelta;
     const pressureGames = coachingTemplateData.pressureGames;
-    const blundersUnderPressure = coachingTemplateData.blundersUnderPressure;
-    const blundersTotalWithClock = coachingTemplateData.blundersTotalWithClock;
-    const blundersUnderPressurePct = coachingTemplateData.blundersUnderPressurePct;
-    const lowTimeMovesDeep = coachingTemplateData.lowTimeMovesDeep;
-    const movesWithClockDeep = coachingTemplateData.movesWithClockDeep;
-
-    if (
-      blundersTotalWithClock >= 5 &&
-      typeof blundersUnderPressurePct === "number" &&
-      Number.isFinite(blundersUnderPressurePct)
-    ) {
-      const pctText = formatWholePercent(blundersUnderPressurePct) || `${blundersUnderPressurePct.toFixed(1)}%`;
-      const countText = `${blundersUnderPressure}/${blundersTotalWithClock}`;
-      const movePressureSharePct =
-        movesWithClockDeep > 0
-          ? Math.round((lowTimeMovesDeep / movesWithClockDeep) * 100)
-          : null;
-      const moveShareText =
-        movePressureSharePct !== null
-          ? `while only ${movePressureSharePct}% of clocked moves were under time pressure`
-          : "relative to how often low-time positions occurred";
-
-      if (blundersUnderPressurePct >= 70) {
-        return `Time pressure is the main blunder trigger: ${pctText} of blunders (${countText}) happened with low time, ${moveShareText}.`;
-      }
-      if (blundersUnderPressurePct >= 50) {
-        return `A large share of blunders came under low time: ${pctText} (${countText}), ${moveShareText}.`;
-      }
-      if (blundersUnderPressurePct >= 30) {
-        return `${pctText} of blunders (${countText}) happened under time pressure. It contributes, but it is not the only issue.`;
-      }
-      return `Only ${pctText} of blunders (${countText}) happened under time pressure, so most blunders came outside time trouble.`;
-    }
 
     if (
       typeof under !== "number" ||
@@ -1380,9 +1310,12 @@ export default function DashboardPage() {
       return `Their level is fairly stable under clock pressure: ${underPct} in low-time moments${sampleSuffix} versus ${basePct} overall.`;
     }
     return `They handle time pressure very well: ${underPct} in low-time moments${sampleSuffix} versus ${basePct} overall.`;
-  }, [coachingTemplateData]);
+  }, [insights?.narrative?.time_pressure?.text, coachingTemplateData]);
 
   const strengthsBullets = useMemo(() => {
+    if (insights?.narrative?.strengths?.length) {
+      return insights.narrative.strengths.map((claim) => claim.text);
+    }
     if (!coachingTemplateData) return [];
     const bullets: string[] = [];
 
@@ -1408,9 +1341,12 @@ export default function DashboardPage() {
     }
 
     return bullets.slice(0, 3);
-  }, [coachingTemplateData]);
+  }, [insights?.narrative?.strengths, coachingTemplateData]);
 
   const weaknessesBullets = useMemo(() => {
+    if (insights?.narrative?.weaknesses?.length) {
+      return insights.narrative.weaknesses.map((claim) => claim.text);
+    }
     if (!coachingTemplateData) return [];
     const bullets: string[] = [];
 
@@ -1432,18 +1368,24 @@ export default function DashboardPage() {
     }
 
     return bullets.slice(0, 3);
-  }, [coachingTemplateData]);
+  }, [insights?.narrative?.weaknesses, coachingTemplateData]);
 
   const recurringMistakesBullets = useMemo(() => {
+    if (insights?.narrative?.recurring_mistakes?.length) {
+      return insights.narrative.recurring_mistakes.map((claim) => claim.text);
+    }
     const themes = insights?.features?.recurring_themes || [];
     if (!themes.length) return [];
     return themes.slice(0, 3).map((item) => {
       const label = humanizeTheme(item.theme);
       return `Recurring pattern: ${label} (${item.count}).`;
     });
-  }, [insights?.features?.recurring_themes]);
+  }, [insights?.narrative?.recurring_mistakes, insights?.features?.recurring_themes]);
 
   const coachingFocusBullets = useMemo(() => {
+    if (insights?.narrative?.coaching_takeaways?.length) {
+      return insights.narrative.coaching_takeaways.map((claim) => claim.text);
+    }
     if (!coachingTemplateData) return [];
     const bullets: string[] = [];
     if (coachingTemplateData.weakPhase) {
@@ -1459,7 +1401,7 @@ export default function DashboardPage() {
       bullets.push(`Keep building on ${formatPhaseLabel(coachingTemplateData.bestPhase).toLowerCase()} consistency.`);
     }
     return bullets.slice(0, 3);
-  }, [coachingTemplateData]);
+  }, [insights?.narrative?.coaching_takeaways, coachingTemplateData]);
 
   if (status === "loading") {
     return (

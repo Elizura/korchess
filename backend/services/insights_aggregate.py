@@ -112,76 +112,6 @@ def aggregate_light_features(
     }
 
 
-def aggregate_deep_features(
-    deep_features: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Aggregate metrics from deep (engine-analyzed) features.
-    
-    Returns phase-by-phase stats, theme counts, and blunder rates.
-    """
-    phase_accum = {
-        "opening": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-        "middlegame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-        "endgame": {"moves": 0, "cp_loss_sum": 0.0, "mistakes": 0, "blunders": 0},
-    }
-    theme_counts: dict[str, int] = {}
-    total_user_moves_deep = 0
-    total_blunders_deep = 0
-    total_low_time_blunders_deep = 0
-    total_blunders_with_clock_deep = 0
-    total_low_time_moves_deep = 0
-    total_moves_with_clock_deep = 0
-
-    for deep in deep_features:
-        quality = deep.get("quality", {})
-        total_user_moves_deep += int(quality.get("user_moves_analyzed") or 0)
-        
-        deep_time_pressure = quality.get("time_pressure") or {}
-        total_low_time_blunders_deep += int(deep_time_pressure.get("blunders_low_time") or 0)
-        total_blunders_with_clock_deep += int(deep_time_pressure.get("blunders_total") or 0)
-        total_low_time_moves_deep += int(deep_time_pressure.get("user_moves_low_time") or 0)
-        total_moves_with_clock_deep += int(deep_time_pressure.get("user_moves_with_clock") or 0)
-
-        # Accumulate phase stats
-        for phase_name, stats in (deep.get("phase_stats") or {}).items():
-            if phase_name not in phase_accum:
-                continue
-            moves_count = int(stats.get("moves") or 0)
-            avg_cp_loss = float(stats.get("avg_cp_loss") or 0.0)
-            phase_accum[phase_name]["moves"] += moves_count
-            phase_accum[phase_name]["cp_loss_sum"] += avg_cp_loss * moves_count
-            phase_accum[phase_name]["mistakes"] += int(stats.get("mistakes") or 0)
-            phase_accum[phase_name]["blunders"] += int(stats.get("blunders") or 0)
-            total_blunders_deep += int(stats.get("blunders") or 0)
-
-        # Accumulate theme counts
-        for theme, count in (deep.get("theme_counts") or {}).items():
-            theme_counts[theme] = theme_counts.get(theme, 0) + int(count)
-
-    # Compute final phase performance metrics
-    phase_performance: dict[str, dict[str, Any]] = {}
-    for phase_name, stats in phase_accum.items():
-        moves_count = stats["moves"]
-        avg_cp_loss = (stats["cp_loss_sum"] / moves_count) if moves_count > 0 else None
-        phase_performance[phase_name] = {
-            "moves": moves_count,
-            "avg_cp_loss": round(avg_cp_loss, 2) if avg_cp_loss is not None else None,
-            "mistakes": stats["mistakes"],
-            "blunders": stats["blunders"],
-            "mistake_rate": round((stats["mistakes"] / moves_count), 4) if moves_count > 0 else None,
-        }
-
-    return {
-        "phase_performance": phase_performance,
-        "theme_counts": theme_counts,
-        "total_user_moves_deep": total_user_moves_deep,
-        "total_blunders_deep": total_blunders_deep,
-        "total_low_time_blunders_deep": total_low_time_blunders_deep,
-        "total_blunders_with_clock_deep": total_blunders_with_clock_deep,
-        "total_low_time_moves_deep": total_low_time_moves_deep,
-        "total_moves_with_clock_deep": total_moves_with_clock_deep,
-    }
-
 
 def aggregate_scan_features(
     scan_rows: list[dict],
@@ -279,17 +209,16 @@ def compute_style_scores(
     avg_game_len: float,
     blunder_rate: float,
     theme_counts: dict[str, int],
-    deep_game_count: int,
+    scanned_game_count: int,
 ) -> dict[str, Any]:
     """Compute style classification scores and label.
     
     Returns scores for tactical/positional and aggressive/solid axes,
     plus the combined style label (e.g., "Solid Positional").
     """
-    # Tactical score: early checks + tactical oversight frequency
     tactical_score = clamp01(
         avg_early_check * 1.8 
-        + (theme_counts.get("tactical_oversight", 0) / max(1, deep_game_count)) * 0.2
+        + (theme_counts.get("tactical_oversight", 0) / max(1, scanned_game_count)) * 0.2
     )
     
     # Positional score: longer games + draws - early captures
@@ -346,30 +275,30 @@ def compute_opening_rankings(
 def build_coverage_metrics(
     total_games: int,
     light_count: int,
-    deep_count: int,
+    scan_count: int,
     clock_games: int,
     low_time_games: int,
 ) -> dict[str, Any]:
     """Build the coverage/confidence metrics block."""
+    scan_coverage = round((scan_count / total_games), 4) if total_games > 0 else 0.0
     coverage = {
         "games_total": total_games,
         "games_light": light_count,
-        "games_deep": deep_count,
-        "deep_coverage": round((deep_count / total_games), 4) if total_games > 0 else 0.0,
+        "games_scanned": scan_count,
+        "scan_coverage": scan_coverage,
         "games_with_clock": clock_games,
         "clock_coverage": round((clock_games / total_games), 4) if total_games > 0 else 0.0,
         "games_with_time_pressure": low_time_games,
         "has_enough_games": total_games >= MIN_BASELINE_GAMES,
     }
-    
-    # Confidence is weighted: deep coverage (45%) + clock coverage (20%) + sample size (35%)
+
     confidence = clamp01(
-        coverage["deep_coverage"] * 0.45 
-        + coverage["clock_coverage"] * 0.2 
+        scan_coverage * 0.40
+        + coverage["clock_coverage"] * 0.25
         + min(total_games / 100.0, 1.0) * 0.35
     )
     coverage["confidence"] = round(confidence, 3)
-    
+
     return coverage
 
 

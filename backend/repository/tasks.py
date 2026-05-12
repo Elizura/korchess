@@ -2,7 +2,6 @@
 
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from repository.celery_app import app
@@ -11,13 +10,11 @@ from repository.db import (
     get_featured_game_ids,
     get_games_for_insights,
     get_insight_game_features,
-    get_player_insights,
     get_quick_scan_results,
     get_scanned_game_ids,
     update_insight_job,
     update_scan_job,
     upsert_game_quick_scan,
-    upsert_import_status,
     upsert_insight_game_feature,
     upsert_player_insights,
 )
@@ -28,7 +25,6 @@ from services.insights import (
     build_narrative,
     extract_light_game_features,
 )
-from services.insights_aggregate import aggregate_scan_features
 from utils.insights_constants import FEATURE_VERSION, MAX_GAMES_WINDOW, NARRATIVE_VERSION
 from utils.insights_utils import utc_now_iso
 from services.quick_scan import run_quick_scan_single
@@ -36,9 +32,6 @@ from utils.quick_scan_constants import QUICK_SCAN_MAX_GAMES
 from repository.redis_client import redis_client as _redis
 
 logger = logging.getLogger(__name__)
-
-# Flip to True when you want coaching summary / aggregate insights on import.
-RUN_AGGREGATION_ON_IMPORT = False
 
 
 def _import_key(username: str, site: str, field: str) -> str:
@@ -50,7 +43,7 @@ def process_game(self, game_data: dict, username: str, site: str) -> dict:
     """Process a single game: store, extract features, quick scan.
 
     After finishing, increments the Redis done counter. When done == total,
-    auto-triggers finalize_import.
+    runs coaching-summary aggregation and marks the import as complete.
     """
     canonical = username.strip().lower()
     site_game_id = game_data.get("site_game_id", "unknown")
@@ -106,9 +99,12 @@ def process_game(self, game_data: dict, username: str, site: str) -> dict:
     total = int(total_raw) if total_raw is not None else None
 
     if total is not None and done == total:
-        # Mark as complete and clean up Redis keys (skip finalize_import for now)
         _redis.set(status_key, "complete", ex=3600)
         _redis.delete(done_key, total_key, meta_key)
+        try:
+            _run_aggregation(canonical, site)
+        except Exception:
+            logger.exception("Post-import aggregation failed for %s", canonical)
 
     return {
         "site_game_id": site_game_id,
@@ -117,132 +113,44 @@ def process_game(self, game_data: dict, username: str, site: str) -> dict:
     }
 
 
-@app.task(name="tasks.finalize_import")
-def finalize_import(
-    username: str,
-    site: str,
-    import_meta: dict,
-) -> dict:
-    """Run after all game tasks complete: record import status.
+def _run_aggregation(canonical: str, site: str) -> None:
+    """Build aggregate coaching insights from light features and quick-scan data.
 
-    Aggregation (coaching summary, narrative, scan merge) is gated behind
-    RUN_AGGREGATION_ON_IMPORT. Flip it to True to re-enable.
+    Called automatically when all games in an import batch finish processing.
+    Also used by the ``run_insights`` Celery task for manual refreshes.
     """
-    canonical = username.strip().lower()
-
-    now = datetime.now(timezone.utc)
-    imported_at = now.isoformat()
-    synced_at_value = now.isoformat()
-
-    done_key = _import_key(canonical, site, "done")
-    total_key = _import_key(canonical, site, "total")
-    meta_key = _import_key(canonical, site, "meta")
-    status_key = _import_key(canonical, site, "status")
-
-    done_raw = _redis.get(done_key)
-    total_inserted = int(done_raw) if done_raw else 0
-    total_skipped = import_meta.get("parse_skipped", 0)
-
     with get_connection() as conn:
-        upsert_import_status(
+        stored_features = get_insight_game_features(
             conn,
             username=canonical,
-            site=site,
-            imported=total_inserted,
-            skipped=total_skipped,
-            max_games=import_meta.get("max_games", 0),
-            imported_at=imported_at,
-            last_synced_at=synced_at_value,
+            site="all",
+            feature_version=FEATURE_VERSION,
+        )
+        scan_rows = get_quick_scan_results(conn, canonical, "all")
+
+    if not stored_features:
+        return
+
+    features, coverage, fact_map = _build_aggregate_features(stored_features, scan_rows)
+    narrative = build_narrative(features, fact_map)
+
+    status = "complete" if coverage.get("has_enough_games") else "not_enough_data"
+
+    with get_connection() as conn:
+        upsert_player_insights(
+            conn,
+            username=canonical,
+            site="all",
+            status=status,
+            feature_version=FEATURE_VERSION,
+            narrative_version=NARRATIVE_VERSION,
+            coverage=coverage,
+            features=features,
+            fact_map=fact_map,
+            narrative=narrative,
+            source_job_id=None,
         )
         conn.commit()
-
-    if RUN_AGGREGATION_ON_IMPORT:
-        _run_aggregation(canonical, site)
-
-    _redis.set(status_key, "complete", ex=3600)
-    _redis.delete(done_key, total_key, meta_key)
-
-    return {
-        "username": canonical,
-        "site": site,
-        "imported": total_inserted,
-        "skipped": total_skipped,
-    }
-
-
-def _run_aggregation(canonical: str, site: str) -> None:
-    """Build aggregate insights and merge scan data.
-
-    Kept as a separate function so the logic is preserved intact and can be
-    re-enabled by flipping RUN_AGGREGATION_ON_IMPORT.
-    """
-    try:
-        with get_connection() as conn:
-            stored_features = get_insight_game_features(
-                conn,
-                username=canonical,
-                site="all",
-                feature_version=FEATURE_VERSION,
-            )
-
-        if stored_features:
-            features, coverage, fact_map = _build_aggregate_features(stored_features)
-            narrative = build_narrative(features, fact_map)
-
-            status = "complete" if coverage.get("has_enough_games") else "not_enough_data"
-
-            with get_connection() as conn:
-                upsert_player_insights(
-                    conn,
-                    username=canonical,
-                    site="all",
-                    status=status,
-                    feature_version=FEATURE_VERSION,
-                    narrative_version=NARRATIVE_VERSION,
-                    coverage=coverage,
-                    features=features,
-                    fact_map=fact_map,
-                    narrative=narrative,
-                    source_job_id=None,
-                )
-                conn.commit()
-    except Exception:
-        logger.exception("Aggregate insights failed for %s", canonical)
-
-    try:
-        with get_connection() as conn:
-            scan_rows = get_quick_scan_results(conn, canonical, "all")
-            existing = get_player_insights(conn, canonical, "all")
-
-        if scan_rows and existing:
-            scan_agg = aggregate_scan_features(scan_rows)
-
-            features_dict: dict[str, Any] = existing.get("features") or {}
-            features_dict["performance"] = features_dict.get("performance", {})
-            features_dict["performance"]["phase"] = scan_agg.get("phase_performance", {})
-            features_dict["recurring_themes"] = scan_agg.get("theme_items", [])
-            features_dict["time_pressure"] = features_dict.get("time_pressure", {})
-            features_dict["time_pressure"]["blunders_total"] = scan_agg.get("total_blunders", 0)
-            features_dict["time_pressure"]["blunders_from_scan"] = True
-            features_dict["scan_aggregate"] = scan_agg
-
-            with get_connection() as conn:
-                upsert_player_insights(
-                    conn,
-                    username=canonical,
-                    site="all",
-                    status="complete",
-                    feature_version=existing.get("feature_version", ""),
-                    narrative_version=existing.get("narrative_version", ""),
-                    coverage=existing.get("coverage") or {},
-                    features=features_dict,
-                    fact_map=existing.get("fact_map") or {},
-                    narrative=existing.get("narrative") or {},
-                    source_job_id=None,
-                )
-                conn.commit()
-    except Exception:
-        logger.exception("Scan aggregate merge failed for %s", canonical)
 
 
 @app.task(name="tasks.run_insights")
@@ -294,8 +202,8 @@ def run_insights(
             coverage: dict[str, Any] = {
                 "games_total": 0,
                 "games_light": 0,
-                "games_deep": 0,
-                "deep_coverage": 0.0,
+                "games_scanned": 0,
+                "scan_coverage": 0.0,
                 "games_with_clock": 0,
                 "clock_coverage": 0.0,
                 "has_enough_games": False,
@@ -339,8 +247,9 @@ def run_insights(
                 conn, username=canonical, site=site,
                 feature_version=FEATURE_VERSION,
             )
+            scan_rows = get_quick_scan_results(conn, canonical, site)
 
-        features, coverage, fact_map = _build_aggregate_features(stored_features)
+        features, coverage, fact_map = _build_aggregate_features(stored_features, scan_rows)
         narrative = build_narrative(features, fact_map)
 
         initial_status = "baseline_ready" if coverage.get("has_enough_games") else "not_enough_data"
@@ -521,38 +430,8 @@ def _merge_scan_into_insights(
     site: str,
     job_id: str,
 ) -> None:
-    """Synchronous equivalent of _merge_and_update_insights from quick_scan.py."""
-    with get_connection() as conn:
-        scan_rows = get_quick_scan_results(conn, username, site)
-        existing = get_player_insights(conn, username, site)
-
-    if not scan_rows:
-        return
-
-    scan_agg = aggregate_scan_features(scan_rows)
-
-    features: dict[str, Any] = (existing.get("features") or {}) if existing else {}
-    features["performance"] = features.get("performance", {})
-    features["performance"]["phase"] = scan_agg.get("phase_performance", {})
-    features["recurring_themes"] = scan_agg.get("theme_items", [])
-    features["time_pressure"] = features.get("time_pressure", {})
-    features["time_pressure"]["blunders_total"] = scan_agg.get("total_blunders", 0)
-    features["time_pressure"]["blunders_from_scan"] = True
-    features["scan_aggregate"] = scan_agg
-
-    with get_connection() as conn:
-        if existing:
-            upsert_player_insights(
-                conn,
-                username=username,
-                site=site,
-                status="complete",
-                feature_version=existing.get("feature_version", ""),
-                narrative_version=existing.get("narrative_version", ""),
-                coverage=existing.get("coverage") or {},
-                features=features,
-                fact_map=existing.get("fact_map") or {},
-                narrative=existing.get("narrative") or {},
-                source_job_id=job_id,
-            )
-        conn.commit()
+    """Re-aggregate insights after a scan batch completes."""
+    try:
+        _run_aggregation(username, site)
+    except Exception:
+        logger.exception("Post-scan aggregation failed for %s", username)
