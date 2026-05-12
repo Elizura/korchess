@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { signIn, signOut, useSession } from "next-auth/react";
+import { useAuth } from "@/lib/auth";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 import {
   loadGuestHistory,
@@ -352,20 +352,19 @@ function TacticalCategoryCard({ theme, count, maxCount, username }: { theme: str
 export default function DashboardPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { data: session, status } = useSession();
+  const { user, accessToken, isAuthenticated, signout } = useAuth();
   const userFromUrl = useMemo(() => searchParams.get("user") || "", [searchParams]);
   const authUserId = useMemo(
-    () => (session?.user?.email || session?.user?.name || "anonymous").toLowerCase(),
-    [session?.user?.email, session?.user?.name],
+    () => (user?.email || user?.username || "anonymous").toLowerCase(),
+    [user?.email, user?.username],
   );
 
   const authHeaders = useMemo((): Record<string, string> => {
-    if (!session?.idToken) {
+    if (!accessToken) {
       return {};
     }
-    return { Authorization: `Bearer ${session.idToken}` };
-  }, [session?.idToken]);
-  const isAuthenticated = status === "authenticated" && !!session?.idToken;
+    return { Authorization: `Bearer ${accessToken}` };
+  }, [accessToken]);
   
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
@@ -422,7 +421,7 @@ export default function DashboardPage() {
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/v1/auth/profile`,
-          { headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }) }
+          { headers: withTrackingHeaders({ Authorization: `Bearer ${accessToken}` }) }
         );
         if (!res.ok) return;
         const profile = await res.json();
@@ -434,7 +433,7 @@ export default function DashboardPage() {
     };
 
     fetchProfile();
-  }, [isAuthenticated, session?.idToken]);
+  }, [isAuthenticated, accessToken]);
 
   // Clear chess profiles when signed out
   useEffect(() => {
@@ -546,8 +545,8 @@ export default function DashboardPage() {
     }
 
     try {
-      if (isAuthenticated && session?.idToken) {
-        const result = await addProfile(session.idToken, trimmedUsername, selectedPlatform);
+      if (isAuthenticated && accessToken) {
+        const result = await addProfile(accessToken, trimmedUsername, selectedPlatform);
         
         const updatedProfiles = (() => {
           const filtered = chessProfiles.filter(
@@ -616,7 +615,7 @@ export default function DashboardPage() {
     inputUsername,
     selectedPlatform,
     isAuthenticated,
-    session?.idToken,
+    accessToken,
     currentUsername,
     timeClassFilter,
     refreshDashboardAfterImport,
@@ -626,7 +625,7 @@ export default function DashboardPage() {
   // Handle syncing a profile
   const handleSyncProfile = useCallback(
     async (profile: ChessProfile) => {
-      if (!isAuthenticated || !session?.idToken) return;
+      if (!isAuthenticated || !accessToken) return;
 
       const profileKey = `${profile.site}:${profile.chess_username}`;
       setSyncingProfile(profileKey);
@@ -635,7 +634,7 @@ export default function DashboardPage() {
 
       try {
         const result = await syncProfile(
-          session.idToken,
+          accessToken,
           profile.site as "lichess" | "chesscom",
           profile.chess_username
         );
@@ -669,13 +668,13 @@ export default function DashboardPage() {
         setSyncingProfile(null);
       }
     },
-    [isAuthenticated, session?.idToken, currentUsername, refreshDashboardAfterImport]
+    [isAuthenticated, accessToken, currentUsername, refreshDashboardAfterImport]
   );
 
   // Handle importing games for a profile (first import or re-import)
   const handleImportProfile = useCallback(
     async (profile: ChessProfile) => {
-      if (!isAuthenticated || !session?.idToken) return;
+      if (!isAuthenticated || !accessToken) return;
 
       const profileKey = `${profile.site}:${profile.chess_username}`;
       setImportingProfile(profileKey);
@@ -686,7 +685,7 @@ export default function DashboardPage() {
         const result = await importGames(
           profile.chess_username,
           profile.site as "lichess" | "chesscom",
-          session.idToken,
+          accessToken,
         );
 
         setImportResult(result);
@@ -704,13 +703,13 @@ export default function DashboardPage() {
         setImportingProfile(null);
       }
     },
-    [isAuthenticated, session?.idToken, refreshDashboardAfterImport]
+    [isAuthenticated, accessToken, refreshDashboardAfterImport]
   );
 
   // Handle deleting a profile
   const handleDeleteProfile = useCallback(
     async (profile: ChessProfile) => {
-      if (!isAuthenticated || !session?.idToken) return;
+      if (!isAuthenticated || !accessToken) return;
 
       const profileKey = `${profile.site}:${profile.chess_username}`;
       setDeletingProfile(profileKey);
@@ -718,7 +717,7 @@ export default function DashboardPage() {
 
       try {
         await deleteProfile(
-          session.idToken,
+          accessToken,
           profile.site as "lichess" | "chesscom",
           profile.chess_username
         );
@@ -753,7 +752,7 @@ export default function DashboardPage() {
         setDeletingProfile(null);
       }
     },
-    [isAuthenticated, session?.idToken, currentUsername, router]
+    [isAuthenticated, accessToken, currentUsername, router]
   );
 
   // Handle clicking on a profile card
@@ -899,7 +898,7 @@ export default function DashboardPage() {
   };
 
   const fetchImportHistory = async () => {
-    if (!session?.idToken) {
+    if (!accessToken) {
       setAccountImportHistory([]);
       return;
     }
@@ -960,7 +959,7 @@ export default function DashboardPage() {
     setLoading(true);
 
     // Include profiles fetch on first load for authenticated users
-    const shouldFetchProfiles = isAuthenticated && session?.idToken && !profilesFetchedRef.current;
+    const shouldFetchProfiles = isAuthenticated && accessToken && !profilesFetchedRef.current;
     if (shouldFetchProfiles) {
       setProfilesLoading(true);
     }
@@ -975,7 +974,7 @@ export default function DashboardPage() {
 
       // Add profiles fetch if needed (batched with other requests)
       if (shouldFetchProfiles) {
-        fetchPromises.push(fetchProfiles(session!.idToken!));
+        fetchPromises.push(fetchProfiles(accessToken!));
       }
 
       const results = await Promise.all(fetchPromises);
@@ -1109,7 +1108,7 @@ export default function DashboardPage() {
   };
 
   const handleSignOut = () => {
-    void signOut();
+    void signout();
   };
 
   // Recent users list for quick reload.
@@ -1469,7 +1468,7 @@ export default function DashboardPage() {
                     source: "dashboard_header",
                   },
                 });
-                signIn("google", { callbackUrl: "/dashboard" });
+                router.push("/signin");
               }}
               className="bg-primary text-white font-display text-[9px] uppercase tracking-wider px-5 py-2.5 rounded-lg border-2 border-[#7d8fd4] shadow-[0_4px_0_0_#3b4887] hover:bg-primary/90 active:translate-y-1 active:shadow-[0_2px_0_0_#3b4887] transition-all"
             >

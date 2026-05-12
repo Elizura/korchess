@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useSession } from "next-auth/react";
+import { useAuth } from "@/lib/auth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
 
 const API_BASE_URL =
@@ -18,7 +18,7 @@ const AVATARS = [
 ] as const;
 
 export default function ProfileEditPage() {
-  const { data: session, status } = useSession();
+  const { accessToken, isLoading, isAuthenticated } = useAuth();
   const [avatar, setAvatar] = useState<string>("pawn");
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
@@ -28,15 +28,13 @@ export default function ProfileEditPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (status !== "authenticated" || !session?.idToken) {
-      return;
-    }
+    if (isLoading || !isAuthenticated || !accessToken) return;
 
     const fetchProfile = async () => {
       setFetchError(null);
       try {
         const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
-          headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }),
+          headers: withTrackingHeaders({ Authorization: `Bearer ${accessToken}` }),
         });
         if (!res.ok) {
           setFetchError("Could not load profile. Please try again.");
@@ -55,11 +53,11 @@ export default function ProfileEditPage() {
     };
 
     fetchProfile();
-  }, [status, session?.idToken]);
+  }, [isLoading, isAuthenticated, accessToken]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!session?.idToken) return;
+    if (!accessToken) return;
     if (!username.trim()) {
       setError("Username is required");
       return;
@@ -72,7 +70,7 @@ export default function ProfileEditPage() {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.idToken}`,
+          Authorization: `Bearer ${accessToken}`,
           ...withTrackingHeaders(),
         } as Record<string, string>,
         body: JSON.stringify({ avatar, username: username.trim() }),
@@ -91,7 +89,7 @@ export default function ProfileEditPage() {
     }
   };
 
-  if (status === "loading" || status === "unauthenticated") {
+  if (isLoading || !isAuthenticated) {
     return (
       <main className="analysis-page min-h-screen py-8">
         <div className="max-w-3xl mx-auto px-4">

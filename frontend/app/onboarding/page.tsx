@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useSession } from "next-auth/react";
+import { useAuth } from "@/lib/auth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
-import { resolvePostAuthNextPath, withNextParam } from "@/lib/safeNext";
+import { resolvePostAuthNextPath } from "@/lib/safeNext";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -21,7 +21,7 @@ const AVATARS = [
 export default function OnboardingPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { data: session, status } = useSession();
+  const { accessToken, isLoading, isAuthenticated } = useAuth();
   const [avatar, setAvatar] = useState<string>("pawn");
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
@@ -33,21 +33,19 @@ export default function OnboardingPage() {
   );
 
   useEffect(() => {
-    if (status !== "authenticated") {
-      return;
-    }
-    if (!session?.idToken) {
-      router.replace(withNextParam("/signup", safeNextPath));
+    if (isLoading) return;
+    if (!isAuthenticated || !accessToken) {
+      router.replace("/signup");
       return;
     }
 
     const checkProfile = async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
-          headers: withTrackingHeaders({ Authorization: `Bearer ${session.idToken}` }),
+          headers: withTrackingHeaders({ Authorization: `Bearer ${accessToken}` }),
         });
         if (!res.ok) {
-          router.replace(withNextParam("/signup", safeNextPath));
+          router.replace("/signup");
           return;
         }
         const profile = await res.json();
@@ -57,16 +55,16 @@ export default function OnboardingPage() {
           setChecking(false);
         }
       } catch {
-        router.replace(withNextParam("/signup", safeNextPath));
+        router.replace("/signup");
       }
     };
 
     checkProfile();
-  }, [status, session?.idToken, router, safeNextPath]);
+  }, [isLoading, isAuthenticated, accessToken, router, safeNextPath]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!session?.idToken) return;
+    if (!accessToken) return;
     if (!username.trim()) {
       setError("Username is required");
       return;
@@ -79,7 +77,7 @@ export default function OnboardingPage() {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.idToken}`,
+          Authorization: `Bearer ${accessToken}`,
           ...withTrackingHeaders(),
         } as Record<string, string>,
         body: JSON.stringify({ avatar, username: username.trim() }),
@@ -98,7 +96,7 @@ export default function OnboardingPage() {
     }
   };
 
-  if (status === "loading" || status === "unauthenticated" || checking) {
+  if (isLoading || !isAuthenticated || checking) {
     return (
       <div className="bg-charcoal font-mono text-white min-h-screen flex items-center justify-center">
         <div className="font-display text-xs uppercase tracking-widest opacity-60">

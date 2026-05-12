@@ -4,7 +4,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from "react";
 import { Chess } from "chess.js";
 import Link from "next/link";
-import { useSession } from "next-auth/react";
+import { useAuth } from "@/lib/auth";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 
 import AnalysisBoard from "@/components/analysis/AnalysisBoard";
@@ -625,15 +625,14 @@ export default function GameAnalyzerPage() {
   const username = decodeURIComponent(params.username as string);
   const gameId = params.gameId as string;
   const initialPly = searchParams.get("ply") ? parseInt(searchParams.get("ply")!, 10) : null;
-  const { data: session } = useSession();
+  const { accessToken, isAuthenticated } = useAuth();
 
   const authHeaders = useMemo((): Record<string, string> => {
-    if (!session?.idToken) {
+    if (!accessToken) {
       return {};
     }
-    return { Authorization: `Bearer ${session.idToken}` };
-  }, [session?.idToken]);
-  const isAuthenticated = !!session?.idToken;
+    return { Authorization: `Bearer ${accessToken}` };
+  }, [accessToken]);
 
   // State
   const [game, setGame] = useState<GameData | null>(null);

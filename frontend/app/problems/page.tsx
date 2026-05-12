@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
+import { useAuth } from "@/lib/auth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
 
 const API_BASE_URL =
@@ -72,7 +72,7 @@ interface ProblemsByThemeResponse {
 export default function ProblemsPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { data: session } = useSession();
+  const { accessToken } = useAuth();
 
   const username = searchParams.get("user") || "";
   const theme = searchParams.get("theme") || "";
@@ -92,8 +92,8 @@ export default function ProblemsPage() {
   useEffect(() => {
     if (!username || !theme) return;
 
-    const authHeaders: Record<string, string> = session?.idToken
-      ? { Authorization: `Bearer ${session.idToken}` }
+    const authHeaders: Record<string, string> = accessToken
+      ? { Authorization: `Bearer ${accessToken}` }
       : {};
 
     const params = new URLSearchParams({
@@ -131,7 +131,7 @@ export default function ProblemsPage() {
     };
 
     fetchProblems();
-  }, [username, theme, page, timeControlFilter, phaseFilter, session?.idToken]);
+  }, [username, theme, page, timeControlFilter, phaseFilter, accessToken]);
 
   const handleTimeControlChange = (value: string) => {
     setTimeControlFilter(value);

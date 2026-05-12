@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
 import { useCountUp } from "@/hooks/useCountUp";
-import { useSession } from "next-auth/react";
+import { useAuth } from "@/lib/auth";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 
 const API_BASE_URL =
@@ -81,7 +81,7 @@ export default function OpeningDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { data: session } = useSession();
+  const { accessToken } = useAuth();
   const username = params.username as string;
   const openingKey = params.openingKey as string;
   const variationKey = params.variationKey as string;
@@ -106,11 +106,11 @@ export default function OpeningDetailPage() {
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
 
   const authHeaders = useMemo((): Record<string, string> => {
-    if (!session?.idToken) {
+    if (!accessToken) {
       return {};
     }
-    return { Authorization: `Bearer ${session.idToken}` };
-  }, [session?.idToken]);
+    return { Authorization: `Bearer ${accessToken}` };
+  }, [accessToken]);
 
   const fetchGames = async (resetOffset: boolean = false) => {
     const currentOffset = resetOffset ? 0 : offset;
