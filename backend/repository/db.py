@@ -47,25 +47,65 @@ def _init_db_schema(conn: psycopg.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
-            email TEXT,
+            email TEXT UNIQUE,
             name TEXT,
             avatar_url TEXT,
             avatar TEXT,
             username TEXT,
+            password_hash TEXT,
+            email_verified BOOLEAN DEFAULT FALSE,
+            verification_code TEXT,
+            verification_code_expires_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
         )
         """
     )
 
+    # Migrations for existing databases
+    for col, col_def in [
+        ("updated_at", "TIMESTAMPTZ DEFAULT now()"),
+        ("password_hash", "TEXT"),
+        ("email_verified", "BOOLEAN DEFAULT FALSE"),
+        ("verification_code", "TEXT"),
+        ("verification_code_expires_at", "TIMESTAMPTZ"),
+    ]:
+        cursor.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'users' AND column_name = %s
+            """,
+            (col,),
+        )
+        if not cursor.fetchone():
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
+
     cursor.execute(
         """
-        SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'users' AND column_name = 'updated_at'
+        SELECT 1 FROM pg_indexes
+        WHERE tablename = 'users' AND indexname = 'users_email_key'
         """
     )
     if not cursor.fetchone():
-        cursor.execute("ALTER TABLE users ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now()")
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users(email) WHERE email IS NOT NULL"
+        )
+
+    # Refresh tokens for persistent sessions
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)"
+    )
 
     # Games table - shared by (username, site, site_game_id)
     cursor.execute(
@@ -563,6 +603,109 @@ def update_user_profile_partial(
         """,
         params,
     )
+
+
+def get_user_by_email(conn: psycopg.Connection, email: str) -> dict | None:
+    """Fetch a user by email."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, email, name, avatar_url, avatar, username, password_hash,
+               email_verified, verification_code, verification_code_expires_at,
+               created_at, updated_at
+        FROM users
+        WHERE LOWER(email) = LOWER(%s)
+        """,
+        (email,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def create_auth_user(
+    conn: psycopg.Connection,
+    user_id: str,
+    email: str,
+    password_hash: str,
+    verification_code: str,
+    verification_code_expires_at,
+) -> None:
+    """Create a new user with email/password auth."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO users (id, email, password_hash, email_verified,
+                           verification_code, verification_code_expires_at)
+        VALUES (%s, %s, %s, FALSE, %s, %s)
+        """,
+        (user_id, email.lower(), password_hash,
+         verification_code, verification_code_expires_at),
+    )
+
+
+def mark_email_verified(conn: psycopg.Connection, user_id: str) -> None:
+    """Mark user email as verified and clear the verification code."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET email_verified = TRUE,
+            verification_code = NULL,
+            verification_code_expires_at = NULL,
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (user_id,),
+    )
+
+
+def store_refresh_token(
+    conn: psycopg.Connection,
+    token_id: str,
+    user_id: str,
+    token_hash: str,
+    expires_at,
+) -> None:
+    """Store a hashed refresh token."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (token_id, user_id, token_hash, expires_at),
+    )
+
+
+def get_refresh_token_by_hash(conn: psycopg.Connection, token_hash: str) -> dict | None:
+    """Look up a refresh token by its hash."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, user_id, token_hash, expires_at, created_at
+        FROM refresh_tokens
+        WHERE token_hash = %s
+        """,
+        (token_hash,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def delete_refresh_token(conn: psycopg.Connection, token_hash: str) -> None:
+    """Delete a specific refresh token."""
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM refresh_tokens WHERE token_hash = %s", (token_hash,))
+
+
+def delete_user_refresh_tokens(conn: psycopg.Connection, user_id: str) -> None:
+    """Delete all refresh tokens for a user (logout everywhere)."""
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM refresh_tokens WHERE user_id = %s", (user_id,))
 
 
 def get_user_by_username(conn: psycopg.Connection, username: str) -> dict | None:
