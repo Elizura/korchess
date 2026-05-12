@@ -6,9 +6,9 @@ import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics/client";
 
-export default function SignupPage() {
+export default function SigninPage() {
   const router = useRouter();
-  const { signup, isAuthenticated } = useAuth();
+  const { signin, isAuthenticated } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -24,17 +24,21 @@ export default function SignupPage() {
     setError(null);
     setLoading(true);
 
-    trackEvent("auth.signup.clicked", {
-      properties: { source: "signup_page" },
+    trackEvent("auth.signin.clicked", {
+      properties: { source: "signin_page" },
     });
 
-    const result = await signup(email, password);
+    const result = await signin(email, password);
     setLoading(false);
 
     if (result.ok) {
-      router.push(`/verify?email=${encodeURIComponent(email)}`);
+      router.push("/dashboard");
     } else {
-      setError(result.error || "Signup failed.");
+      if (result.error?.includes("verify your email")) {
+        router.push(`/verify?email=${encodeURIComponent(email)}`);
+        return;
+      }
+      setError(result.error || "Sign in failed.");
     }
   };
 
@@ -56,7 +60,7 @@ export default function SignupPage() {
               KORCHESS
             </h1>
             <p className="text-[8px] font-display opacity-40 tracking-[0.25em] uppercase">
-              Create your account
+              Welcome back
             </p>
           </div>
 
@@ -89,9 +93,8 @@ export default function SignupPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                minLength={8}
                 className="w-full bg-black/50 border border-gray-700 text-white px-3 py-2.5 font-mono text-sm focus:border-electric-blue focus:outline-none transition-colors"
-                placeholder="Min 8 characters"
+                placeholder="Your password"
               />
             </div>
             <button
@@ -99,14 +102,14 @@ export default function SignupPage() {
               disabled={loading}
               className="w-full bg-electric-blue text-white font-display text-[10px] py-4 px-4 arcade-button hover:bg-[#5a86ff] transition-colors uppercase disabled:opacity-50"
             >
-              {loading ? "Creating account..." : "Sign Up"}
+              {loading ? "Signing in..." : "Sign In"}
             </button>
           </form>
 
           <p className="mt-6 text-center text-[9px] font-display opacity-50">
-            Already have an account?{" "}
-            <Link href="/signin" className="text-electric-blue hover:underline">
-              Sign in
+            Don&apos;t have an account?{" "}
+            <Link href="/signup" className="text-electric-blue hover:underline">
+              Sign up
             </Link>
           </p>
         </div>
