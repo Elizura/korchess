@@ -1,8 +1,6 @@
 import type { ChessProfile } from "@/components/ChessProfileCard";
 import { withTrackingHeaders } from "@/lib/analytics/client";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
+import { API_BASE_URL } from "@/lib/api-url";
 
 export interface ImportResponse {
   username: string;

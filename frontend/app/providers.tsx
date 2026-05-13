@@ -11,9 +11,7 @@ import {
   trackEvent,
   withTrackingHeaders,
 } from "@/lib/analytics/client";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+import { API_BASE_URL } from "@/lib/api-url";
 
 const getSessionStorageItem = (key: string): string | null => {
   if (typeof window === "undefined") return null;

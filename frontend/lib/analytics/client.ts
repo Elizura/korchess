@@ -1,7 +1,5 @@
 import { AnalyticsEventPayload, AnalyticsEventName, TrackEventOptions } from "@/lib/analytics/types";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
+import { API_BASE_URL } from "@/lib/api-url";
 
 const ANALYTICS_EVENTS_PATH = "/api/v1/analytics/events";
 const ANALYTICS_IDENTIFY_PATH = "/api/v1/analytics/identify";
