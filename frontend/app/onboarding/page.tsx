@@ -4,11 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
+import { API_BASE_URL } from "@/lib/api-url";
 import { resolvePostAuthNextPath } from "@/lib/safeNext";
 import { FaChessPawn, FaChessKnight, FaChessBishop, FaChessRook, FaChessQueen, FaChessKing } from "react-icons/fa";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const AVATARS = [
   { id: "av-pawn", icon: FaChessPawn, piece: "pawn" },

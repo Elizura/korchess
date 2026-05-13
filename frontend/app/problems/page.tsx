@@ -6,9 +6,7 @@ import { useState, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
+import { API_BASE_URL } from "@/lib/api-url";
 
 const PAGE_SIZE = 8;
 
