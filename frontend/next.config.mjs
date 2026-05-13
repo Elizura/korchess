@@ -1,11 +1,15 @@
 /** @type {import('next').Config} */
 const nextConfig = {
   output: 'standalone',
+  async rewrites() {
+    return [
+      {
+        source: '/api/:path*',
+        destination: `${process.env.API_INTERNAL_URL || 'http://localhost:8000'}/api/:path*`,
+      },
+    ];
+  },
   experimental: {
-    // Disable build-time enforcement of wrapping useSearchParams in a Suspense
-    // boundary for CSR pages like the home route. This avoids the
-    // "useSearchParams() should be wrapped in a suspense boundary" error
-    // when building for production.
     missingSuspenseWithCSRBailout: false,
   },
 };
