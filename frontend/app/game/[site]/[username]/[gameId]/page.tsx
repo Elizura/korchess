@@ -625,7 +625,7 @@ export default function GameAnalyzerPage() {
   const username = decodeURIComponent(params.username as string);
   const gameId = params.gameId as string;
   const initialPly = searchParams.get("ply") ? parseInt(searchParams.get("ply")!, 10) : null;
-  const { accessToken, isAuthenticated } = useAuth();
+  const { accessToken } = useAuth();
 
   const authHeaders = useMemo((): Record<string, string> => {
     if (!accessToken) {
@@ -1198,7 +1198,6 @@ export default function GameAnalyzerPage() {
   ]);
 
   const shouldShowLessonConsentCard = useMemo(() => {
-    if (!isAuthenticated) return false;
     if (singleInsightsStatus !== "ready" || !singleInsights) return false;
     if (lastGeneratedInsightNonce <= 0) return false;
     if (lessonConsentLoading || !lessonConsentState) return false;
@@ -1207,7 +1206,6 @@ export default function GameAnalyzerPage() {
     return true;
   }, [
     dismissedNonce,
-    isAuthenticated,
     lastGeneratedInsightNonce,
     lessonConsentLoading,
     lessonConsentState,
@@ -1911,7 +1909,7 @@ export default function GameAnalyzerPage() {
   );
 
   const hydrateLessonConsent = useCallback(async () => {
-    if (!isAuthenticated) return;
+    if (!accessToken) return;
     setLessonConsentLoading(true);
     setLessonConsentError(null);
     try {
@@ -1931,10 +1929,10 @@ export default function GameAnalyzerPage() {
     } finally {
       setLessonConsentLoading(false);
     }
-  }, [authHeaders, isAuthenticated, lessonConsentUrl, lessonConsentUserKey]);
+  }, [authHeaders, accessToken, lessonConsentUrl, lessonConsentUserKey]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!accessToken) return;
     if (activeAnalysisTab !== "ai") return;
     if (!lessonConsentUserKey) return;
     if (lessonConsentFetchedForUser.current === lessonConsentUserKey) return;
@@ -1942,12 +1940,12 @@ export default function GameAnalyzerPage() {
   }, [
     activeAnalysisTab,
     hydrateLessonConsent,
-    isAuthenticated,
+    accessToken,
     lessonConsentUserKey,
   ]);
 
   const saveLessonConsentDecision = useCallback(async (decision: LessonConsentDecision) => {
-    if (!isAuthenticated) return;
+    if (!accessToken) return;
     setLessonConsentSaving(true);
     setLessonConsentError(null);
     try {
@@ -1993,7 +1991,7 @@ export default function GameAnalyzerPage() {
     authHeaders,
     depth,
     gameId,
-    isAuthenticated,
+    accessToken,
     lastGeneratedInsightNonce,
     lessonConsentUrl,
     multiPv,
@@ -2001,7 +1999,7 @@ export default function GameAnalyzerPage() {
   ]);
 
   const hydrateAiInsights = useCallback(async () => {
-    if (!isAuthenticated || analysisStatus !== "completed") {
+    if (!accessToken || analysisStatus !== "completed") {
       return;
     }
     setAiInsightsLoading(true);
@@ -2034,10 +2032,10 @@ export default function GameAnalyzerPage() {
     } finally {
       setAiInsightsLoading(false);
     }
-  }, [analysisStatus, authHeaders, buildAiInsightsUrl, isAuthenticated]);
+  }, [analysisStatus, authHeaders, buildAiInsightsUrl, accessToken]);
 
   useEffect(() => {
-    if (!isAuthenticated || analysisStatus !== "completed") {
+    if (!accessToken || analysisStatus !== "completed") {
       return;
     }
     if (aiHydratedKey.current === aiInsightsCacheKey) {
@@ -2045,7 +2043,7 @@ export default function GameAnalyzerPage() {
     }
     aiHydratedKey.current = aiInsightsCacheKey;
     void hydrateAiInsights();
-  }, [analysisStatus, aiInsightsCacheKey, hydrateAiInsights, isAuthenticated]);
+  }, [analysisStatus, aiInsightsCacheKey, hydrateAiInsights, accessToken]);
 
   useEffect(() => {
     if (!aiInsightsRequesting) {
@@ -2059,16 +2057,6 @@ export default function GameAnalyzerPage() {
   }, [aiInsightsRequesting]);
 
   const handleRequestAiInsights = useCallback(async () => {
-    if (!isAuthenticated) {
-      trackEvent("analysis.ai.blocked_signup", {
-        properties: {
-          source: "game_ai_tab",
-        },
-      });
-      const next = encodeURIComponent(getSignupReturnPath());
-      router.push(`/signup?next=${next}`);
-      return;
-    }
     if (analysisStatus !== "completed") {
       setAiInsightsError("Run in-depth analysis before requesting AI insights.");
       return;
@@ -2095,11 +2083,6 @@ export default function GameAnalyzerPage() {
       }));
 
       if (!res.ok) {
-        if (res.status === 403) {
-          const next = encodeURIComponent(getSignupReturnPath());
-          router.push(`/signup?next=${next}`);
-          return;
-        }
         trackEvent("analysis.ai.failed", {
           properties: {
             reason: data.detail || `Status ${res.status}`,
@@ -2152,43 +2135,10 @@ export default function GameAnalyzerPage() {
     analysisStatus,
     authHeaders,
     buildAiInsightsUrl,
-    getSignupReturnPath,
-    isAuthenticated,
-    router,
   ]);
 
-  const handleAnonymousMockSignup = useCallback(() => {
-    trackEvent("analysis.ai.blocked_signup", {
-      properties: {
-        source: "game_ai_tab",
-        section: activeAiSectionHeading,
-      },
-    });
-    const next = encodeURIComponent(getSignupReturnPath());
-    router.push(`/signup?next=${next}`);
-  }, [activeAiSectionHeading, getSignupReturnPath, router]);
-
   useEffect(() => {
-    if (isAuthenticated) {
-      return;
-    }
-    setSingleInsights(null);
-    setSingleInsightsStatus("idle");
-    setAiInsightsError(null);
-    setAiInsightsLoading(false);
-    setAiInsightsRequesting(false);
-    setLessonConsentLoading(false);
-    setLessonConsentSaving(false);
-    setLessonConsentState(null);
-    setLessonConsentError(null);
-    setLastGeneratedInsightNonce(0);
-    setDismissedNonce(null);
-    aiHydratedKey.current = null;
-    lessonConsentFetchedForUser.current = null;
-  }, [isAuthenticated]);
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!accessToken) return;
     if (!lessonConsentUserKey) return;
     if (lessonConsentFetchedForUser.current && lessonConsentFetchedForUser.current !== lessonConsentUserKey) {
       lessonConsentFetchedForUser.current = null;
@@ -2197,7 +2147,7 @@ export default function GameAnalyzerPage() {
       setLastGeneratedInsightNonce(0);
       setDismissedNonce(null);
     }
-  }, [isAuthenticated, lessonConsentUserKey]);
+  }, [accessToken, lessonConsentUserKey]);
 
   // Start/stop polling based on status
   useEffect(() => {
@@ -2690,57 +2640,24 @@ export default function GameAnalyzerPage() {
                 </div>
 
                 <div className="zen-surface-flat p-3 border border-[color:var(--zen-border)]">
-                  {isAuthenticated ? (
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <p className="text-xs text-[color:var(--zen-muted)]">
-                        you can only do 2 AI insights per day
-                      </p>
-                      <button
-                        type="button"
-                        onClick={handleRequestAiInsights}
-                        disabled={
-                          aiInsightsRequesting ||
-                          aiInsightsLoading ||
-                          analysisStatus !== "completed"
-                        }
-                        className="zen-pill inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {aiInsightsRequesting ? "Generating insights..." : "Request AI insights"}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="rounded-xl border border-amber-300/25 bg-amber-500/10 p-4 text-amber-50">
-                        <div className="flex items-start gap-3">
-                          <svg
-                            className="mt-0.5 h-4 w-4 shrink-0 text-amber-200"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <circle cx="12" cy="12" r="10" />
-                            <path d="M12 16v-4" />
-                            <path d="M12 8h.01" />
-                          </svg>
-                          <p className="text-sm font-medium">
-                            Unlock AI insights for this game.
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleRequestAiInsights}
-                        className="inline-flex items-center justify-center rounded-lg border border-[color:var(--zen-accent)] bg-[color:var(--zen-accent-2)] px-4 py-2 text-sm font-semibold text-[color:var(--zen-text)] transition hover:bg-[color:var(--zen-accent)] hover:text-white"
-                      >
-                        Sign up
-                      </button>
-                    </div>
-                  )}
-                  {isAuthenticated && aiInsightsRequesting && (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-[color:var(--zen-muted)]">
+                      you can only do 2 AI insights per day
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleRequestAiInsights}
+                      disabled={
+                        aiInsightsRequesting ||
+                        aiInsightsLoading ||
+                        analysisStatus !== "completed"
+                      }
+                      className="zen-pill inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {aiInsightsRequesting ? "Generating insights..." : "Request AI insights"}
+                    </button>
+                  </div>
+                  {aiInsightsRequesting && (
                     <div className="mt-3 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-3">
                       <div className="flex items-center gap-2">
                         <span className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[color:var(--zen-accent)] border-t-transparent" />
@@ -2756,14 +2673,14 @@ export default function GameAnalyzerPage() {
                       </p>
                     </div>
                   )}
-                  {isAuthenticated && aiInsightsLoading && !aiInsightsRequesting && (
+                  {aiInsightsLoading && !aiInsightsRequesting && (
                     <p className="mt-1 text-xs text-[color:var(--zen-muted)]">
                       Loading your saved AI insights...
                     </p>
                   )}
                 </div>
 
-                {isAuthenticated && analysisStatus !== "completed" && (
+                {analysisStatus !== "completed" && (
                   <div className="rounded-xl border border-amber-300/25 bg-amber-500/10 p-4 text-amber-50">
                     <div className="flex items-start gap-3">
                       <svg
@@ -2787,109 +2704,14 @@ export default function GameAnalyzerPage() {
                   </div>
                 )}
 
-                {!isAuthenticated && (
-                  <div className="space-y-4">
-                    <div
-                      role="tablist"
-                      aria-label="AI insight sections"
-                      className="hide-scrollbar flex w-full gap-2 overflow-x-auto overflow-y-hidden rounded-xl border border-[color:var(--zen-border)] bg-[color:var(--zen-surface-2)] p-1"
-                    >
-                      {AI_SECTION_TABS.map((tab) => (
-                        <button
-                          key={tab.id}
-                          id={`ai-section-tab-${tab.id}`}
-                          role="tab"
-                          type="button"
-                          aria-selected={activeAiSectionTab === tab.id}
-                          aria-controls={`ai-section-panel-${tab.id}`}
-                          tabIndex={activeAiSectionTab === tab.id ? 0 : -1}
-                          onClick={(event) =>
-                            handleAiSectionTabChange(tab.id, event.currentTarget)
-                          }
-                          className={[
-                            "whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition",
-                            activeAiSectionTab === tab.id
-                              ? "bg-[color:var(--zen-accent-2)] text-[color:var(--zen-text)]"
-                              : "text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)]",
-                          ].join(" ")}
-                        >
-                          {tab.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div
-                      id={`ai-section-panel-${activeAiSectionTab}`}
-                      role="tabpanel"
-                      aria-labelledby={`ai-section-tab-${activeAiSectionTab}`}
-                      className={`relative zen-surface-flat p-3.5 md:p-4 border ${
-                        getNarrationSectionTone(activeAiSectionHeading).cardBorder
-                      }`}
-                      style={{
-                        background:
-                          "linear-gradient(140deg, rgba(22,28,40,0.9), rgba(18,24,36,0.9) 60%, rgba(15,20,30,0.92))",
-                        boxShadow:
-                          "inset 0 0 0 1px rgba(124,136,164,0.2), inset 0 0 0 2px rgba(84,96,126,0.14)",
-                      }}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <span
-                          className={`inline-flex h-5 w-5 items-center justify-center text-[11px] font-semibold border ${
-                            getNarrationSectionTone(activeAiSectionHeading).badgeBorder
-                          } ${getNarrationSectionTone(activeAiSectionHeading).badgeText}`}
-                        >
-                          {getNarrationSectionBadge(activeAiSectionHeading)}
-                        </span>
-                        <p
-                          className={`text-[11px] uppercase tracking-[0.12em] ${
-                            getNarrationSectionTone(activeAiSectionHeading).headingText
-                          }`}
-                        >
-                          {activeAiSectionHeading}
-                        </p>
-                      </div>
-
-                      <ul
-                        className="space-y-2.5 text-[15px] leading-7 text-[color:var(--zen-text)] blur-sm select-none pointer-events-none"
-                        aria-hidden="true"
-                      >
-                        {activeAnonMockBullets.map((bullet, idx) => (
-                          <li key={`anon-mock-${activeAiSectionTab}-${idx}`} className="flex gap-2">
-                            <span className="w-5 shrink-0 text-center text-[14px] text-[color:var(--zen-muted)]">
-                              {getNarrationBulletIcon(activeAiSectionHeading, bullet)}
-                            </span>
-                            <span>{bullet}</span>
-                          </li>
-                        ))}
-                      </ul>
-
-                      <div className="absolute inset-x-4 bottom-4 top-14 flex flex-col items-center justify-center gap-3 rounded-lg border border-[color:var(--zen-border)] bg-[color:var(--zen-surface)]/85 backdrop-blur-sm p-4">
-                        <p className="text-sm text-[color:var(--zen-text)] text-center">
-                          Unlock AI insights for this game.
-                        </p>
-                        <p className="text-xs text-[color:var(--zen-muted)] text-center">
-                          Full personalized insights unlock after sign up.
-                        </p>
-                        <button
-                          type="button"
-                          onClick={handleAnonymousMockSignup}
-                          className="inline-flex items-center justify-center rounded-lg border border-[color:var(--zen-accent)] bg-[color:var(--zen-accent-2)] px-4 py-2 text-sm font-semibold text-[color:var(--zen-text)] transition hover:bg-[color:var(--zen-accent)] hover:text-white"
-                        >
-                          Sign up
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {isAuthenticated && analysisStatus === "completed" && (
+                {analysisStatus === "completed" && (
                   <>
                     {aiInsightsError && (
                       <p className="text-sm text-[color:var(--zen-danger)]">
                         {aiInsightsError}
                       </p>
                     )}
-                    {singleInsightsStatus === "idle" && !aiInsightsRequesting && isAuthenticated && (
+                    {singleInsightsStatus === "idle" && !aiInsightsRequesting && (
                       <p className="text-sm text-[color:var(--zen-muted)]">
                         Request AI insights to generate your account-specific summary.
                       </p>
