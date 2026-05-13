@@ -6,6 +6,7 @@ import { Chess } from "chess.js";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
+import { API_BASE_URL } from "@/lib/api-url";
 
 import AnalysisBoard from "@/components/analysis/AnalysisBoard";
 import EvalBar from "@/components/analysis/EvalBar";
@@ -28,8 +29,6 @@ import {
   toReviewTag,
 } from "@/lib/moveTree";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 const LOCAL_ENGINE_DEPTH = 18;
 const LOCAL_ENGINE_MULTIPV = 1;
 
