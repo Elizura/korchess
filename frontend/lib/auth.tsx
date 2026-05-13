@@ -10,8 +10,7 @@ import React, {
   useState,
 } from "react";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+import { API_BASE_URL } from "@/lib/api-url";
 
 export interface AuthUser {
   id: string;
@@ -59,6 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
+  const accessTokenRef = useRef<string | null>(null);
 
   const isAuthenticated = useMemo(() => !!user && !!accessToken, [user, accessToken]);
 
@@ -86,11 +86,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!res.ok) {
           setUser(null);
           setAccessToken(null);
+          accessTokenRef.current = null;
           return false;
         }
         const data = await res.json();
         const token = data.access_token as string;
         setAccessToken(token);
+        accessTokenRef.current = token;
 
         const me = await fetchMe(token);
         setUser(me);
@@ -98,6 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         setUser(null);
         setAccessToken(null);
+        accessTokenRef.current = null;
         return false;
       } finally {
         refreshPromiseRef.current = null;
@@ -109,27 +112,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchMe]);
 
   useEffect(() => {
+    const path = typeof window !== "undefined" ? window.location.pathname : "";
+    const isPublicAuthPage = ["/", "/signin", "/signup", "/verify"].includes(path);
+    if (isPublicAuthPage) {
+      setIsLoading(false);
+      return;
+    }
     refreshSession().finally(() => setIsLoading(false));
   }, [refreshSession]);
 
   const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
-    let token = accessToken;
+    let token = accessTokenRef.current;
     if (!token || isTokenExpiringSoon(token)) {
       const ok = await refreshSession();
       if (!ok) return {};
-      // After refresh, read from state is stale inside callback,
-      // so we get it from the refresh response via the promise chain.
-      // We use a small trick: refreshSession sets accessToken, but
-      // we need the value synchronously. We'll re-derive from closure.
+      token = accessTokenRef.current;
     }
-    // Re-read: if refreshSession succeeded, the state update may not have
-    // propagated yet in the same tick. Use the ref-based approach.
-    // For simplicity, we rely on the fact that refreshSession returns true
-    // only if accessToken was set. We re-check:
-    token = accessToken;
     if (!token) return {};
     return { Authorization: `Bearer ${token}` };
-  }, [accessToken, refreshSession]);
+  }, [refreshSession]);
 
   const signup = useCallback(async (email: string, password: string) => {
     try {
@@ -160,6 +161,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const token = data.access_token as string;
       setAccessToken(token);
+      accessTokenRef.current = token;
       const me = await fetchMe(token);
       setUser(me);
       return { ok: true };
@@ -181,6 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const token = data.access_token as string;
       setAccessToken(token);
+      accessTokenRef.current = token;
       const me = await fetchMe(token);
       setUser(me);
       return { ok: true };
@@ -202,6 +205,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const token = data.access_token as string;
       setAccessToken(token);
+      accessTokenRef.current = token;
       const me = await fetchMe(token);
       setUser(me);
       return { ok: true };
@@ -221,6 +225,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setUser(null);
     setAccessToken(null);
+    accessTokenRef.current = null;
   }, []);
 
   const value = useMemo<AuthContextValue>(
