@@ -9,12 +9,6 @@ services:
       - ${LICHESS_EVAL_DB_HOST_PATH}:/app/lmdb_cache:ro
     env_file:
       - .env
-    healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
 
   celery-worker:
     build:
@@ -34,45 +28,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        - NEXT_PUBLIC_API_BASE_URL=https://korchess.com
     expose:
       - "3000"
     depends_on:
       - backend
     env_file:
       - .env
-    environment:
-      - NODE_ENV=production
-
-  nginx:
-    image: nginx:1.25-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./deploy/nginx/snippets:/etc/nginx/snippets:ro
-      - ./deploy/nginx/html:/usr/share/nginx/html:ro
-      - ./deploy/certbot/www:/var/www/certbot
-      - ./deploy/certbot/conf:/etc/letsencrypt
-    depends_on:
-      - frontend
-      - backend
-
-  certbot:
-    image: certbot/certbot:latest
-    volumes:
-      - ./deploy/certbot/www:/var/www/certbot
-      - ./deploy/certbot/conf:/etc/letsencrypt
-    entrypoint: ["certbot"]
-  
-  # certbot-renew:
-  #   image: certbot/certbot:latest
-  #   volumes:
-  #     - ./deploy/certbot/www:/var/www/certbot
-  #     - ./deploy/certbot/conf:/etc/letsencrypt
-  #   entrypoint: /bin/sh -c
-  #   command: >
-  #     "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h; done"
-
