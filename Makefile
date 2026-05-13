@@ -1,7 +1,7 @@
 .PHONY: up down start stop logs build restart ps clean \
         up-prod down-prod start-prod stop-prod logs-prod build-prod \
         logs-backend logs-frontend logs-db logs-celery \
-        shell-backend shell-frontend
+        shell-backend shell-frontend db-clean
 
 # Compose file combinations
 DC_DEV = docker compose -f docker-compose.yml -f docker-compose.dev.yml
@@ -85,3 +85,6 @@ shell-backend:
 
 shell-frontend:
 	$(DC_DEV) exec frontend /bin/sh
+
+db-clean:
+	$(DC_DEV) exec backend python repository/clean_db.py postgresql://postgres:postgres@db:5432/korchess
