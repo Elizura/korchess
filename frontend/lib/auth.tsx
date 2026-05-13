@@ -30,6 +30,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   signup: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   signin: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  googleSignin: (idToken: string) => Promise<{ ok: boolean; error?: string }>;
   verify: (email: string, code: string) => Promise<{ ok: boolean; error?: string }>;
   signout: () => Promise<void>;
   getAuthHeaders: () => Promise<Record<string, string>>;
@@ -188,6 +189,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchMe]);
 
+  const googleSignin = useCallback(async (idToken: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id_token: idToken }),
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) return { ok: false, error: data.detail || "Google sign in failed." };
+
+      const token = data.access_token as string;
+      setAccessToken(token);
+      const me = await fetchMe(token);
+      setUser(me);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "Network error." };
+    }
+  }, [fetchMe]);
+
   const signout = useCallback(async () => {
     try {
       await fetch(`${API_BASE_URL}/api/v1/auth/signout`, {
@@ -209,12 +231,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated,
       signup,
       signin,
+      googleSignin,
       verify,
       signout,
       getAuthHeaders,
       refreshSession,
     }),
-    [user, accessToken, isLoading, isAuthenticated, signup, signin, verify, signout, getAuthHeaders, refreshSession],
+    [user, accessToken, isLoading, isAuthenticated, signup, signin, googleSignin, verify, signout, getAuthHeaders, refreshSession],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

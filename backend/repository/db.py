@@ -628,20 +628,26 @@ def create_auth_user(
     conn: psycopg.Connection,
     user_id: str,
     email: str,
-    password_hash: str,
-    verification_code: str,
-    verification_code_expires_at,
+    password_hash: str | None = None,
+    verification_code: str | None = None,
+    verification_code_expires_at=None,
+    *,
+    email_verified: bool = False,
+    name: str | None = None,
+    avatar_url: str | None = None,
 ) -> None:
-    """Create a new user with email/password auth."""
+    """Create a new user. Works for both email/password and OAuth sign-ups."""
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO users (id, email, password_hash, email_verified,
-                           verification_code, verification_code_expires_at)
-        VALUES (%s, %s, %s, FALSE, %s, %s)
+                           verification_code, verification_code_expires_at,
+                           name, avatar_url)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (user_id, email.lower(), password_hash,
-         verification_code, verification_code_expires_at),
+        (user_id, email.lower(), password_hash, email_verified,
+         verification_code, verification_code_expires_at,
+         name, avatar_url),
     )
 
 

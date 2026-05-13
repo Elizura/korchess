@@ -1,11 +1,15 @@
-"""Authentication endpoints — email/password auth with JWT tokens."""
+"""Authentication endpoints — email/password and Google OAuth with JWT tokens."""
 
+import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import psycopg
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
 
 from auth import (
@@ -45,6 +49,10 @@ EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 VERIFICATION_CODE_EXPIRY_MINUTES = 10
 BCRYPT_ROUNDS = 12
 IS_PROD = True  # Override via env if needed
+
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+
+logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "refresh_token"
 COOKIE_MAX_AGE = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
@@ -223,6 +231,66 @@ async def signin(
 
     access_token = _issue_tokens(response, conn, user["id"], email)
     conn.commit()
+
+    return {"access_token": access_token}
+
+
+class GoogleBody(BaseModel):
+    id_token: str
+
+
+@router.post("/auth/google")
+async def google_auth(
+    body: GoogleBody,
+    request: Request,
+    response: Response,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="Google auth is not configured.")
+
+    try:
+        id_info = google_id_token.verify_oauth2_token(
+            body.id_token,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+        )
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Google token.")
+
+    email = (id_info.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Google account has no email.")
+
+    name = id_info.get("name")
+    picture = id_info.get("picture")
+
+    user = get_user_by_email(conn, email)
+
+    if user:
+        access_token = _issue_tokens(response, conn, user["id"], email)
+        conn.commit()
+        return {"access_token": access_token}
+
+    user_id = generate_user_id()
+    create_auth_user(
+        conn,
+        user_id,
+        email,
+        email_verified=True,
+        name=name,
+        avatar_url=picture,
+    )
+    access_token = _issue_tokens(response, conn, user_id, email)
+    conn.commit()
+
+    await track_server_event(
+        conn,
+        event_name="auth.registered",
+        user_id=user_id,
+        request=request,
+        properties={"auth_provider": "google"},
+    )
 
     return {"access_token": access_token}
 
