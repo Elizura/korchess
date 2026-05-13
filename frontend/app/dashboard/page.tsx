@@ -17,6 +17,7 @@ import {
   deleteProfile,
 } from "@/lib/profiles";
 import { importGames, type ImportResponse } from "@/lib/import";
+import { API_BASE_URL } from "@/lib/api-url";
 import { FaChessPawn, FaChessKnight, FaChessBishop, FaChessRook, FaChessQueen, FaChessKing } from "react-icons/fa";
 
 const CHESS_PIECE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -27,9 +28,6 @@ const CHESS_PIECE_ICONS: Record<string, React.ComponentType<{ className?: string
   queen: FaChessQueen,
   king: FaChessKing,
 };
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "https://korchess.com";
 
 const SHOW_COACHING_SUMMARY = true;
 
