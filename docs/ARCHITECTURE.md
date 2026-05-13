@@ -372,7 +372,7 @@ Jobs run via **asyncio tasks** on the FastAPI process (no separate worker):
 
 | Table | Purpose | When Used |
 |-------|---------|-----------|
-| **`users`** | Stores user accounts (both registered and public/anonymous users) | Created on first import or OAuth sign-in. Public users are auto-created with `pub_` prefix for anonymous imports. |
+| **`users`** | Stores registered user accounts | Created on OAuth sign-in or email registration. All features require authentication. |
 | **`games`** | Stores all imported chess games with PGN and metadata | Populated during import from Lichess/Chess.com. Queried when viewing games, openings, or generating insights. |
 | **`imports`** | Tracks import history and sync status per user/site | Updated after each import. Used to determine if next import is "sync" (incremental) vs full import. |
 

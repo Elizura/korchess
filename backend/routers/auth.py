@@ -223,7 +223,7 @@ async def signin(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    if not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+    if not user["password_hash"] or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     if not user.get("email_verified"):
