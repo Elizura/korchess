@@ -92,9 +92,8 @@ export default function ProblemsPage() {
   useEffect(() => {
     if (!username || !theme) return;
 
-    const authHeaders: Record<string, string> = accessToken
-      ? { Authorization: `Bearer ${accessToken}` }
-      : {};
+    if (!accessToken) return;
+    const authHeaders: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
 
     const params = new URLSearchParams({
       username,

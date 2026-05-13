@@ -106,10 +106,7 @@ export default function OpeningDetailPage() {
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
 
   const authHeaders = useMemo((): Record<string, string> => {
-    if (!accessToken) {
-      return {};
-    }
-    return { Authorization: `Bearer ${accessToken}` };
+    return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
   }, [accessToken]);
 
   const fetchGames = async (resetOffset: boolean = false) => {
