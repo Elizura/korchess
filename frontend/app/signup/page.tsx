@@ -98,10 +98,6 @@ export default function SignupPage() {
       <div className="relative z-10 w-full max-w-sm px-6">
         <div className="bg-background-dark signup-pixel-border p-10 md:p-12">
           <div className="flex items-center justify-center gap-3 mb-8">
-            <span className="w-2 h-2 bg-accent-green rounded-full shadow-[0_0_10px_#4ade80]" />
-            <span className="text-[9px] font-display uppercase tracking-widest text-accent-green opacity-90">
-              Server: Online
-            </span>
           </div>
           <div className="mb-8 text-center">
             <h1 className="font-display text-2xl md:text-3xl signup-glitch-text mb-4 tracking-tighter">

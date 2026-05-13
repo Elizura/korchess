@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics/client";
+import { MdSportsEsports, MdRefresh, MdPsychology, MdSync, MdBarChart } from "react-icons/md";
 
 export default function LandingPage() {
   const { user, signout } = useAuth();
@@ -85,9 +86,7 @@ export default function LandingPage() {
               }
               className="bg-primary hover:bg-primary/90 text-white px-8 py-4 font-display text-xs pixel-border-primary flex items-center gap-3 group transition-all transform hover:-translate-y-1 active:translate-y-0"
             >
-              <span className="material-symbols-outlined text-base">
-                sports_esports
-              </span>
+              <MdSportsEsports className="text-base" />
               START YOUR QUEST
             </Link>
           </div>
@@ -147,9 +146,7 @@ export default function LandingPage() {
                   <option>Bullet</option>
                 </select>
                 <button className="border-2 border-gray-700 px-3 py-2 font-display text-[9px] text-gray-400 flex items-center gap-2 hover:bg-gray-800">
-                  <span className="material-symbols-outlined text-xs">
-                    refresh
-                  </span>
+                  <MdRefresh className="text-xs" />
                 </button>
               </div>
             </div>
@@ -221,9 +218,7 @@ export default function LandingPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="bg-card-dark border-2 border-gray-800 p-6 group hover:border-accent-green transition-colors">
               <div className="mb-4">
-                <span className="material-symbols-outlined text-3xl text-accent-green">
-                  psychology
-                </span>
+                <MdPsychology className="text-3xl text-accent-green" />
               </div>
               <h3 className="font-display text-[10px] mb-3 text-white uppercase">
                 Opening Radar
@@ -235,9 +230,7 @@ export default function LandingPage() {
             </div>
             <div className="bg-card-dark border-2 border-gray-800 p-6 group hover:border-primary transition-colors">
               <div className="mb-4">
-                <span className="material-symbols-outlined text-3xl text-primary">
-                  sync
-                </span>
+                <MdSync className="text-3xl text-primary" />
               </div>
               <h3 className="font-display text-[10px] mb-3 text-white uppercase">
                 Unified Import
@@ -249,9 +242,7 @@ export default function LandingPage() {
             </div>
             <div className="bg-card-dark border-2 border-gray-800 p-6 group hover:border-accent-green transition-colors">
               <div className="mb-4">
-                <span className="material-symbols-outlined text-3xl text-accent-green">
-                  bar_chart
-                </span>
+                <MdBarChart className="text-3xl text-accent-green" />
               </div>
               <h3 className="font-display text-[10px] mb-3 text-white uppercase">
                 Prep Priorities

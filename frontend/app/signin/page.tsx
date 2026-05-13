@@ -98,14 +98,10 @@ export default function SigninPage() {
     <div className="bg-charcoal font-mono text-white selection:bg-electric-blue selection:text-white min-h-screen flex items-center justify-center overflow-hidden">
       <div className="crt-overlay pointer-events-none" />
       <div className="fixed inset-0 signup-grid-bg opacity-30 pointer-events-none" />
-      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg h-[400px] blue-glow rounded-full opacity-60 pointer-events-none" />
-      <div className="relative z-10 w-full max-w-sm px-6">
-        <div className="bg-background-dark signup-pixel-border p-10 md:p-12">
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-electric-blue/20 rounded-full blur-[120px] pointer-events-none" />
+      <div className="relative z-10 w-full max-w-lg px-6">
+        <div className="bg-background-dark signup-pixel-border p-10 md:p-14">
           <div className="flex items-center justify-center gap-3 mb-8">
-            <span className="w-2 h-2 bg-accent-green rounded-full shadow-[0_0_10px_#4ade80]" />
-            <span className="text-[9px] font-display uppercase tracking-widest text-accent-green opacity-90">
-              Server: Online
-            </span>
           </div>
           <div className="mb-8 text-center">
             <h1 className="font-display text-2xl md:text-3xl signup-glitch-text mb-4 tracking-tighter">
@@ -156,7 +152,7 @@ export default function SigninPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full bg-black/50 border border-gray-700 text-white px-3 py-2.5 font-mono text-sm focus:border-electric-blue focus:outline-none transition-colors"
+                className="w-full bg-black/50 border border-gray-700 text-white px-4 py-3 text-sm focus:border-electric-blue focus:outline-none transition-colors placeholder:text-gray-500 placeholder:text-xs placeholder:tracking-wide"
                 placeholder="you@example.com"
               />
             </div>
@@ -169,8 +165,8 @@ export default function SigninPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                className="w-full bg-black/50 border border-gray-700 text-white px-3 py-2.5 font-mono text-sm focus:border-electric-blue focus:outline-none transition-colors"
-                placeholder="Your password"
+                className="w-full bg-black/50 border border-gray-700 text-white px-4 py-3 text-sm focus:border-electric-blue focus:outline-none transition-colors placeholder:text-gray-500 placeholder:text-xs placeholder:tracking-wide"
+                placeholder="••••••••"
               />
             </div>
             <button

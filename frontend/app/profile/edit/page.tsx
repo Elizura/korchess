@@ -4,17 +4,18 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
+import { FaChessPawn, FaChessKnight, FaChessBishop, FaChessRook, FaChessQueen, FaChessKing } from "react-icons/fa";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const AVATARS = [
-  { id: "av-pawn", icon: "chess_pawn", piece: "pawn", label: "Pawn" },
-  { id: "av-knight", icon: "chess_knight", piece: "knight", label: "Knight" },
-  { id: "av-bishop", icon: "chess_bishop", piece: "bishop", label: "Bishop" },
-  { id: "av-rook", icon: "chess_rook", piece: "rook", label: "Rook" },
-  { id: "av-queen", icon: "chess_queen", piece: "queen", label: "Queen" },
-  { id: "av-king", icon: "chess_king", piece: "king", label: "King" },
+  { id: "av-pawn", icon: FaChessPawn, piece: "pawn", label: "Pawn" },
+  { id: "av-knight", icon: FaChessKnight, piece: "knight", label: "Knight" },
+  { id: "av-bishop", icon: FaChessBishop, piece: "bishop", label: "Bishop" },
+  { id: "av-rook", icon: FaChessRook, piece: "rook", label: "Rook" },
+  { id: "av-queen", icon: FaChessQueen, piece: "queen", label: "Queen" },
+  { id: "av-king", icon: FaChessKing, piece: "king", label: "King" },
 ] as const;
 
 export default function ProfileEditPage() {
@@ -165,16 +166,11 @@ export default function ProfileEditPage() {
                         : "border-[color:var(--zen-border)] hover:border-[color:var(--zen-accent)]/45",
                     ].join(" ")}
                   >
-                    <span
-                      className={`material-symbols-outlined text-2xl ${
+                    <av.icon
+                      className={`text-2xl ${
                         selected ? "text-[color:var(--zen-accent)]" : "text-[color:var(--zen-muted)]"
                       }`}
-                      style={{
-                        fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 40",
-                      }}
-                    >
-                      {av.icon}
-                    </span>
+                    />
                     <span className="text-sm font-medium text-[color:var(--zen-text)]">
                       {av.label}
                     </span>

@@ -5,17 +5,18 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
 import { resolvePostAuthNextPath } from "@/lib/safeNext";
+import { FaChessPawn, FaChessKnight, FaChessBishop, FaChessRook, FaChessQueen, FaChessKing } from "react-icons/fa";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const AVATARS = [
-  { id: "av-pawn", icon: "chess_pawn", piece: "pawn" },
-  { id: "av-knight", icon: "chess_knight", piece: "knight" },
-  { id: "av-bishop", icon: "chess_bishop", piece: "bishop" },
-  { id: "av-rook", icon: "chess_rook", piece: "rook" },
-  { id: "av-queen", icon: "chess_queen", piece: "queen" },
-  { id: "av-king", icon: "chess_king", piece: "king" },
+  { id: "av-pawn", icon: FaChessPawn, piece: "pawn" },
+  { id: "av-knight", icon: FaChessKnight, piece: "knight" },
+  { id: "av-bishop", icon: FaChessBishop, piece: "bishop" },
+  { id: "av-rook", icon: FaChessRook, piece: "rook" },
+  { id: "av-queen", icon: FaChessQueen, piece: "queen" },
+  { id: "av-king", icon: FaChessKing, piece: "king" },
 ] as const;
 
 export default function OnboardingPage() {
@@ -150,12 +151,7 @@ export default function OnboardingPage() {
                     htmlFor={av.id}
                     className="avatar-option-onboarding cursor-pointer"
                   >
-                    <span
-                      className="material-symbols-outlined text-white text-[32px]"
-                      style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 48" }}
-                    >
-                      {av.icon}
-                    </span>
+                    <av.icon className="text-white text-[32px]" />
                   </label>
                 </div>
               ))}
