@@ -1,6 +1,7 @@
 """Openings and games-by-opening endpoints.
 
 Game data is shared by (username, site) - not owned by individual users.
+Requires authentication.
 """
 
 import psycopg
@@ -19,6 +20,7 @@ from schemas import (
     VariationStats,
 )
 from dependencies import get_db, validate_site
+from auth import get_current_user
 
 router = APIRouter(tags=["openings"])
 
@@ -31,6 +33,7 @@ async def get_openings_report(
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
     limit: int = Query(default=10, ge=1, le=100, description="Max number of openings to return (top by games)"),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Get aggregated opening statistics for a user.
@@ -55,6 +58,7 @@ async def get_import_status_endpoint(
     site: str,
     username: str,
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get last import status and total games count for a user on a specific site."""
     site = validate_site(site)
@@ -80,6 +84,7 @@ async def get_games_for_opening(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=50),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get recent games and summary for a user and opening with filters."""
     site = validate_site(site)
@@ -112,6 +117,7 @@ async def get_opening_variations(
     color: str = Query(default="all", pattern="^(all|white|black)$"),
     time_class: str = Query(default="all", pattern="^(all|blitz|rapid|classical)$"),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get variation statistics for a user's opening key with filters."""
     site = validate_site(site)

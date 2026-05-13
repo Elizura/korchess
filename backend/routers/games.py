@@ -1,6 +1,7 @@
 """Single game endpoint.
 
 Games are shared by (username, site) - not owned by individual users.
+Requires authentication.
 """
 
 import psycopg
@@ -9,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from repository.db import get_game_by_id
 from schemas import GameResponse
 from dependencies import get_db, validate_site
+from auth import get_current_user
 
 router = APIRouter(tags=["games"])
 
@@ -19,6 +21,7 @@ async def get_game(
     username: str,
     game_id: str,
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get game metadata and PGN."""
     site = validate_site(site)

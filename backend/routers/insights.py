@@ -1,6 +1,7 @@
 """AI insights endpoints.
 
 Insights are shared by (username, site) - not owned by individual users.
+Requires authentication.
 """
 
 import psycopg
@@ -15,6 +16,7 @@ from dependencies import get_db, validate_site
 from services.insights import get_insights_state, schedule_insights_refresh
 from repository.redis_client import redis_client as _redis
 from schemas import InsightsProfileResponse, InsightsRequest, ProblemsByThemeResponse
+from auth import get_current_user
 
 router = APIRouter(tags=["insights"])
 
@@ -103,6 +105,7 @@ async def get_insights_profile(
     username: str = Query(..., min_length=1, max_length=50),
     site: str = Query(default="all", pattern="^(all|lichess|chesscom)$"),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get current AI insights snapshot and background status.
     
@@ -121,6 +124,7 @@ async def get_insights_profile(
 async def refresh_insights_profile(
     request: InsightsRequest,
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Queue or reuse an AI insights generation job.
     
@@ -152,6 +156,7 @@ async def get_problems_by_theme_endpoint(
     page: int = Query(default=0, ge=0),
     page_size: int = Query(default=8, ge=1, le=100),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Return paginated problems matching a specific tactic theme for a user."""
     site = validate_site(site)
@@ -173,6 +178,7 @@ async def get_tactical_problem_spotter(
     username: str = Query(..., min_length=1, max_length=50),
     site: str = Query(default="all", pattern="^(all|lichess|chesscom)$"),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get tactical problem spotter data from quick scans.
     

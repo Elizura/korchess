@@ -38,7 +38,7 @@ from schemas import (
     SingleGameInsightsResponse,
 )
 from dependencies import get_db, validate_site
-from auth import get_optional_user, get_registered_user
+from auth import get_current_user, get_registered_user
 
 router = APIRouter(tags=["analysis"])
 
@@ -280,8 +280,9 @@ async def get_full_analysis_endpoint(
     depth: int = Query(default=18, ge=1, le=30),
     multipv: int = Query(default=1, ge=1, le=5),
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Get full analysis status for a game."""
+    """Get full analysis status for a game. Requires authentication."""
     site = validate_site(site)
     username = username.strip()
 
@@ -315,9 +316,9 @@ async def run_full_analysis_endpoint(
     multipv: int = Query(default=1, ge=1, le=5),
     force: bool = Query(default=False),
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Start full move-by-move analysis on a game (async with background task)."""
+    """Start full move-by-move analysis on a game. Requires authentication."""
     global active_analysis_count
 
     site = validate_site(site)
@@ -326,7 +327,7 @@ async def run_full_analysis_endpoint(
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
 
-    actor_user_id = current_user["id"] if current_user else None
+    actor_user_id = current_user["id"]
     username_hash = hash_username(username)
     await track_server_event(
         conn,
