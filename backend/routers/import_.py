@@ -25,7 +25,7 @@ from schemas import (
     ImportProgressResponse,
 )
 from dependencies import get_db
-from auth import get_optional_user
+from auth import get_current_user
 
 router = APIRouter(tags=["import"])
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 @router.get("/history", response_model=ImportHistoryResponse)
 async def get_import_history_endpoint(
     conn: psycopg.Connection = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get last 10 import records."""
     rows = get_import_history(conn, limit=10)
@@ -46,6 +47,7 @@ async def get_import_history_endpoint(
 async def get_import_progress(
     site: Literal["lichess", "chesscom"],
     username: str,
+    current_user: dict = Depends(get_current_user),
 ):
     """Short-poll endpoint for import progress. Reads Redis counters."""
     canonical = username.strip().lower()
@@ -81,9 +83,9 @@ async def import_games(
     request: ImportRequest,
     http_request: Request,
     conn: psycopg.Connection = Depends(get_db),
-    current_user: dict | None = Depends(get_optional_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Import or sync games from Lichess or Chess.com. Works for anonymous and authenticated users."""
+    """Import or sync games from Lichess or Chess.com. Requires authentication."""
     username = request.username.strip()
     max_games = request.max_games
     if not username:
@@ -97,13 +99,12 @@ async def import_games(
     await track_server_event(
         conn,
         event_name="import.start",
-        user_id=current_user["id"] if current_user else None,
+        user_id=current_user["id"],
         request=http_request,
         properties={
             "site": site,
             "max_games": max_games,
             "username": username_hash,
-            "is_authenticated": bool(current_user),
             "is_sync": is_sync,
         },
     )
@@ -117,7 +118,7 @@ async def import_games(
         await track_server_event(
             conn,
             event_name="import.failed",
-            user_id=current_user["id"] if current_user else None,
+            user_id=current_user["id"],
             request=http_request,
             properties={
                 "site": site,
@@ -139,7 +140,7 @@ async def import_games(
         await track_server_event(
             conn,
             event_name="import.failed",
-            user_id=current_user["id"] if current_user else None,
+            user_id=current_user["id"],
             request=http_request,
             properties={
                 "site": site,
@@ -158,14 +159,13 @@ async def import_games(
     await track_server_event(
         conn,
         event_name="import.queued",
-        user_id=current_user["id"] if current_user else None,
+        user_id=current_user["id"],
         request=http_request,
         properties={
             "site": site,
             "max_games": max_games,
             "username": username_hash,
             "enqueued": import_result.imported,
-            "is_authenticated": bool(current_user),
             "is_sync": import_result.is_sync,
         },
     )
