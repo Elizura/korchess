@@ -1040,8 +1040,9 @@ export default function DashboardPage() {
     }
   };
 
-  const handleSignOut = () => {
-    void signout();
+  const handleSignOut = async () => {
+    await signout();
+    router.push("/signin");
   };
 
   /** Sync / import toast: show inside the large profile card when it applies to the selected account */

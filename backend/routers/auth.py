@@ -48,7 +48,7 @@ VALID_AVATARS = frozenset({"pawn", "knight", "bishop", "rook", "queen", "king"})
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 VERIFICATION_CODE_EXPIRY_MINUTES = 10
 BCRYPT_ROUNDS = 12
-IS_PROD = True  # Override via env if needed
+IS_PROD = os.environ.get("ENV", "development").lower() == "production"
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 
@@ -68,7 +68,7 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         key=COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=True,
+        secure=IS_PROD,
         samesite="lax",
         path="/",
         max_age=COOKIE_MAX_AGE,
@@ -76,7 +76,12 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
 
 
 def _clear_refresh_cookie(response: Response) -> None:
-    response.delete_cookie(key=COOKIE_NAME, path="/")
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        path="/",
+        secure=IS_PROD,
+        samesite="lax",
+    )
 
 
 def _issue_tokens(
