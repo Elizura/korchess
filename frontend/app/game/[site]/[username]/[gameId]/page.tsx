@@ -107,15 +107,6 @@ interface AIInsightsResponse {
   detail?: string | null;
 }
 
-type LessonConsentDecision = "consented" | "declined";
-
-interface LessonConsentResponse {
-  channel: "email_lessons";
-  state: "consented" | "declined" | "unknown";
-  consented: boolean;
-  last_decision_at: string | null;
-}
-
 interface InsightEvidence {
   ply: number;
   move_index?: number | null;
@@ -647,12 +638,6 @@ export default function GameAnalyzerPage() {
   const [aiInsightsRequesting, setAiInsightsRequesting] = useState(false);
   const [aiRequestStepIndex, setAiRequestStepIndex] = useState(0);
   const [aiInsightsError, setAiInsightsError] = useState<string | null>(null);
-  const [lessonConsentLoading, setLessonConsentLoading] = useState(false);
-  const [lessonConsentSaving, setLessonConsentSaving] = useState(false);
-  const [lessonConsentState, setLessonConsentState] = useState<LessonConsentResponse | null>(null);
-  const [lessonConsentError, setLessonConsentError] = useState<string | null>(null);
-  const [lastGeneratedInsightNonce, setLastGeneratedInsightNonce] = useState(0);
-  const [dismissedNonce, setDismissedNonce] = useState<number | null>(null);
   const [activeAnalysisTab, setActiveAnalysisTab] = useState<"engine" | "ai">("engine");
   const [activeAiSectionTab, setActiveAiSectionTab] = useState<AiSectionTab>("result_summary");
   const [reviewMode, setReviewMode] = useState(false);
@@ -662,7 +647,6 @@ export default function GameAnalyzerPage() {
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
   const analysisStartTime = useRef<number | null>(null);
   const aiHydratedKey = useRef<string | null>(null);
-  const lessonConsentFetchedForUser = useRef<string | null>(null);
   
   // Board settings
   const [orientation, setOrientation] = useState<"white" | "black">("white");
@@ -1196,22 +1180,6 @@ export default function GameAnalyzerPage() {
     singleInsights?.narration?.title,
   ]);
 
-  const shouldShowLessonConsentCard = useMemo(() => {
-    if (singleInsightsStatus !== "ready" || !singleInsights) return false;
-    if (lastGeneratedInsightNonce <= 0) return false;
-    if (lessonConsentLoading || !lessonConsentState) return false;
-    if (lessonConsentState.consented) return false;
-    if (dismissedNonce === lastGeneratedInsightNonce) return false;
-    return true;
-  }, [
-    dismissedNonce,
-    lastGeneratedInsightNonce,
-    lessonConsentLoading,
-    lessonConsentState,
-    singleInsights,
-    singleInsightsStatus,
-  ]);
-
   const getNarrationSectionBadge = useCallback((heading: string) => {
     const key = heading.toLowerCase();
     if (key.includes("turning")) return "⚠";
@@ -1651,9 +1619,6 @@ export default function GameAnalyzerPage() {
     [depth, multiPv, site, username, gameId]
   );
 
-  const lessonConsentUrl = `${API_BASE_URL}/api/v1/auth/lesson-consent`;
-  const lessonConsentUserKey = session?.userId || session?.user?.email || null;
-
   const getSignupReturnPath = useCallback((): string => {
     if (typeof window !== "undefined") {
       return `${window.location.pathname}${window.location.search}`;
@@ -1907,96 +1872,6 @@ export default function GameAnalyzerPage() {
     [site, username, gameId, depth, multiPv]
   );
 
-  const hydrateLessonConsent = useCallback(async () => {
-    if (!accessToken) return;
-    setLessonConsentLoading(true);
-    setLessonConsentError(null);
-    try {
-      const res = await fetch(lessonConsentUrl, {
-        headers: withTrackingHeaders(authHeaders),
-      });
-      if (!res.ok) {
-        throw new Error("Failed to load lesson consent status");
-      }
-      const data: LessonConsentResponse = await res.json();
-      setLessonConsentState(data);
-      lessonConsentFetchedForUser.current = lessonConsentUserKey;
-    } catch {
-      setLessonConsentError("Unable to load lesson-email preference right now.");
-      setLessonConsentState(null);
-      lessonConsentFetchedForUser.current = null;
-    } finally {
-      setLessonConsentLoading(false);
-    }
-  }, [authHeaders, accessToken, lessonConsentUrl, lessonConsentUserKey]);
-
-  useEffect(() => {
-    if (!accessToken) return;
-    if (activeAnalysisTab !== "ai") return;
-    if (!lessonConsentUserKey) return;
-    if (lessonConsentFetchedForUser.current === lessonConsentUserKey) return;
-    void hydrateLessonConsent();
-  }, [
-    activeAnalysisTab,
-    hydrateLessonConsent,
-    accessToken,
-    lessonConsentUserKey,
-  ]);
-
-  const saveLessonConsentDecision = useCallback(async (decision: LessonConsentDecision) => {
-    if (!accessToken) return;
-    setLessonConsentSaving(true);
-    setLessonConsentError(null);
-    try {
-      const res = await fetch(lessonConsentUrl, {
-        method: "POST",
-        headers: withTrackingHeaders({
-          "Content-Type": "application/json",
-          ...authHeaders,
-        } as Record<string, string>),
-        body: JSON.stringify({
-          decision,
-          source: "game_ai_summary",
-          site,
-          site_game_id: gameId,
-          analysis_depth: depth,
-          analysis_multipv: multiPv,
-        }),
-      });
-      if (!res.ok) {
-        throw new Error("Failed to save lesson consent decision");
-      }
-      const data: LessonConsentResponse = await res.json();
-      setLessonConsentState(data);
-      if (decision === "declined") {
-        setDismissedNonce(lastGeneratedInsightNonce);
-      } else {
-        setDismissedNonce(null);
-      }
-      trackEvent("feature.usage", {
-        properties: {
-          feature: "lesson_email_consent",
-          decision,
-          source: "game_ai_summary",
-          channel: "email_lessons",
-        },
-      });
-    } catch {
-      setLessonConsentError("Could not save your preference. Please try again.");
-    } finally {
-      setLessonConsentSaving(false);
-    }
-  }, [
-    authHeaders,
-    depth,
-    gameId,
-    accessToken,
-    lastGeneratedInsightNonce,
-    lessonConsentUrl,
-    multiPv,
-    site,
-  ]);
-
   const hydrateAiInsights = useCallback(async () => {
     if (!accessToken || analysisStatus !== "completed") {
       return;
@@ -2102,9 +1977,6 @@ export default function GameAnalyzerPage() {
         setSingleInsights(data.insights);
         setSingleInsightsStatus("ready");
         setAiInsightsError(null);
-        setLastGeneratedInsightNonce((prev) => prev + 1);
-        setDismissedNonce(null);
-        setLessonConsentError(null);
         aiHydratedKey.current = aiInsightsCacheKey;
         return;
       }
@@ -2135,18 +2007,6 @@ export default function GameAnalyzerPage() {
     authHeaders,
     buildAiInsightsUrl,
   ]);
-
-  useEffect(() => {
-    if (!accessToken) return;
-    if (!lessonConsentUserKey) return;
-    if (lessonConsentFetchedForUser.current && lessonConsentFetchedForUser.current !== lessonConsentUserKey) {
-      lessonConsentFetchedForUser.current = null;
-      setLessonConsentState(null);
-      setLessonConsentError(null);
-      setLastGeneratedInsightNonce(0);
-      setDismissedNonce(null);
-    }
-  }, [accessToken, lessonConsentUserKey]);
 
   // Start/stop polling based on status
   useEffect(() => {
@@ -2883,41 +2743,6 @@ export default function GameAnalyzerPage() {
                             </p>
                           </div>
                         )}
-                      </div>
-                    )}
-
-                    {shouldShowLessonConsentCard && (
-                      <div className="zen-surface-flat p-4 md:p-5 border border-[color:var(--zen-border)] space-y-3">
-                        <h3 className="text-base font-semibold text-[color:var(--zen-text)]">
-                          Get tailored chess lessons by email
-                        </h3>
-                        <p className="text-sm text-[color:var(--zen-muted)]">
-                          Based on your game-analysis gaps, we can send focused lessons to help you
-                          improve.
-                        </p>
-                        {lessonConsentError && (
-                          <p className="text-sm text-[color:var(--zen-danger)]">
-                            {lessonConsentError}
-                          </p>
-                        )}
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void saveLessonConsentDecision("consented")}
-                            disabled={lessonConsentSaving}
-                            className="zen-pill px-4 py-2 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {lessonConsentSaving ? "Saving..." : "Yes, send lessons"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void saveLessonConsentDecision("declined")}
-                            disabled={lessonConsentSaving}
-                            className="rounded-lg border border-[color:var(--zen-border)] px-4 py-2 text-sm font-medium text-[color:var(--zen-muted)] hover:text-[color:var(--zen-text)] transition disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            No thanks
-                          </button>
-                        </div>
                       </div>
                     )}
                   </>
