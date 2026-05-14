@@ -413,12 +413,6 @@ Jobs run via **asyncio tasks** on the FastAPI process (no separate worker):
 | **`openings`** | Master list of chess openings (ECO codes, names, PGN) | Loaded at startup. Used to match games to openings during import. |
 | **`opening_moves`** | Move sequences for each opening (ply-by-ply UCI moves) | Used by opening matcher to find best matching opening for each game. |
 
-#### User Consent
-
-| Table | Purpose | When Used |
-|-------|---------|-----------|
-| **`lesson_consent_events`** | Records user consent decisions for email lessons | Written when user opts in/out. Tracks consent history with source context. |
-
 ### Schema Diagram
 
 ```
