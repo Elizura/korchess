@@ -1,5 +1,9 @@
 # Production overlay: nginx, certbot, and production-specific settings.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#
+# Required environment variables (set in .env):
+#   - NEXT_PUBLIC_API_BASE_URL: Public URL for API (e.g., https://korchess.com)
+#   - NEXT_PUBLIC_GOOGLE_CLIENT_ID: Google OAuth client ID (if using Google auth)
 
 services:
   backend:
@@ -15,9 +19,11 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_BASE_URL=https://korchess.com
+        - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+        - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-${GOOGLE_CLIENT_ID}}
     environment:
       - NODE_ENV=production
+      - API_INTERNAL_URL=http://backend:8000
 
   nginx:
     image: nginx:1.25-alpine
