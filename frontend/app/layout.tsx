@@ -71,9 +71,6 @@ export default function RootLayout({
       lang="en"
       className={`dark ${inter.variable} ${jetbrainsMono.variable} ${spaceMono.variable} ${pressStart.variable} ${silkscreen.variable} ${vt323.variable}`}
     >
-      <head>
-        <script src="https://accounts.google.com/gsi/client" async defer />
-      </head>
       <body className="min-h-screen antialiased bg-[color:var(--zen-bg)] text-[color:var(--zen-text)]">
         <Providers>{children}</Providers>
       </body>
