@@ -9,7 +9,7 @@
 
 # Compose file combinations
 DC_DEV = docker compose -f docker-compose.yml -f docker-compose.dev.yml
-DC_PROD = docker compose -f docker-compose.yml
+DC_PROD = docker compose -f docker-compose.yml -f docker-compose.prod.yml
 
 # =============================================================================
 # Dev Commands (default)
