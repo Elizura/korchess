@@ -5,7 +5,9 @@ import os
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.environ.get("REDIS_URL")
+if not REDIS_URL:
+    raise RuntimeError("REDIS_URL environment variable is required")
 
 app = Celery("korchess", include=["repository.tasks"])
 

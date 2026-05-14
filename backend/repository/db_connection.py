@@ -21,7 +21,9 @@ if TYPE_CHECKING:
 
 
 # Database configuration
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is required")
 
 # Pool configuration (per-process)
 POOL_MIN_SIZE = int(os.environ.get("DB_POOL_MIN", "2"))
@@ -43,8 +45,6 @@ def init_pool() -> None:
     Must be called once per process (FastAPI startup, Celery worker init).
     """
     global _pool
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set.")
     if _pool is not None:
         return
     _pool = ConnectionPool(
