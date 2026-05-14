@@ -22,23 +22,18 @@ from auth import (
     hash_token,
 )
 from repository.db import (
-    LESSON_CONSENT_CHANNEL_EMAIL,
-    LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY,
     create_auth_user,
     delete_refresh_token,
-    get_lesson_consent_status_payload,
     get_refresh_token_by_hash,
     get_user_by_email,
     get_user_by_id,
     get_user_by_username,
-    insert_lesson_consent_event,
     mark_email_verified,
     store_refresh_token,
     update_user_profile,
     update_user_profile_partial,
 )
 from dependencies import get_db
-from schemas import LessonConsentRequest, LessonConsentResponse
 from services.analytics import track_server_event
 from services.email import send_verification_email
 
@@ -352,7 +347,7 @@ async def signout(
 
 
 # ---------------------------------------------------------------------------
-# Profile / Onboarding / Lesson-consent (kept from original, use get_current_user)
+# Profile / Onboarding (kept from original, use get_current_user)
 # ---------------------------------------------------------------------------
 
 class OnboardingBody(BaseModel):
@@ -363,10 +358,6 @@ class OnboardingBody(BaseModel):
 class ProfileUpdateBody(BaseModel):
     avatar: str | None = None
     username: str | None = None
-
-
-class LessonConsentBody(LessonConsentRequest):
-    pass
 
 
 @router.get("/auth/me")
@@ -485,69 +476,3 @@ async def complete_onboarding(
     update_user_profile(conn, current_user["id"], avatar, username_str)
     conn.commit()
     return {"ok": True}
-
-
-@router.get("/auth/lesson-consent", response_model=LessonConsentResponse)
-async def get_lesson_consent(
-    conn: psycopg.Connection = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-):
-    """Get lesson-consent status for the authenticated user."""
-    return get_lesson_consent_status_payload(
-        conn,
-        current_user["id"],
-        channel=LESSON_CONSENT_CHANNEL_EMAIL,
-    )
-
-
-@router.post("/auth/lesson-consent", response_model=LessonConsentResponse)
-async def record_lesson_consent(
-    body: LessonConsentBody,
-    request: Request,
-    conn: psycopg.Connection = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-):
-    """Record one append-only lesson-consent decision event."""
-    source = body.source.strip().lower()
-    if source != LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY:
-        raise HTTPException(status_code=400, detail="Invalid source")
-
-    site = body.site.strip().lower() if isinstance(body.site, str) else None
-    if site and site not in {"lichess", "chesscom"}:
-        raise HTTPException(status_code=400, detail="Invalid site")
-
-    site_game_id = (body.site_game_id or "").strip() or None
-
-    insert_lesson_consent_event(
-        conn,
-        current_user["id"],
-        body.decision,
-        source,
-        site=site,
-        site_game_id=site_game_id,
-        analysis_depth=body.analysis_depth,
-        analysis_multipv=body.analysis_multipv,
-        channel=LESSON_CONSENT_CHANNEL_EMAIL,
-    )
-
-    await track_server_event(
-        conn,
-        event_name="feature.usage",
-        user_id=current_user["id"],
-        request=request,
-        properties={
-            "feature": "lesson_email_consent",
-            "decision": body.decision,
-            "source": source,
-            "channel": LESSON_CONSENT_CHANNEL_EMAIL,
-            "site": site,
-        },
-    )
-
-    payload = get_lesson_consent_status_payload(
-        conn,
-        current_user["id"],
-        channel=LESSON_CONSENT_CHANNEL_EMAIL,
-    )
-    conn.commit()
-    return payload

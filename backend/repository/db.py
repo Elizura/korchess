@@ -21,9 +21,6 @@ import psycopg
 # Re-export core connection utilities for backwards compatibility
 from repository.db_connection import (
     get_connection,
-    LESSON_CONSENT_CHANNEL_EMAIL,
-    LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY,
-    LESSON_CONSENT_DECISIONS,
     RAW_OPENING_KEY_PREFIX,
 )
 
@@ -246,37 +243,6 @@ def _init_db_schema(conn: psycopg.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_ai_insights_requests_success_user_time
         ON ai_insights_requests(user_id, requested_at)
         WHERE status = 'gemini_success'
-        """
-    )
-
-    # Lesson consent events - user-specific, keyed by user_id
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS lesson_consent_events (
-            id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            channel TEXT NOT NULL,
-            decision TEXT NOT NULL,
-            source TEXT NOT NULL,
-            site TEXT,
-            site_game_id TEXT,
-            analysis_depth INTEGER,
-            analysis_multipv INTEGER,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_lesson_consent_events_user_created
-        ON lesson_consent_events(user_id, created_at DESC)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_lesson_consent_events_channel_decision
-        ON lesson_consent_events(channel, decision, created_at DESC)
         """
     )
 
@@ -1633,110 +1599,6 @@ def log_ai_insights_request(
             status.strip().lower(),
         ),
     )
-
-
-def insert_lesson_consent_event(
-    conn: psycopg.Connection,
-    user_id: str,
-    decision: str,
-    source: str,
-    *,
-    site: str | None = None,
-    site_game_id: str | None = None,
-    analysis_depth: int | None = None,
-    analysis_multipv: int | None = None,
-    channel: str = LESSON_CONSENT_CHANNEL_EMAIL,
-) -> None:
-    """Insert an append-only lesson consent decision event."""
-    normalized_decision = decision.strip().lower()
-    if normalized_decision not in LESSON_CONSENT_DECISIONS:
-        raise ValueError("Invalid lesson consent decision.")
-
-    normalized_source = source.strip().lower()
-    if normalized_source != LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY:
-        raise ValueError("Invalid lesson consent source.")
-
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO lesson_consent_events
-        (
-            user_id,
-            channel,
-            decision,
-            source,
-            site,
-            site_game_id,
-            analysis_depth,
-            analysis_multipv
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            user_id,
-            channel.strip().lower(),
-            normalized_decision,
-            normalized_source,
-            (site or "").strip().lower() or None,
-            (site_game_id or "").strip() or None,
-            analysis_depth,
-            analysis_multipv,
-        ),
-    )
-
-
-def get_latest_lesson_consent_state(
-    conn: psycopg.Connection,
-    user_id: str,
-    channel: str = LESSON_CONSENT_CHANNEL_EMAIL,
-) -> dict | None:
-    """Return the latest lesson consent event for a user/channel."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT decision, created_at
-        FROM lesson_consent_events
-        WHERE user_id = %s
-          AND channel = %s
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1
-        """,
-        (user_id, channel.strip().lower()),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return None
-    return dict(row)
-
-
-def get_lesson_consent_status_payload(
-    conn: psycopg.Connection,
-    user_id: str,
-    channel: str = LESSON_CONSENT_CHANNEL_EMAIL,
-) -> dict[str, Any]:
-    """Normalize lesson consent status response payload."""
-    normalized_channel = channel.strip().lower()
-    latest = get_latest_lesson_consent_state(conn, user_id, normalized_channel)
-    if not latest:
-        return {
-            "channel": normalized_channel,
-            "state": "unknown",
-            "consented": False,
-            "last_decision_at": None,
-        }
-
-    raw_decision = str(latest.get("decision") or "").strip().lower()
-    state = raw_decision if raw_decision in LESSON_CONSENT_DECISIONS else "unknown"
-    created_at = latest.get("created_at")
-    if hasattr(created_at, "isoformat"):
-        created_at = created_at.isoformat()
-
-    return {
-        "channel": normalized_channel,
-        "state": state,
-        "consented": state == "consented",
-        "last_decision_at": created_at,
-    }
 
 
 def count_user_ai_gemini_success_utc_day(

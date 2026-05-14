@@ -30,11 +30,6 @@ POOL_MAX_SIZE = int(os.environ.get("DB_POOL_MAX", "10"))
 # User ID prefixes
 PUBLIC_USER_ID_PREFIX = "public:"
 
-# Lesson consent configuration
-LESSON_CONSENT_CHANNEL_EMAIL = "email_lessons"
-LESSON_CONSENT_SOURCE_GAME_AI_SUMMARY = "game_ai_summary"
-LESSON_CONSENT_DECISIONS = frozenset({"consented", "declined"})
-
 # Opening key configuration
 RAW_OPENING_KEY_PREFIX = "raw__"
 

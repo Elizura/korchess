@@ -200,30 +200,6 @@ class AIInsightsResponse(BaseModel):
     detail: str | None = None
 
 
-LessonConsentDecision = Literal["consented", "declined"]
-LessonConsentState = Literal["consented", "declined", "unknown"]
-LessonConsentSource = Literal["game_ai_summary"]
-LessonConsentChannel = Literal["email_lessons"]
-
-
-class LessonConsentRequest(BaseModel):
-    """Request to record a lesson-consent decision."""
-    decision: LessonConsentDecision
-    source: LessonConsentSource
-    site: Literal["lichess", "chesscom"] | None = None
-    site_game_id: str | None = None
-    analysis_depth: int | None = Field(default=None, ge=1, le=40)
-    analysis_multipv: int | None = Field(default=None, ge=1, le=8)
-
-
-class LessonConsentResponse(BaseModel):
-    """Current lesson-consent status for a user."""
-    channel: LessonConsentChannel
-    state: LessonConsentState
-    consented: bool
-    last_decision_at: str | None = None
-
-
 class SingleGameInsightsResponse(BaseModel):
     """Response for deterministic single-game rule insights endpoint."""
     status: str  # "ready" | "analysis_missing" | "analysis_processing"
