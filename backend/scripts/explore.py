@@ -1,10 +1,12 @@
 
+import os
 import time
 from typing import Optional, Iterator
 
 import httpx
 
 LICHESS_API_BASE = "https://lichess.org/api"
+LICHESS_API_TOKEN = os.environ.get("LICHESS_API_TOKEN")
 
 class LichessAPIError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None):
@@ -17,10 +19,9 @@ def fetch_lichess_pgn_stream(username: str, games_per_chunk: int = 5) -> Iterato
     start_time = time.time()
     
     url = f"{LICHESS_API_BASE}/games/user/{username}"
-    headers = {
-        "Accept": "application/x-chess-pgn",
-        "Authorization": "Bearer ***REMOVED***",
-    }
+    headers = {"Accept": "application/x-chess-pgn"}
+    if LICHESS_API_TOKEN:
+        headers["Authorization"] = f"Bearer {LICHESS_API_TOKEN}"
     params: dict = {
         "rated": "true",
         "opening": "true",
@@ -99,10 +100,9 @@ def fetch_lichess_pgn(username: str) -> str:
     start_time = time.time()
     
     url = f"{LICHESS_API_BASE}/games/user/{username}"
-    headers = {
-        "Accept": "application/x-chess-pgn",
-        "Authorization": "Bearer ***REMOVED***",
-    }
+    headers = {"Accept": "application/x-chess-pgn"}
+    if LICHESS_API_TOKEN:
+        headers["Authorization"] = f"Bearer {LICHESS_API_TOKEN}"
     params: dict = {
         "rated": "true",
         "opening": "true",

@@ -5,6 +5,7 @@ task queue. Adapted from explore.py (Lichess) and explore_chesscom.py (Chess.com
 """
 
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -15,6 +16,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 LICHESS_API_BASE = "https://lichess.org/api"
+LICHESS_API_TOKEN = os.environ.get("LICHESS_API_TOKEN")
 CHESSCOM_API_BASE = "https://api.chess.com/pub"
 CHESSCOM_USER_AGENT = "Korchess/1.0 (Chess opening analyzer)"
 
@@ -53,7 +55,9 @@ def stream_lichess_pgns(
         games_per_chunk: How many PGNs to buffer before yielding.
     """
     url = f"{LICHESS_API_BASE}/games/user/{username}"
-    headers = {"Accept": "application/x-chess-pgn", "Authorization": "Bearer ***REMOVED***"}
+    headers = {"Accept": "application/x-chess-pgn"}
+    if LICHESS_API_TOKEN:
+        headers["Authorization"] = f"Bearer {LICHESS_API_TOKEN}"
     params: dict = {
         "rated": "true",
         "opening": "true",
