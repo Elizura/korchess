@@ -1,13 +1,17 @@
 """Authentication endpoints — email/password and Google OAuth with JWT tokens."""
 
 import logging
+import math
 import os
 import re
+import secrets
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import psycopg
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
@@ -22,26 +26,32 @@ from auth import (
     hash_token,
 )
 from repository.db import (
+    consume_email_code_attempt,
     create_auth_user,
     delete_refresh_token,
+    delete_user_refresh_tokens,
     get_refresh_token_by_hash,
     get_user_by_email,
     get_user_by_id,
     get_user_by_username,
     mark_email_verified,
+    reset_user_password,
+    set_email_code,
     store_refresh_token,
     update_user_profile,
     update_user_profile_partial,
 )
 from dependencies import get_db
 from services.analytics import track_server_event
-from services.email import send_verification_email
+from services.email import send_password_reset_email, send_verification_email
 
 router = APIRouter(tags=["auth"])
 
 VALID_AVATARS = frozenset({"pawn", "knight", "bishop", "rook", "queen", "king"})
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 VERIFICATION_CODE_EXPIRY_MINUTES = 10
+CODE_RESEND_COOLDOWN_SECONDS = 60
+MAX_CODE_ATTEMPTS = 5
 BCRYPT_ROUNDS = 12
 IS_PROD = os.environ.get("ENV", "development").lower() == "production"
 
@@ -54,8 +64,75 @@ COOKIE_MAX_AGE = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
 
 
 def _generate_verification_code() -> str:
-    import random
-    return str(random.randint(100000, 999999))
+    return str(secrets.randbelow(900000) + 100000)
+
+
+async def _hash_password(password: str) -> str:
+    # bcrypt is deliberately slow; keep it off the event loop
+    return await run_in_threadpool(
+        lambda: bcrypt.hashpw(password.encode(), bcrypt.gensalt(BCRYPT_ROUNDS)).decode()
+    )
+
+
+async def _check_password(password: str, password_hash: str) -> bool:
+    return await run_in_threadpool(bcrypt.checkpw, password.encode(), password_hash.encode())
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _code_cooldown_remaining(user: dict) -> int:
+    """Seconds until another code may be emailed to this user (0 if none is pending)."""
+    expires_at = user.get("verification_code_expires_at")
+    if not user.get("verification_code") or not expires_at:
+        return 0
+    issued_at = _as_utc(expires_at) - timedelta(minutes=VERIFICATION_CODE_EXPIRY_MINUTES)
+    elapsed = (datetime.now(timezone.utc) - issued_at).total_seconds()
+    return max(0, math.ceil(CODE_RESEND_COOLDOWN_SECONDS - elapsed))
+
+
+async def _send_code_or_raise(send: Callable[[str, str], dict], email: str, code: str) -> None:
+    result = await run_in_threadpool(send, email, code)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=503,
+            detail="We couldn't send the email. Please try again in a few minutes.",
+        )
+
+
+async def _email_new_code(
+    conn: psycopg.Connection,
+    user: dict,
+    send: Callable[[str, str], dict],
+    password_hash: str | None = None,
+) -> None:
+    """Issue a fresh code to the user and email it. Raises if rate-limited or unsendable."""
+    wait = _code_cooldown_remaining(user)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Please wait {wait} seconds before requesting another code.",
+        )
+    code = _generate_verification_code()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=VERIFICATION_CODE_EXPIRY_MINUTES)
+    set_email_code(conn, user["id"], code, expires_at, password_hash)
+    conn.commit()
+    await _send_code_or_raise(send, user["email"], code)
+
+
+def _check_email_code(conn: psycopg.Connection, user_id: str, code: str) -> None:
+    """Validate an emailed code. Every call uses up one of the code's attempts."""
+    state = consume_email_code_attempt(conn, user_id)
+    conn.commit()
+    if not state or not state.get("verification_code") or not state.get("verification_code_expires_at"):
+        raise HTTPException(status_code=400, detail="No active code. Request a new one.")
+    if state["verification_attempts"] > MAX_CODE_ATTEMPTS:
+        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Request a new code.")
+    if datetime.now(timezone.utc) > _as_utc(state["verification_code_expires_at"]):
+        raise HTTPException(status_code=400, detail="This code has expired. Request a new one.")
+    if not secrets.compare_digest(state["verification_code"], code):
+        raise HTTPException(status_code=400, detail="Invalid code.")
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:
@@ -110,11 +187,25 @@ class SignupBody(BaseModel):
 class VerifyBody(BaseModel):
     email: str
     code: str
+    password: str = ""
 
 
 class SigninBody(BaseModel):
     email: str
     password: str
+
+
+class EmailBody(BaseModel):
+    email: str
+
+
+class ResetPasswordBody(BaseModel):
+    email: str
+    code: str
+    password: str
+
+
+SIGNUP_MESSAGE = "Account created. Please check your email for the verification code."
 
 
 @router.post("/auth/signup", status_code=201)
@@ -134,10 +225,16 @@ async def signup(
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
 
     existing = get_user_by_email(conn, email)
-    if existing:
+    if existing and existing.get("email_verified"):
         raise HTTPException(status_code=409, detail="Email already registered.")
 
-    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(BCRYPT_ROUNDS)).decode()
+    password_hash = await _hash_password(password)
+
+    if existing:
+        # Unverified account (code expired or never arrived): start over with a fresh code
+        await _email_new_code(conn, existing, send_verification_email, password_hash)
+        return {"message": SIGNUP_MESSAGE}
+
     code = _generate_verification_code()
     code_expires = datetime.now(timezone.utc) + timedelta(minutes=VERIFICATION_CODE_EXPIRY_MINUTES)
     user_id = generate_user_id()
@@ -145,9 +242,7 @@ async def signup(
     create_auth_user(conn, user_id, email, password_hash, code, code_expires)
     conn.commit()
 
-    email_result = send_verification_email(email, code)
-    if not email_result.get("success"):
-        pass  # logged inside send_verification_email
+    await _send_code_or_raise(send_verification_email, email, code)
 
     await track_server_event(
         conn,
@@ -157,7 +252,7 @@ async def signup(
         properties={"auth_provider": "email"},
     )
 
-    return {"message": "Account created. Please check your email for the verification code."}
+    return {"message": SIGNUP_MESSAGE}
 
 
 @router.post("/auth/verify")
@@ -172,6 +267,8 @@ async def verify_email(
 
     if not email or not code:
         raise HTTPException(status_code=400, detail="Email and code are required.")
+    if not body.password:
+        raise HTTPException(status_code=400, detail="Password is required.")
 
     user = get_user_by_email(conn, email)
     if not user:
@@ -180,17 +277,14 @@ async def verify_email(
     if user.get("email_verified"):
         raise HTTPException(status_code=400, detail="Email already verified.")
 
-    if not user.get("verification_code") or not user.get("verification_code_expires_at"):
-        raise HTTPException(status_code=400, detail="No verification code found. Please sign up again.")
-
-    expires_at = user["verification_code_expires_at"]
-    if hasattr(expires_at, "tzinfo") and expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expires_at:
-        raise HTTPException(status_code=400, detail="Verification code has expired. Please sign up again.")
-
-    if user["verification_code"] != code:
-        raise HTTPException(status_code=400, detail="Invalid verification code.")
+    _check_email_code(conn, user["id"], code)
+    # Re-signup replaces an unverified account's password, so the code alone
+    # can't show who chose it; require the password too before activating
+    if not user["password_hash"] or not await _check_password(body.password, user["password_hash"]):
+        raise HTTPException(
+            status_code=400,
+            detail="Password doesn't match this sign-up. Check it, or sign up again.",
+        )
 
     mark_email_verified(conn, user["id"])
     access_token = _issue_tokens(response, conn, user["id"], email)
@@ -205,6 +299,60 @@ async def verify_email(
     )
 
     return {"access_token": access_token, "message": "Email verified successfully."}
+
+
+@router.post("/auth/resend-code")
+async def resend_verification_code(
+    body: EmailBody,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    email = body.email.strip().lower()
+    user = get_user_by_email(conn, email) if email else None
+    if user and not user.get("email_verified"):
+        await _email_new_code(conn, user, send_verification_email)
+    return {"message": "If that account is awaiting verification, a new code is on its way."}
+
+
+@router.post("/auth/forgot-password")
+async def forgot_password(
+    body: EmailBody,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    email = body.email.strip().lower()
+    user = get_user_by_email(conn, email) if email else None
+    if user:
+        await _email_new_code(conn, user, send_password_reset_email)
+    return {"message": "If an account exists for that email, a reset code is on its way."}
+
+
+@router.post("/auth/reset-password")
+async def reset_password(
+    body: ResetPasswordBody,
+    response: Response,
+    conn: psycopg.Connection = Depends(get_db),
+):
+    email = body.email.strip().lower()
+    code = body.code.strip()
+
+    if not email or not code:
+        raise HTTPException(status_code=400, detail="Email and code are required.")
+    if len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    user = get_user_by_email(conn, email)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid code.")
+
+    _check_email_code(conn, user["id"], code)
+
+    password_hash = await _hash_password(body.password)
+    reset_user_password(conn, user["id"], password_hash)
+    # Sign out every existing session; only the person who reset keeps access
+    delete_user_refresh_tokens(conn, user["id"])
+    access_token = _issue_tokens(response, conn, user["id"], email)
+    conn.commit()
+
+    return {"access_token": access_token}
 
 
 @router.post("/auth/signin")
@@ -223,7 +371,7 @@ async def signin(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    if not user["password_hash"] or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+    if not user["password_hash"] or not await _check_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     if not user.get("email_verified"):

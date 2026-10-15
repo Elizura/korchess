@@ -108,7 +108,8 @@ export default function SigninPage() {
       window.location.href = redirectTo;
     } else {
       if (result.error?.includes("verify your email")) {
-        router.push(`/verify?email=${encodeURIComponent(email)}`);
+        // Their earlier code has likely expired; the verify page sends a fresh one
+        router.push(`/verify?email=${encodeURIComponent(email)}&resend=1`);
         return;
       }
       setError(result.error || "Sign in failed.");
@@ -179,6 +180,14 @@ export default function SigninPage() {
                 className="w-full bg-black/50 border border-gray-700 text-white px-4 py-3 text-sm focus:border-electric-blue focus:outline-none transition-colors placeholder:text-gray-500 placeholder:text-xs placeholder:tracking-wide"
                 placeholder="••••••••"
               />
+              <div className="mt-2 text-right">
+                <Link
+                  href={email ? `/forgot-password?email=${encodeURIComponent(email)}` : "/forgot-password"}
+                  className="text-[9px] font-display text-electric-blue opacity-70 hover:opacity-100 hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              </div>
             </div>
             <button
               type="submit"

@@ -8,11 +8,19 @@ export default function VerifyPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const emailParam = searchParams.get("email") || "";
-  const { verify, isAuthenticated } = useAuth();
+  const autoResend = searchParams.get("resend") === "1";
+  const { verify, resendCode, hasPendingSignup, isAuthenticated } = useAuth();
+  // After a reload the sign-up password is gone from memory; ask for it again
+  const [needsPassword] = useState(() => !hasPendingSignup(emailParam));
+  const [password, setPassword] = useState("");
 
   const [code, setCode] = useState(["", "", "", "", "", ""]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendWait, setResendWait] = useState(0);
+  const autoResendDone = useRef(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
@@ -22,8 +30,40 @@ export default function VerifyPage() {
   }, [isAuthenticated, router]);
 
   useEffect(() => {
-    inputRefs.current[0]?.focus();
-  }, []);
+    if (!needsPassword) inputRefs.current[0]?.focus();
+  }, [needsPassword]);
+
+  useEffect(() => {
+    if (resendWait <= 0) return;
+    const timer = setTimeout(() => setResendWait((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendWait]);
+
+  const handleResend = async () => {
+    if (!emailParam || resending || resendWait > 0) return;
+    setResending(true);
+    setError(null);
+    setNotice(null);
+
+    const result = await resendCode(emailParam);
+    setResending(false);
+
+    if (result.ok) {
+      setNotice("A new code is on its way.");
+      setResendWait(60);
+      setCode(["", "", "", "", "", ""]);
+      inputRefs.current[0]?.focus();
+    } else {
+      setError(result.error || "Couldn't send a new code.");
+    }
+  };
+
+  // Arriving from sign-in with an unverified account: the old code has likely expired
+  useEffect(() => {
+    if (!autoResend || !emailParam || autoResendDone.current) return;
+    autoResendDone.current = true;
+    void handleResend();
+  }, [autoResend, emailParam]);
 
   const handleChange = (index: number, value: string) => {
     if (!/^\d*$/.test(value)) return;
@@ -68,10 +108,15 @@ export default function VerifyPage() {
       setError("Missing email parameter.");
       return;
     }
+    if (needsPassword && !password) {
+      setError("Enter your password to finish verifying.");
+      return;
+    }
     setError(null);
+    setNotice(null);
     setLoading(true);
 
-    const result = await verify(emailParam, fullCode);
+    const result = await verify(emailParam, fullCode, needsPassword ? password : undefined);
     setLoading(false);
 
     if (result.ok) {
@@ -120,6 +165,33 @@ export default function VerifyPage() {
               {error}
             </p>
           )}
+          {notice && !error && (
+            <p className="mb-4 text-sm text-accent-green font-display uppercase tracking-wider text-center">
+              {notice}
+            </p>
+          )}
+
+          {needsPassword && (
+            <div className="mb-6">
+              <label
+                htmlFor="verify-password"
+                className="block text-[9px] font-display uppercase tracking-widest opacity-60 mb-2"
+              >
+                Your password
+              </label>
+              <input
+                id="verify-password"
+                autoFocus
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={loading}
+                className="w-full bg-black/50 border border-gray-700 text-white px-4 py-3 text-sm focus:border-electric-blue focus:outline-none transition-colors disabled:opacity-50"
+                placeholder="The password you signed up with"
+              />
+            </div>
+          )}
 
           <div className="flex justify-center gap-2 mb-8" onPaste={handlePaste}>
             {code.map((digit, i) => (
@@ -144,9 +216,35 @@ export default function VerifyPage() {
             </p>
           )}
 
+          {needsPassword && !loading && (
+            <button
+              type="button"
+              onClick={() => handleVerify(code.join(""))}
+              disabled={code.join("").length !== 6}
+              className="w-full bg-electric-blue text-white font-display text-[10px] py-4 px-4 arcade-button hover:bg-[#5a86ff] transition-colors uppercase disabled:opacity-50"
+            >
+              Verify
+            </button>
+          )}
+
           <p className="mt-6 text-center text-[8px] font-display opacity-30">
             Code expires in 10 minutes
           </p>
+
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={resending || resendWait > 0}
+              className="text-[9px] font-display uppercase tracking-widest text-electric-blue hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-default"
+            >
+              {resending
+                ? "Sending..."
+                : resendWait > 0
+                  ? `Resend code in ${resendWait}s`
+                  : "Didn't get it? Resend code"}
+            </button>
+          </div>
         </div>
       </div>
       <div className="fixed top-8 left-8 border-t-2 border-l-2 border-primary w-8 h-8 opacity-20 pointer-events-none" />

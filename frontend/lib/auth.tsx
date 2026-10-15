@@ -30,7 +30,19 @@ interface AuthContextValue {
   signup: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   signin: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   googleSignin: (idToken: string) => Promise<{ ok: boolean; error?: string }>;
-  verify: (email: string, code: string) => Promise<{ ok: boolean; error?: string }>;
+  verify: (
+    email: string,
+    code: string,
+    password?: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  hasPendingSignup: (email: string) => boolean;
+  resendCode: (email: string) => Promise<{ ok: boolean; error?: string }>;
+  requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
+  resetPassword: (
+    email: string,
+    code: string,
+    password: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   signout: () => Promise<void>;
   getAuthHeaders: () => Promise<Record<string, string>>;
   refreshSession: () => Promise<boolean>;
@@ -54,12 +66,36 @@ function isTokenExpiringSoon(token: string, thresholdSec = 60): boolean {
   return Date.now() / 1000 > exp - thresholdSec;
 }
 
+async function postEmailRequest(
+  path: string,
+  email: string,
+  fallbackError: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/auth/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: typeof data.detail === "string" ? data.detail : fallbackError };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Network error." };
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
   const accessTokenRef = useRef<string | null>(null);
+  // Password typed during sign-up (or an unverified sign-in), held in memory
+  // only until the email code is confirmed; the backend requires it to verify
+  const pendingSignupRef = useRef<{ email: string; password: string } | null>(null);
 
   const isAuthenticated = useMemo(() => !!user && !!accessToken, [user, accessToken]);
 
@@ -112,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const path = typeof window !== "undefined" ? window.location.pathname : "";
-    const isPublicAuthPage = ["/", "/signin", "/signup", "/verify"].includes(path);
+    const isPublicAuthPage = ["/", "/signin", "/signup", "/verify", "/forgot-password"].includes(path);
     if (isPublicAuthPage) {
       setIsLoading(false);
       return;
@@ -175,22 +211,69 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const data = await res.json();
       if (!res.ok) return { ok: false, error: data.detail || "Signup failed." };
+      pendingSignupRef.current = { email: email.trim().toLowerCase(), password };
       return { ok: true };
     } catch {
       return { ok: false, error: "Network error." };
     }
   }, []);
 
-  const verify = useCallback(async (email: string, code: string) => {
+  const hasPendingSignup = useCallback(
+    (email: string) => pendingSignupRef.current?.email === email.trim().toLowerCase(),
+    [],
+  );
+
+  const verify = useCallback(async (email: string, code: string, password?: string) => {
+    const pending = pendingSignupRef.current;
+    const signupPassword =
+      password ?? (pending?.email === email.trim().toLowerCase() ? pending.password : "");
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/auth/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, code }),
+        body: JSON.stringify({ email, code, password: signupPassword }),
         credentials: "include",
       });
       const data = await res.json();
       if (!res.ok) return { ok: false, error: data.detail || "Verification failed." };
+
+      pendingSignupRef.current = null;
+      const token = data.access_token as string;
+      setAccessToken(token);
+      accessTokenRef.current = token;
+      const me = await fetchMe(token);
+      setUser(me);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "Network error." };
+    }
+  }, [fetchMe]);
+
+  const resendCode = useCallback(
+    (email: string) => postEmailRequest("resend-code", email, "Couldn't send a new code."),
+    [],
+  );
+
+  const requestPasswordReset = useCallback(
+    (email: string) => postEmailRequest("forgot-password", email, "Couldn't send a reset code."),
+    [],
+  );
+
+  const resetPassword = useCallback(async (email: string, code: string, password: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/auth/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code, password }),
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: typeof data.detail === "string" ? data.detail : "Password reset failed.",
+        };
+      }
 
       const token = data.access_token as string;
       setAccessToken(token);
@@ -212,6 +295,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         credentials: "include",
       });
       const data = await res.json();
+      if (res.status === 403) {
+        // Correct password but unverified email: keep it for the verify step
+        pendingSignupRef.current = { email: email.trim().toLowerCase(), password };
+      }
       if (!res.ok) return { ok: false, error: data.detail || "Sign in failed." };
 
       const token = data.access_token as string;
@@ -259,6 +346,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setAccessToken(null);
     accessTokenRef.current = null;
+    pendingSignupRef.current = null;
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -271,11 +359,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signin,
       googleSignin,
       verify,
+      hasPendingSignup,
+      resendCode,
+      requestPasswordReset,
+      resetPassword,
       signout,
       getAuthHeaders,
       refreshSession,
     }),
-    [user, accessToken, isLoading, isAuthenticated, signup, signin, googleSignin, verify, signout, getAuthHeaders, refreshSession],
+    [
+      user, accessToken, isLoading, isAuthenticated, signup, signin, googleSignin, verify,
+      hasPendingSignup, resendCode, requestPasswordReset, resetPassword, signout, getAuthHeaders, refreshSession,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
