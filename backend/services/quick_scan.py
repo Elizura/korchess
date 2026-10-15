@@ -595,7 +595,7 @@ def schedule_quick_scan(
         create_scan_job(conn, job_id, canonical, site, total)
         conn.commit()
 
-    from tasks import run_scan
+    from repository.tasks import run_scan
     run_scan.delay(job_id, canonical, site)
 
     return {

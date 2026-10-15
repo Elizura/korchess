@@ -821,7 +821,7 @@ async def run_insights_pipeline(
                 conn.commit()
 
             if trigger_quick_scan:
-                from quick_scan import schedule_quick_scan
+                from services.quick_scan import schedule_quick_scan
                 try:
                     schedule_quick_scan(username, site=site)
                 except Exception:
@@ -883,7 +883,7 @@ def schedule_insights_refresh(
         )
         conn.commit()
 
-    from tasks import run_insights
+    from repository.tasks import run_insights
     run_insights.delay(job_id, canonical_username, site, trigger_quick_scan=force)
 
     return {
