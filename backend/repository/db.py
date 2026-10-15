@@ -53,6 +53,7 @@ def _init_db_schema(conn: psycopg.Connection) -> None:
             email_verified BOOLEAN DEFAULT FALSE,
             verification_code TEXT,
             verification_code_expires_at TIMESTAMPTZ,
+            verification_attempts INTEGER DEFAULT 0,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
         )
@@ -66,6 +67,7 @@ def _init_db_schema(conn: psycopg.Connection) -> None:
         ("email_verified", "BOOLEAN DEFAULT FALSE"),
         ("verification_code", "TEXT"),
         ("verification_code_expires_at", "TIMESTAMPTZ"),
+        ("verification_attempts", "INTEGER DEFAULT 0"),
     ]:
         cursor.execute(
             """
@@ -626,10 +628,76 @@ def mark_email_verified(conn: psycopg.Connection, user_id: str) -> None:
         SET email_verified = TRUE,
             verification_code = NULL,
             verification_code_expires_at = NULL,
+            verification_attempts = 0,
             updated_at = now()
         WHERE id = %s
         """,
         (user_id,),
+    )
+
+
+def set_email_code(
+    conn: psycopg.Connection,
+    user_id: str,
+    code: str,
+    expires_at,
+    password_hash: str | None = None,
+) -> None:
+    """Store a fresh emailed code (verification or reset) and reset its attempt counter.
+
+    When password_hash is given, it replaces the stored one (re-signup of an
+    unverified account).
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET verification_code = %s,
+            verification_code_expires_at = %s,
+            verification_attempts = 0,
+            password_hash = COALESCE(%s, password_hash),
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (code, expires_at, password_hash, user_id),
+    )
+
+
+def consume_email_code_attempt(conn: psycopg.Connection, user_id: str) -> dict | None:
+    """Count one attempt at the user's emailed code and return the code state.
+
+    The increment happens before the caller compares codes, so concurrent
+    guesses cannot exceed the attempt limit.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET verification_attempts = COALESCE(verification_attempts, 0) + 1
+        WHERE id = %s
+        RETURNING verification_attempts, verification_code, verification_code_expires_at
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def reset_user_password(conn: psycopg.Connection, user_id: str, password_hash: str) -> None:
+    """Set a new password after a reset code was confirmed; the code proves email ownership."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET password_hash = %s,
+            email_verified = TRUE,
+            verification_code = NULL,
+            verification_code_expires_at = NULL,
+            verification_attempts = 0,
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (password_hash, user_id),
     )
 
 
