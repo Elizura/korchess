@@ -282,7 +282,7 @@ def run_insights(
             conn.commit()
 
         if trigger_quick_scan:
-            from quick_scan import schedule_quick_scan
+            from services.quick_scan import schedule_quick_scan
             try:
                 schedule_quick_scan(canonical, site=site)
             except Exception:
