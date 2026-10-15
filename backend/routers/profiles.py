@@ -10,6 +10,7 @@ from typing import Literal
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 from services.analytics import hash_username, track_server_event
 from services.chesscom import fetch_chesscom_profile, ChesscomAPIError
@@ -80,10 +81,8 @@ async def create_profile(
         )
 
     try:
-        if site == "lichess":
-            profile_data = fetch_lichess_profile(username)
-        else:
-            profile_data = fetch_chesscom_profile(username)
+        fetch_profile = fetch_lichess_profile if site == "lichess" else fetch_chesscom_profile
+        profile_data = await run_in_threadpool(fetch_profile, username)
     except (LichessAPIError, ChesscomAPIError) as e:
         if e.status_code == 404:
             raise HTTPException(
@@ -200,10 +199,8 @@ async def import_profile_games(
         raise HTTPException(status_code=404, detail="Profile not found.")
 
     try:
-        if site == "lichess":
-            import_result = import_lichess_games(username, conn)
-        else:
-            import_result = import_chesscom_games(username, conn)
+        importer = import_lichess_games if site == "lichess" else import_chesscom_games
+        import_result = await run_in_threadpool(importer, username, conn)
     except (LichessStreamError, ChesscomStreamError) as e:
         if e.status_code == 429:
             raise HTTPException(status_code=429, detail=e.message)
@@ -243,10 +240,8 @@ async def sync_profile(
         raise HTTPException(status_code=404, detail="Profile not found.")
 
     try:
-        if site == "lichess":
-            profile_data = fetch_lichess_profile(username)
-        else:
-            profile_data = fetch_chesscom_profile(username)
+        fetch_profile = fetch_lichess_profile if site == "lichess" else fetch_chesscom_profile
+        profile_data = await run_in_threadpool(fetch_profile, username)
     except (LichessAPIError, ChesscomAPIError) as e:
         if e.status_code == 404:
             raise HTTPException(
@@ -273,10 +268,8 @@ async def sync_profile(
     conn.commit()
 
     try:
-        if site == "lichess":
-            sync_result = import_lichess_games(actual_username, conn)
-        else:
-            sync_result = import_chesscom_games(actual_username, conn)
+        importer = import_lichess_games if site == "lichess" else import_chesscom_games
+        sync_result = await run_in_threadpool(importer, actual_username, conn)
     except (LichessStreamError, ChesscomStreamError):
         sync_result = ImportResponse(
             username=actual_username,

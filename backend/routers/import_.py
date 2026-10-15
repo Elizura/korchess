@@ -11,6 +11,7 @@ from typing import Literal
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 from services.analytics import hash_username, track_server_event
 from repository.db import get_import_history, get_import_status
@@ -110,10 +111,10 @@ async def import_games(
     )
 
     try:
-        if site == "lichess":
-            import_result = import_lichess_games(username, conn, max_games)
-        else:
-            import_result = import_chesscom_games(username, conn, max_games)
+        # Blocking HTTP + rate-limit sleeps: run in a worker thread so one
+        # import doesn't stall every other request on the event loop
+        importer = import_lichess_games if site == "lichess" else import_chesscom_games
+        import_result = await run_in_threadpool(importer, username, conn, max_games)
     except (LichessStreamError, ChesscomStreamError) as e:
         await track_server_event(
             conn,
