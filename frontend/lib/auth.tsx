@@ -40,7 +40,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 function decodeTokenExp(token: string): number | null {
   try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
+    const base64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(base64));
     return typeof payload.exp === "number" ? payload.exp : null;
   } catch {
     return null;
@@ -98,9 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(me);
         return !!me;
       } catch {
-        setUser(null);
-        setAccessToken(null);
-        accessTokenRef.current = null;
+        // Network error: keep the current session so a scheduled renewal can retry
         return false;
       } finally {
         refreshPromiseRef.current = null;
@@ -119,6 +118,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     refreshSession().finally(() => setIsLoading(false));
+  }, [refreshSession]);
+
+  // Access tokens are short-lived. Renew shortly before expiry so pages that
+  // build headers from `accessToken` never send an expired one.
+  useEffect(() => {
+    if (!accessToken) return;
+    const exp = decodeTokenExp(accessToken);
+    if (!exp) return;
+
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = (delayMs: number) => {
+      timer = setTimeout(async () => {
+        const ok = await refreshSession();
+        // Token unchanged means the refresh hit a network error; retry soon
+        if (!ok && accessTokenRef.current === accessToken) schedule(30_000);
+      }, delayMs);
+    };
+    schedule(Math.max((exp - 60) * 1000 - Date.now(), 0));
+    return () => clearTimeout(timer);
+  }, [accessToken, refreshSession]);
+
+  // Timers stall while a device sleeps; catch up when the tab is used again.
+  useEffect(() => {
+    const renewIfStale = () => {
+      if (document.visibilityState !== "visible") return;
+      const token = accessTokenRef.current;
+      if (token && isTokenExpiringSoon(token)) void refreshSession();
+    };
+    document.addEventListener("visibilitychange", renewIfStale);
+    window.addEventListener("focus", renewIfStale);
+    return () => {
+      document.removeEventListener("visibilitychange", renewIfStale);
+      window.removeEventListener("focus", renewIfStale);
+    };
   }, [refreshSession]);
 
   const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
