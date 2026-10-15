@@ -965,6 +965,23 @@ export default function DashboardPage() {
     void loadDashboardBundle(userFromUrl, colorFilter, timeClassFilter);
   }, [userFromUrl, isLoading]);
 
+  // No user in URL (e.g. right after sign-in): fetch saved profiles so the
+  // auto-load effect below can select one.
+  useEffect(() => {
+    if (isLoading || !accessToken || userFromUrl) return;
+    if (profilesFetchedRef.current) return;
+    profilesFetchedRef.current = true;
+
+    setProfilesLoading(true);
+    fetchProfiles(accessToken)
+      .then((profiles) => setChessProfiles(profiles))
+      .catch((err) => {
+        profilesFetchedRef.current = false;
+        setError(err instanceof Error ? err.message : "Failed to load accounts");
+      })
+      .finally(() => setProfilesLoading(false));
+  }, [isLoading, accessToken, userFromUrl]);
+
   // Update URL and persist last selected user
   const updateUrl = (user: string | null) => {
     if (user) {
@@ -1084,6 +1101,8 @@ export default function DashboardPage() {
     if (profileToLoad) {
       setUsername(profileToLoad.chess_username);
       setCurrentUsername(profileToLoad.chess_username);
+      // Loaded here; stop the URL effect from loading the same user again
+      prevUserFromUrl.current = profileToLoad.chess_username;
       router.replace(`/dashboard?user=${encodeURIComponent(profileToLoad.chess_username)}`, { scroll: false });
       persistLastUser(profileToLoad.chess_username);
       void loadDashboardBundle(profileToLoad.chess_username, colorFilter, timeClassFilter);
@@ -1439,7 +1458,7 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {chessProfiles.length === 0 ? (
+          {chessProfiles.length === 0 && !profilesLoading ? (
             <p className="text-sm text-[color:var(--zen-muted)] py-2">
               No accounts added yet. Add a Lichess or Chess.com username above.
             </p>
