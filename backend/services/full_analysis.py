@@ -18,7 +18,7 @@ from services.tactical_detection import detect_tactical_annotation
 from utils.insights_utils import cp_for_mover
 
 # Engine configuration
-STOCKFISH_PATH = "/usr/games/stockfish"
+STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
 DEFAULT_DEPTH = 18
 DEFAULT_TIME_MS = 1000  # ~0.2s per position
 
