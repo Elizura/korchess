@@ -385,7 +385,7 @@ export default function OpeningDetailPage() {
       )}
 
       {/* Games List */}
-      {games && !loading && (
+      {games && games.length > 0 && !loading && (
         <div className="opening-detail-panel zen-surface p-5 sm:p-6">
           <div className="space-y-3">
           {games.map((game, idx) => (
