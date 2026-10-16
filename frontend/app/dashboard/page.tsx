@@ -607,16 +607,15 @@ export default function DashboardPage() {
       
       const result = await addProfile(accessToken, trimmedUsername, selectedPlatform);
       
-      const updatedProfiles = (() => {
-        const filtered = chessProfiles.filter(
+      // Functional update: this callback's `chessProfiles` can be an old copy
+      setChessProfiles((prev) => [
+        result.profile,
+        ...prev.filter(
           (p) =>
             !(p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
               p.site === result.profile.site)
-        );
-        return [result.profile, ...filtered];
-      })();
-      
-      setChessProfiles(updatedProfiles);
+        ),
+      ]);
 
       setUsername(result.profile.chess_username);
       setCurrentUsername(result.profile.chess_username);
@@ -667,14 +666,14 @@ export default function DashboardPage() {
           profile.chess_username
         );
 
-        const updatedProfiles = chessProfiles.map((p) =>
-          p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
-          p.site === result.profile.site
-            ? result.profile
-            : p
+        setChessProfiles((prev) =>
+          prev.map((p) =>
+            p.chess_username.toLowerCase() === result.profile.chess_username.toLowerCase() &&
+            p.site === result.profile.site
+              ? result.profile
+              : p
+          )
         );
-        
-        setChessProfiles(updatedProfiles);
 
         if (
           currentUsername &&
@@ -750,13 +749,13 @@ export default function DashboardPage() {
           profile.chess_username
         );
 
-        const updatedProfiles = chessProfiles.filter(
-          (p) =>
-            !(p.chess_username.toLowerCase() === profile.chess_username.toLowerCase() &&
-              p.site === profile.site)
+        setChessProfiles((prev) =>
+          prev.filter(
+            (p) =>
+              !(p.chess_username.toLowerCase() === profile.chess_username.toLowerCase() &&
+                p.site === profile.site)
+          )
         );
-
-        setChessProfiles(updatedProfiles);
 
         // If this was the current user, clear the view
         if (currentUsername?.toLowerCase() === profile.chess_username.toLowerCase()) {
