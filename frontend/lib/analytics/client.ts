@@ -14,13 +14,22 @@ const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const FLUSH_INTERVAL_MS = 5000;
 const MAX_BATCH_SIZE = 25;
 const MAX_QUEUE_SIZE = 500;
+// After a failed send, wait before trying again: 5s, 10s, 20s... up to 5 min.
+// Past a few failures in a row the failed batch is dropped instead of re-queued,
+// so a broken endpoint costs at most one request per backoff period.
+const RETRY_BASE_DELAY_MS = 5000;
+const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
+const MAX_FAILURES_BEFORE_DROP = 3;
+const BACKLOG_DRAIN_DELAY_MS = 250;
 const ANALYTICS_ENV_FLAG = (process.env.NEXT_PUBLIC_ENABLE_ANALYTICS || "").toLowerCase();
 
 let queue: AnalyticsEventPayload[] = [];
 let flushIntervalId: number | null = null;
 let initialized = false;
 let inflight = false;
-let authToken: string | null = null;
+let consecutiveFailures = 0;
+let nextAttemptAt = 0;
+let getAuthToken: (() => string | null) | null = null;
 
 function envAnalyticsEnabled(): boolean {
   // Never enable client tracking outside production.
@@ -142,12 +151,30 @@ export function withTrackingHeaders(headers: Record<string, string> = {}): Recor
   };
 }
 
-export function setAnalyticsAuthToken(token: string | null): void {
-  if (!isAnalyticsEnabled()) {
-    authToken = null;
-    return;
+/**
+ * Give analytics a way to read the current access token at send time, rather
+ * than a copy that can go stale between renewals.
+ */
+export function setAnalyticsAuthTokenGetter(getter: (() => string | null) | null): void {
+  getAuthToken = getter;
+}
+
+function isTokenExpired(token: string): boolean {
+  try {
+    const base64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(base64));
+    return typeof payload.exp === "number" && Date.now() / 1000 >= payload.exp;
+  } catch {
+    return true;
   }
-  authToken = token;
+}
+
+function currentAuthToken(): string | null {
+  const token = getAuthToken?.() ?? null;
+  // An expired token gets the whole batch rejected with 401; events are
+  // accepted anonymously, so send them without one instead
+  if (!token || isTokenExpired(token)) return null;
+  return token;
 }
 
 async function postEvents(batch: AnalyticsEventPayload[], useBeacon = false): Promise<boolean> {
@@ -169,6 +196,7 @@ async function postEvents(batch: AnalyticsEventPayload[], useBeacon = false): Pr
       ...getTrackingHeaders(),
     };
 
+    const authToken = currentAuthToken();
     if (authToken) {
       headers.Authorization = `Bearer ${authToken}`;
     }
@@ -189,22 +217,36 @@ async function postEvents(batch: AnalyticsEventPayload[], useBeacon = false): Pr
 export async function flushAnalytics(options?: { useBeacon?: boolean }): Promise<void> {
   if (!isAnalyticsEnabled()) return;
   if (inflight || queue.length === 0) return;
+  const useBeacon = options?.useBeacon === true;
+  // Backing off after failures; the page-hide beacon still gets its one try
+  if (!useBeacon && Date.now() < nextAttemptAt) return;
 
   inflight = true;
   const batch = queue.splice(0, MAX_BATCH_SIZE);
-  const sent = await postEvents(batch, options?.useBeacon === true);
-
-  if (!sent) {
-    queue = [...batch, ...queue].slice(-MAX_QUEUE_SIZE);
-  }
-
+  const sent = await postEvents(batch, useBeacon);
   inflight = false;
 
-  if (!options?.useBeacon && queue.length > 0) {
-    window.setTimeout(() => {
-      void flushAnalytics();
-    }, 250);
+  if (sent) {
+    consecutiveFailures = 0;
+    nextAttemptAt = 0;
+    // Drain any backlog promptly while the endpoint is healthy
+    if (!useBeacon && queue.length > 0) {
+      window.setTimeout(() => {
+        void flushAnalytics();
+      }, BACKLOG_DRAIN_DELAY_MS);
+    }
+    return;
   }
+
+  consecutiveFailures++;
+  if (consecutiveFailures < MAX_FAILURES_BEFORE_DROP) {
+    queue = [...batch, ...queue].slice(-MAX_QUEUE_SIZE);
+  }
+  const delay = Math.min(
+    RETRY_MAX_DELAY_MS,
+    RETRY_BASE_DELAY_MS * 2 ** (consecutiveFailures - 1),
+  );
+  nextAttemptAt = Date.now() + delay;
 }
 
 export function trackEvent(eventName: AnalyticsEventName | string, options: TrackEventOptions = {}): void {

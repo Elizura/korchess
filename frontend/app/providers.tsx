@@ -7,7 +7,7 @@ import RouteTracker from "@/components/analytics/RouteTracker";
 import {
   identifyAnalyticsUser,
   initAnalytics,
-  setAnalyticsAuthToken,
+  setAnalyticsAuthTokenGetter,
   trackEvent,
   withTrackingHeaders,
 } from "@/lib/analytics/client";
@@ -32,15 +32,17 @@ const setSessionStorageItem = (key: string, value: string): void => {
 };
 
 function AnalyticsLinker() {
-  const { user, accessToken } = useAuth();
+  const { user, accessToken, getAccessToken } = useAuth();
 
   useEffect(() => {
     initAnalytics();
   }, []);
 
+  // Analytics reads the token when it sends, so renewals are picked up
   useEffect(() => {
-    setAnalyticsAuthToken(accessToken || null);
-  }, [accessToken]);
+    setAnalyticsAuthTokenGetter(getAccessToken);
+    return () => setAnalyticsAuthTokenGetter(null);
+  }, [getAccessToken]);
 
   useEffect(() => {
     if (!user?.id || !accessToken) return;

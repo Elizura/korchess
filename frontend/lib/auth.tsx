@@ -45,6 +45,8 @@ interface AuthContextValue {
   ) => Promise<{ ok: boolean; error?: string }>;
   signout: () => Promise<void>;
   getAuthHeaders: () => Promise<Record<string, string>>;
+  /** Current access token, read at call time (no refresh) */
+  getAccessToken: () => string | null;
   refreshSession: () => Promise<boolean>;
 }
 
@@ -200,6 +202,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!token) return {};
     return { Authorization: `Bearer ${token}` };
   }, [refreshSession]);
+
+  const getAccessToken = useCallback(() => accessTokenRef.current, []);
 
   const signup = useCallback(async (email: string, password: string) => {
     try {
@@ -365,11 +369,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       resetPassword,
       signout,
       getAuthHeaders,
+      getAccessToken,
       refreshSession,
     }),
     [
       user, accessToken, isLoading, isAuthenticated, signup, signin, googleSignin, verify,
-      hasPendingSignup, resendCode, requestPasswordReset, resetPassword, signout, getAuthHeaders, refreshSession,
+      hasPendingSignup, resendCode, requestPasswordReset, resetPassword, signout, getAuthHeaders, getAccessToken,
+      refreshSession,
     ],
   );
 
