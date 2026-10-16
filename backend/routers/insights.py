@@ -71,7 +71,8 @@ def _build_profile_response(state: dict, conn: psycopg.Connection) -> InsightsPr
             "status": active_job.get("status"),
             "stage": active_job.get("stage"),
             "reason": active_job.get("reason"),
-            "error": active_job.get("error"),
+            # The stored error is raw exception text; keep it server-side.
+            "error": "Insights generation failed." if active_job.get("error") else None,
             "created_at": active_job.get("created_at"),
             "updated_at": active_job.get("updated_at"),
         }
