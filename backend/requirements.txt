@@ -1,7 +1,7 @@
 fastapi==0.143.1
 uvicorn==0.54.0
 httpx==0.28.1
-python-chess==1.999
+chess==1.11.2
 psycopg[binary]==3.3.6
 psycopg_pool==3.3.3
 PyJWT==2.15.1
