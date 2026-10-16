@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useAuth } from "@/lib/auth";
+import { FIRST_RUN_PATH, needsOnboarding, useAuth } from "@/lib/auth";
 
 export default function VerifyPage() {
   const router = useRouter();
@@ -21,10 +21,13 @@ export default function VerifyPage() {
   const [resending, setResending] = useState(false);
   const [resendWait, setResendWait] = useState(0);
   const autoResendDone = useRef(false);
+  // Set while the code is being checked so the "already signed in" redirect
+  // doesn't override where a successful verification sends the user
+  const verifyingRef = useRef(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !verifyingRef.current) {
       router.replace("/dashboard");
     }
   }, [isAuthenticated, router]);
@@ -115,13 +118,16 @@ export default function VerifyPage() {
     setError(null);
     setNotice(null);
     setLoading(true);
+    verifyingRef.current = true;
 
     const result = await verify(emailParam, fullCode, needsPassword ? password : undefined);
     setLoading(false);
 
     if (result.ok) {
-      router.push("/dashboard");
+      // Verifying the email completes sign-up: pick a username and avatar first
+      router.push(needsOnboarding(result) ? FIRST_RUN_PATH : "/dashboard");
     } else {
+      verifyingRef.current = false;
       setError(result.error || "Verification failed.");
       setCode(["", "", "", "", "", ""]);
       inputRefs.current[0]?.focus();

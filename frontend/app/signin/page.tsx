@@ -4,9 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Script from "next/script";
-import { useAuth } from "@/lib/auth";
+import { needsOnboarding, useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics/client";
-import { resolvePostAuthNextPath } from "@/lib/safeNext";
+import { resolvePostAuthNextPath, withNextParam } from "@/lib/safeNext";
 
 declare global {
   interface Window {
@@ -53,7 +53,10 @@ export default function SigninPage() {
     const result = await googleSignin(credential);
     setLoading(false);
     if (result.ok) {
-      window.location.href = redirectTo;
+      // A Google sign-in can create the account; new users set up their profile first
+      window.location.href = needsOnboarding(result)
+        ? withNextParam("/onboarding", redirectTo)
+        : redirectTo;
     } else {
       authInFlightRef.current = false;
       setError(result.error || "Google sign in failed.");

@@ -106,14 +106,15 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="bg-charcoal font-mono text-white selection:bg-primary selection:text-white min-h-screen relative overflow-hidden">
+    <div className="bg-charcoal font-mono text-white selection:bg-primary selection:text-white min-h-screen flex flex-col items-center justify-center py-12 overflow-x-hidden">
       <div className="crt-overlay pointer-events-none" />
       <div className="fixed inset-0 signup-grid-bg opacity-40 pointer-events-none" />
       <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 blue-glow rounded-full pointer-events-none" />
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md px-6 z-10">
+      {/* In normal flow (not absolutely centered) so short or landscape screens scroll instead of clipping */}
+      <div className="relative z-10 w-full max-w-md px-6">
         <form
           onSubmit={handleSubmit}
-          className="bg-background-dark signup-pixel-border p-8 md:p-12 mt-20"
+          className="bg-background-dark signup-pixel-border p-8 md:p-12"
         >
           <div className="flex items-center justify-center gap-2 mb-8">
             <span className="w-2 h-2 bg-accent-blue rounded-full shadow-[0_0_8px_#00f2ff]" />
@@ -199,7 +200,7 @@ export default function OnboardingPage() {
         </form>
         <div className="mt-12 text-center">
           <p className="font-display text-[8px] opacity-20 tracking-[0.2em]">
-            © 2024 KORCHESS SYSTEM // NEURAL_LINK_V1
+            © {new Date().getFullYear()} KORCHESS SYSTEM // NEURAL_LINK_V1
           </p>
         </div>
       </div>

@@ -22,6 +22,28 @@ export interface AuthUser {
   onboarding_complete?: boolean;
 }
 
+type AuthResult = { ok: boolean; error?: string };
+
+/** Result of a call that starts a session */
+export type SessionResult = AuthResult & {
+  user?: AuthUser | null;
+  /** From the Google endpoint, when the backend says whether it just created the account */
+  created?: boolean;
+};
+
+/** Where a brand-new account goes first: pick a username and avatar, then the dashboard */
+export const FIRST_RUN_PATH = "/onboarding?next=/dashboard";
+
+/**
+ * True when a fresh session belongs to an account that hasn't been through
+ * onboarding yet. If the backend reports `created: false` (an existing Google
+ * account), it isn't sent there; when the flag is absent we go by the
+ * profile's onboarding_complete alone.
+ */
+export function needsOnboarding(result: SessionResult): boolean {
+  return result.user?.onboarding_complete === false && result.created !== false;
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   accessToken: string | null;
@@ -29,12 +51,12 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   signup: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   signin: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  googleSignin: (idToken: string) => Promise<{ ok: boolean; error?: string }>;
+  googleSignin: (idToken: string) => Promise<SessionResult>;
   verify: (
     email: string,
     code: string,
     password?: string,
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<SessionResult>;
   hasPendingSignup: (email: string) => boolean;
   resendCode: (email: string) => Promise<{ ok: boolean; error?: string }>;
   requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
@@ -227,7 +249,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const verify = useCallback(async (email: string, code: string, password?: string) => {
+  const verify = useCallback(async (email: string, code: string, password?: string): Promise<SessionResult> => {
     const pending = pendingSignupRef.current;
     const signupPassword =
       password ?? (pending?.email === email.trim().toLowerCase() ? pending.password : "");
@@ -247,7 +269,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       accessTokenRef.current = token;
       const me = await fetchMe(token);
       setUser(me);
-      return { ok: true };
+      return { ok: true, user: me };
     } catch {
       return { ok: false, error: "Network error." };
     }
@@ -316,7 +338,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchMe]);
 
-  const googleSignin = useCallback(async (idToken: string) => {
+  const googleSignin = useCallback(async (idToken: string): Promise<SessionResult> => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/auth/google`, {
         method: "POST",
@@ -332,7 +354,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       accessTokenRef.current = token;
       const me = await fetchMe(token);
       setUser(me);
-      return { ok: true };
+      return {
+        ok: true,
+        user: me,
+        created: typeof data.created === "boolean" ? data.created : undefined,
+      };
     } catch {
       return { ok: false, error: "Network error." };
     }

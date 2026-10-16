@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Script from "next/script";
-import { useAuth } from "@/lib/auth";
+import { FIRST_RUN_PATH, needsOnboarding, useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics/client";
 
 declare global {
@@ -32,8 +32,12 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const googleCallbackRef = useRef<(credential: string) => void>();
+  // Set while a sign-up request is in flight so the "already signed in"
+  // redirect below doesn't override the handler's own destination
+  const authInFlightRef = useRef(false);
 
   googleCallbackRef.current = async (credential: string) => {
+    authInFlightRef.current = true;
     setLoading(true);
     setError(null);
     trackEvent("auth.signup.clicked", {
@@ -42,8 +46,9 @@ export default function SignupPage() {
     const result = await googleSignin(credential);
     setLoading(false);
     if (result.ok) {
-      window.location.href = "/dashboard";
+      window.location.href = needsOnboarding(result) ? FIRST_RUN_PATH : "/dashboard";
     } else {
+      authInFlightRef.current = false;
       setError(result.error || "Google sign in failed.");
     }
   };
@@ -85,8 +90,13 @@ export default function SignupPage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (isAuthenticated && !authInFlightRef.current) {
+      window.location.replace("/dashboard");
+    }
+  }, [isAuthenticated]);
+
   if (isAuthenticated) {
-    window.location.href = "/dashboard";
     return null;
   }
 
