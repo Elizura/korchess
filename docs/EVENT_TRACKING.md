@@ -1,6 +1,6 @@
 # Event Tracking Architecture
 
-This document explains how event tracking works in the En Passant chess analytics application.
+This document explains how event tracking works in the Korchess chess analytics application.
 
 ## Overview
 

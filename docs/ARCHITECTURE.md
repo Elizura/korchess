@@ -1,4 +1,4 @@
-# En Passant - Technical Architecture
+# Korchess - Technical Architecture
 
 This document explains the complete flow from user import through analysis, insights generation, and frontend display.
 
