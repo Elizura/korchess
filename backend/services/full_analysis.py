@@ -350,6 +350,22 @@ class EnginePool:
     def release(self, engine: chess.engine.SimpleEngine) -> None:
         """Return an engine to the pool."""
         self._pool.put(engine)
+
+    def replace(self, engine: chess.engine.SimpleEngine) -> chess.engine.SimpleEngine:
+        """Swap a crashed engine (still held by the caller) for a fresh one.
+
+        The caller keeps holding the returned engine and must release() it as
+        usual; the dead one is quit and never goes back into the pool. If the
+        new engine can't be started this raises, and the caller should release
+        the dead engine so the pool keeps its size (the next user retries).
+        """
+        _close_engine(engine)
+        new_engine = _create_engine()
+        with self._lock:
+            if engine in self._engines:
+                self._engines.remove(engine)
+            self._engines.append(new_engine)
+        return new_engine
     
     def shutdown(self) -> None:
         """Close all engines and reset the pool."""
@@ -435,9 +451,8 @@ def _analyse_with_recovery(
     try:
         return engine.analyse(board, limit, multipv=multipv)
     except Exception:
-        # Engine might have crashed - create a fresh one
-        _close_engine(engine)
-        engine = _create_engine()
+        # Engine might have crashed - swap in a fresh one and retry once
+        engine = pool.replace(engine)
         return engine.analyse(board, limit, multipv=multipv)
     finally:
         pool.release(engine)
@@ -487,15 +502,10 @@ def _analyse_fen_chunk(
             try:
                 results[fen] = engine.analyse(board, limit, multipv=multipv)
             except Exception:
-                # Engine might have crashed - try to recover
+                # Engine might have crashed - swap in a fresh one and retry once.
+                # Exactly one engine (the one we hold) goes back to the pool below.
                 try:
-                    pool.release(engine)
-                except Exception:
-                    pass
-                # Get a fresh engine and retry
-                _close_engine(engine)
-                engine = _create_engine()
-                try:
+                    engine = pool.replace(engine)
                     results[fen] = engine.analyse(board, limit, multipv=multipv)
                 except Exception:
                     results[fen] = None
