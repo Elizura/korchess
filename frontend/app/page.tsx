@@ -1,12 +1,55 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics/client";
+import {
+  clearPendingAdd,
+  formatPendingAdd,
+  isValidChessUsername,
+  savePendingAdd,
+  type PendingAddSite,
+} from "@/lib/pendingAdd";
 import { MdSportsEsports, MdRefresh, MdPsychology, MdSync, MdBarChart } from "react-icons/md";
+import { FaChessKnight, FaChessPawn } from "react-icons/fa";
 
 export default function LandingPage() {
-  const { user, signout } = useAuth();
+  const router = useRouter();
+  const { isAuthenticated, refreshSession } = useAuth();
+  const [lichessName, setLichessName] = useState("");
+  const [chesscomName, setChesscomName] = useState("");
+  const [importing, setImporting] = useState(false);
+
+  // Hand the typed account to the dashboard's "Add chess account" field.
+  // Signed-in visitors go straight there; everyone else signs up first and
+  // the account rides along in sessionStorage through verify/onboarding.
+  const handleImport = async (site: PendingAddSite, rawName: string) => {
+    const username = rawName.trim();
+    const pending = isValidChessUsername(username) ? { site, username } : null;
+    trackEvent("cta.click", {
+      properties: {
+        cta_name: "landing_import",
+        source: "landing_import_widget",
+        site,
+      },
+    });
+
+    setImporting(true);
+    // Auth isn't restored on the landing page, so check for a session now
+    const signedIn = isAuthenticated || (await refreshSession());
+    setImporting(false);
+
+    if (signedIn) {
+      clearPendingAdd();
+      router.push(pending ? `/dashboard?add=${encodeURIComponent(formatPendingAdd(pending))}` : "/dashboard");
+    } else {
+      if (pending) savePendingAdd(pending);
+      else clearPendingAdd();
+      router.push("/signup");
+    }
+  };
 
   return (
     <div className="bg-background-dark font-mono text-gray-100 selection:bg-accent-green selection:text-black min-h-screen">
@@ -47,22 +90,15 @@ export default function LandingPage() {
 
       <main className="relative min-h-screen grid-bg overflow-hidden">
         {/* Floating decorations */}
-        <div className="absolute top-40 left-[10%] opacity-15 floating pointer-events-none">
-          <img
-            alt="Pixel Knight"
-            className="w-16 h-16 grayscale invert"
-            src="https://lh3.googleusercontent.com/aida-public/AB6AXuA9tGTx-59N6y89hFnCSQd-VvguPlCqGRKPmkCvj1xXVRKZq_ah0AFxPWWSrnPqdLeOPc_OSO4CZ4f6G0xczmz4QVWGS-wQUh0jhU8lluhhSj3Uxinu_rU25WZT4ff1jSvBh-KxdXxV-XqKe_rfwKkgYcDqpvRc7hqVW4WNnESoxR0AV4WE2JQwtL59moXqO7O_06RhntKSZUKygdtMYVo7drUiXaJmHExJEYKk13n5IhMawJHYGWfeUG42qTwSUr6HnW6hzEayqEfs"
-          />
+        <div className="absolute top-40 left-[10%] opacity-15 floating pointer-events-none" aria-hidden>
+          <FaChessKnight className="w-16 h-16 text-white" />
         </div>
         <div
           className="absolute top-60 right-[10%] opacity-15 floating pointer-events-none"
           style={{ animationDelay: "2s" }}
+          aria-hidden
         >
-          <img
-            alt="Pixel Pawn"
-            className="w-20 h-20 grayscale invert"
-            src="https://lh3.googleusercontent.com/aida-public/AB6AXuBMHIUaQcqKasjLtL8t8UI599RnKcHc-FORpYSbct2KIB--FIrl8l2-WJ69L3ultFqYFGWOHYO-9EJ2c7KzfnoiOWxrDhtP79tvYxDlhVlo6hmoU1NAJukmRnqUyNUX8ymm0Oq_WWX3Kghyh2NnZ-VD5R3Rz20HJ_kDgU6Rj0DPexSHBP7fV3iVIAIBtae1TZLC-i772zdT3ZNIH6QoVDyUzMUgNj0Vy7IPIQKDlJ3XqbxIDZjq-KJ3KRpbEbB74Li5QRNhNCCFYlld"
-          />
+          <FaChessPawn className="w-20 h-20 text-white" />
         </div>
 
         {/* Hero */}
@@ -96,63 +132,103 @@ export default function LandingPage() {
         <section className="max-w-4xl mx-auto px-6 pb-20 relative z-10">
           <div className="border-2 border-accent-green bg-background-dark p-6 md:p-10">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
-              <div className="space-y-3">
-                <label className="block text-[9px] font-display opacity-60 uppercase">
+              <form
+                className="space-y-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleImport("lichess", lichessName);
+                }}
+              >
+                <label htmlFor="landing-lichess" className="block text-[9px] font-display opacity-60 uppercase">
                   Lichess Username
                 </label>
                 <div className="flex">
                   <input
-                    className="flex-1 bg-gray-900 border-2 border-r-0 border-gray-700 p-2.5 font-mono text-xs focus:outline-none focus:border-accent-green"
+                    id="landing-lichess"
+                    className="flex-1 min-w-0 bg-gray-900 border-2 border-r-0 border-gray-700 p-2.5 font-mono text-xs focus:outline-none focus:border-accent-green"
                     placeholder="e.g. hikaru"
                     type="text"
-                    readOnly
+                    autoComplete="off"
+                    spellCheck={false}
+                    maxLength={30}
+                    value={lichessName}
+                    onChange={(e) => setLichessName(e.target.value)}
+                    disabled={importing}
                   />
-                  <button className="bg-primary text-white px-4 font-display text-[9px] border-2 border-primary cursor-default">
+                  <button
+                    type="submit"
+                    disabled={importing}
+                    className="bg-primary hover:bg-primary/90 text-white px-4 font-display text-[9px] border-2 border-primary transition-colors disabled:opacity-60"
+                  >
                     IMPORT
                   </button>
                 </div>
-              </div>
-              <div className="space-y-3">
-                <label className="block text-[9px] font-display opacity-60 uppercase">
+              </form>
+              <form
+                className="space-y-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleImport("chesscom", chesscomName);
+                }}
+              >
+                <label htmlFor="landing-chesscom" className="block text-[9px] font-display opacity-60 uppercase">
                   Chess.com Username
                 </label>
                 <div className="flex">
                   <input
-                    className="flex-1 bg-gray-900 border-2 border-r-0 border-gray-700 p-2.5 font-mono text-xs focus:outline-none focus:border-accent-green"
+                    id="landing-chesscom"
+                    className="flex-1 min-w-0 bg-gray-900 border-2 border-r-0 border-gray-700 p-2.5 font-mono text-xs focus:outline-none focus:border-accent-green"
                     placeholder="e.g. hikaru"
                     type="text"
-                    readOnly
+                    autoComplete="off"
+                    spellCheck={false}
+                    maxLength={30}
+                    value={chesscomName}
+                    onChange={(e) => setChesscomName(e.target.value)}
+                    disabled={importing}
                   />
-                  <button className="bg-primary text-white px-4 font-display text-[9px] border-2 border-primary cursor-default">
+                  <button
+                    type="submit"
+                    disabled={importing}
+                    className="bg-primary hover:bg-primary/90 text-white px-4 font-display text-[9px] border-2 border-primary transition-colors disabled:opacity-60"
+                  >
                     IMPORT
                   </button>
                 </div>
-              </div>
+              </form>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-4 mb-8 pb-6 border-b-2 border-gray-800">
+            {/* Everything below is a static sample of the report, not live data */}
+            <p className="mb-4 inline-block border border-accent-green/60 bg-accent-green/10 px-2 py-1 font-display text-[8px] uppercase tracking-widest text-accent-green">
+              Example report
+            </p>
+            <div
+              className="flex flex-wrap items-center justify-between gap-4 mb-8 pb-6 border-b-2 border-gray-800"
+              aria-hidden
+            >
               <div className="flex gap-2">
-                <button className="bg-primary text-white px-4 py-2 font-display text-[9px] pixel-border-primary">
+                <button tabIndex={-1} className="bg-primary text-white px-4 py-2 font-display text-[9px] pixel-border-primary cursor-default">
                   AS WHITE
                 </button>
-                <button className="border-2 border-gray-700 px-4 py-2 font-display text-[9px] text-gray-400 hover:bg-gray-800">
+                <button tabIndex={-1} className="border-2 border-gray-700 px-4 py-2 font-display text-[9px] text-gray-400 cursor-default">
                   AS BLACK
                 </button>
               </div>
               <div className="flex gap-2 items-center">
-                <select className="bg-gray-900 border-2 border-gray-700 py-2 px-3 font-mono focus:outline-none text-[10px] uppercase">
+                <select tabIndex={-1} className="bg-gray-900 border-2 border-gray-700 py-2 px-3 font-mono focus:outline-none text-[10px] uppercase">
                   <option>All time controls</option>
                   <option>Blitz</option>
                   <option>Rapid</option>
                   <option>Bullet</option>
                 </select>
-                <button className="border-2 border-gray-700 px-3 py-2 font-display text-[9px] text-gray-400 flex items-center gap-2 hover:bg-gray-800">
+                <button tabIndex={-1} className="border-2 border-gray-700 px-3 py-2 font-display text-[9px] text-gray-400 flex items-center gap-2 cursor-default">
                   <MdRefresh className="text-xs" />
                 </button>
               </div>
             </div>
             <div className="space-y-6">
               <h3 className="font-display text-xs mb-4 text-white uppercase tracking-wider">
-                Top 10 Openings
+                Top Openings{" "}
+                <span className="text-[9px] text-gray-500 normal-case tracking-normal">(example)</span>
               </h3>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
@@ -209,6 +285,9 @@ export default function LandingPage() {
                   </tbody>
                 </table>
               </div>
+              <p className="text-[9px] font-display opacity-40 uppercase leading-relaxed">
+                Sample data. Import your games to see your own report.
+              </p>
             </div>
           </div>
         </section>
@@ -258,8 +337,9 @@ export default function LandingPage() {
 
       <footer className="border-t-2 border-gray-800 bg-background-dark py-8 px-6">
         <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="font-display text-[8px] opacity-40">
-            © 2024 KORCHESS // ALL SYSTEMS NOMINAL
+          {/* The page is prerendered at build time; the year may differ on the client */}
+          <div className="font-display text-[8px] opacity-40" suppressHydrationWarning>
+            © {new Date().getFullYear()} KORCHESS // ALL SYSTEMS NOMINAL
           </div>
           <div className="flex gap-6 items-center">
             <a

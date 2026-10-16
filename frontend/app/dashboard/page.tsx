@@ -18,6 +18,7 @@ import {
 } from "@/lib/profiles";
 import { importGames, type ImportResponse } from "@/lib/import";
 import { API_BASE_URL } from "@/lib/api-url";
+import { clearPendingAdd, parsePendingAdd, takePendingAdd } from "@/lib/pendingAdd";
 import { FaChessPawn, FaChessKnight, FaChessBishop, FaChessRook, FaChessQueen, FaChessKing } from "react-icons/fa";
 
 const CHESS_PIECE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -362,6 +363,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const { accessToken, isLoading, signout } = useAuth();
   const userFromUrl = useMemo(() => searchParams.get("user") || "", [searchParams]);
+  const addFromUrl = searchParams.get("add");
 
   const authHeaders = useMemo((): Record<string, string> => {
     if (!accessToken) {
@@ -411,6 +413,20 @@ export default function DashboardPage() {
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<ChessProfile | null>(null);
   const [problemSpotter, setProblemSpotter] = useState<ProblemSpotterData | null>(null);
   const [problemSpotterLoading, setProblemSpotterLoading] = useState(false);
+
+  // An account typed on the landing page (?add=site:name, or kept in
+  // sessionStorage through sign-up/verify/onboarding) pre-fills the
+  // "Add chess account" field. It is not submitted automatically.
+  useEffect(() => {
+    if (isLoading) return; // wait until the form is on screen
+    const fromUrl = parsePendingAdd(addFromUrl);
+    const pending = fromUrl ?? takePendingAdd();
+    if (fromUrl) clearPendingAdd();
+    if (!pending) return;
+    setSelectedPlatform(pending.site);
+    setInputUsername(pending.username);
+    document.getElementById("chess-username")?.focus();
+  }, [addFromUrl, isLoading]);
 
   // Fetch profile for nav
   useEffect(() => {
