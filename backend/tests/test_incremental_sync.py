@@ -11,6 +11,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://test@localhost:1/test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:1/0")
 os.environ.setdefault("JWT_SECRET", "test")
 
+from fake_redis import FakeRedis
 from repository import tasks
 from services import import_service
 
@@ -129,7 +130,7 @@ class ProcessGameScanSkipTest(unittest.TestCase):
                 patch.object(tasks, "extract_light_game_features", return_value={}), \
                 patch.object(tasks, "has_game_quick_scan", return_value=already_scanned), \
                 patch.object(tasks, "upsert_game_quick_scan"), \
-                patch.object(tasks, "_redis", MagicMock(**{"get.return_value": None})), \
+                patch.object(tasks, "_redis", FakeRedis()), \
                 patch.object(tasks, "run_quick_scan_single", return_value={"summary": {}}) as scan:
             tasks.process_game(_game("g1", "2024-03-05T12:00:00Z"), "Someone", "lichess")
         return scan

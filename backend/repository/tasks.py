@@ -34,16 +34,46 @@ from repository.redis_client import redis_client as _redis
 
 logger = logging.getLogger(__name__)
 
+IMPORT_KEY_TTL = 3600
+
 
 def _import_key(username: str, site: str, field: str) -> str:
     return f"import:{username.strip().lower()}:{site}:{field}"
+
+
+def _record_game_done(canonical: str, site: str) -> None:
+    """Count one processed game; the game that completes the import aggregates once.
+
+    import_service resets `done` and `total` when an import starts. Overlapping
+    imports or stragglers can push `done` past `total`, so completion is
+    `done >= total`, and the SET NX flag makes sure only one task finishes it.
+    """
+    done_key = _import_key(canonical, site, "done")
+    total_key = _import_key(canonical, site, "total")
+
+    pipe = _redis.pipeline()
+    pipe.incr(done_key)
+    pipe.expire(done_key, IMPORT_KEY_TTL)
+    done, _ = pipe.execute()
+    total_raw = _redis.get(total_key)
+    if total_raw is None or done < int(total_raw):
+        return
+    if not _redis.set(_import_key(canonical, site, "complete"), 1, nx=True, ex=IMPORT_KEY_TTL):
+        return
+
+    _redis.set(_import_key(canonical, site, "status"), "complete", ex=IMPORT_KEY_TTL)
+    _redis.delete(done_key, total_key, _import_key(canonical, site, "meta"))
+    try:
+        _run_aggregation(canonical, site)
+    except Exception:
+        logger.exception("Post-import aggregation failed for %s", canonical)
 
 
 @app.task(name="tasks.process_game", bind=True, max_retries=3, default_retry_delay=10)
 def process_game(self, game_data: dict, username: str, site: str) -> dict:
     """Process a single game: store, extract features, quick scan.
 
-    After finishing, increments the Redis done counter. When done == total,
+    After finishing, increments the Redis done counter. When done reaches total,
     runs coaching-summary aggregation and marks the import as complete.
     """
     canonical = username.strip().lower()
@@ -54,7 +84,12 @@ def process_game(self, game_data: dict, username: str, site: str) -> dict:
             inserted, skipped = bulk_upsert_games(conn, [game_data])
             conn.commit()
     except Exception as exc:
-        raise self.retry(exc=exc)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        # Out of retries: still count the game so the import can complete.
+        logger.exception("Storing game %s/%s failed after retries", site, site_game_id)
+        _record_game_done(canonical, site)
+        raise
 
     try:
         light_features = extract_light_game_features(game_data)
@@ -94,22 +129,7 @@ def process_game(self, game_data: dict, username: str, site: str) -> dict:
     except Exception:
         logger.exception("Quick scan failed for %s/%s", site, site_game_id)
 
-    done_key = _import_key(canonical, site, "done")
-    total_key = _import_key(canonical, site, "total")
-    meta_key = _import_key(canonical, site, "meta")
-    status_key = _import_key(canonical, site, "status")
-
-    done = _redis.incr(done_key)
-    total_raw = _redis.get(total_key)
-    total = int(total_raw) if total_raw is not None else None
-
-    if total is not None and done == total:
-        _redis.set(status_key, "complete", ex=3600)
-        _redis.delete(done_key, total_key, meta_key)
-        try:
-            _run_aggregation(canonical, site)
-        except Exception:
-            logger.exception("Post-import aggregation failed for %s", canonical)
+    _record_game_done(canonical, site)
 
     return {
         "site_game_id": site_game_id,

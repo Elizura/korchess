@@ -34,8 +34,25 @@ def upstream_http_status(error: LichessAPIError | ChesscomAPIError) -> int:
     return 502
 
 
+IMPORT_KEY_TTL = 3600
+
+
 def import_key(username: str, site: str, field: str) -> str:
     return f"import:{username.strip().lower()}:{site}:{field}"
+
+
+def _start_progress(canonical: str, site: str, total: int) -> None:
+    """Reset this username/site's progress counters for a new batch of games.
+
+    `done` restarts at 0 (it used to carry over from earlier or failed imports),
+    and every key expires so an abandoned import can't poison later ones.
+    """
+    pipe = _redis.pipeline()
+    pipe.set(import_key(canonical, site, "total"), total, ex=IMPORT_KEY_TTL)
+    pipe.set(import_key(canonical, site, "done"), 0, ex=IMPORT_KEY_TTL)
+    pipe.delete(import_key(canonical, site, "complete"))
+    pipe.set(import_key(canonical, site, "status"), "processing", ex=IMPORT_KEY_TTL)
+    pipe.execute()
 
 
 def datetime_to_lichess_ms(dt: datetime) -> int:
@@ -135,8 +152,7 @@ def _enqueue_and_record(
     new_games = [g for g in games if g["site_game_id"] not in known_ids]
 
     if new_games:
-        _redis.set(import_key(canonical, site, "total"), len(new_games), ex=3600)
-        _redis.set(import_key(canonical, site, "status"), "processing", ex=3600)
+        _start_progress(canonical, site, len(new_games))
 
         for game_data in new_games:
             process_game.delay(game_data, username, site)
@@ -146,7 +162,7 @@ def _enqueue_and_record(
             "is_sync": is_sync,
             "parse_skipped": parse_skipped,
         }
-        _redis.set(import_key(canonical, site, "meta"), json.dumps(import_meta), ex=3600)
+        _redis.set(import_key(canonical, site, "meta"), json.dumps(import_meta), ex=IMPORT_KEY_TTL)
     else:
         _redis.delete(import_key(canonical, site, "status"))
 
