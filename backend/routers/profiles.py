@@ -15,8 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from services.analytics import hash_username, track_server_event
 from services.chesscom import fetch_chesscom_profile, ChesscomAPIError
 from repository.db import (
-    delete_all_user_site_data,
-    delete_chess_profile,
+    delete_chess_profile_data,
     get_chess_profile,
     get_chess_profiles,
     upsert_chess_profile,
@@ -162,15 +161,18 @@ async def remove_profile(
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Delete a chess profile and ALL associated data (games, analysis, insights)."""
+    """Delete the caller's chess profile and their own data for it.
+
+    Shared games/analysis/insights for the account are deleted only when no
+    other user still has a profile for it.
+    """
     user_id = current_user["id"]
 
     existing = get_chess_profile(conn, user_id, username, site)
     if not existing:
         raise HTTPException(status_code=404, detail="Profile not found.")
 
-    deleted_counts = delete_all_user_site_data(conn, username, site)
-    delete_chess_profile(conn, user_id, username, site)
+    deleted_counts = delete_chess_profile_data(conn, user_id, username, site)
     conn.commit()
 
     await track_server_event(
