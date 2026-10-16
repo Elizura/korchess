@@ -457,7 +457,6 @@ def _init_db_schema(conn: psycopg.Connection) -> None:
     cursor.execute("DROP INDEX IF EXISTS idx_games_user_site_username")
     cursor.execute("DROP INDEX IF EXISTS idx_games_user_username_played_at_id")
     cursor.execute("DROP INDEX IF EXISTS idx_game_quick_scans_user")
-    cursor.execute("DROP INDEX IF EXISTS idx_scan_jobs_active")
     cursor.execute("DROP INDEX IF EXISTS idx_insight_jobs_active_user_site_updated")
 
     # PostHog-only analytics mode:
