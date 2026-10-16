@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth";
+import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
 import { API_BASE_URL } from "@/lib/api-url";
 import { FaChessPawn, FaChessKnight, FaChessBishop, FaChessRook, FaChessQueen, FaChessKing } from "react-icons/fa";
@@ -17,7 +18,10 @@ const AVATARS = [
 ] as const;
 
 export default function ProfileEditPage() {
-  const { accessToken, isLoading, isAuthenticated } = useAuth();
+  const { accessToken } = useAuth();
+  // Signed-out visitors go to /signin and come back here instead of a
+  // spinner that never stops
+  const authReady = useRequireAuth();
   const [avatar, setAvatar] = useState<string>("pawn");
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
@@ -25,9 +29,10 @@ export default function ProfileEditPage() {
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    if (isLoading || !isAuthenticated || !accessToken) return;
+    if (!authReady || !accessToken) return;
 
     const fetchProfile = async () => {
       setFetchError(null);
@@ -52,7 +57,7 @@ export default function ProfileEditPage() {
     };
 
     fetchProfile();
-  }, [isLoading, isAuthenticated, accessToken]);
+  }, [authReady, accessToken]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,6 +69,7 @@ export default function ProfileEditPage() {
 
     setLoading(true);
     setError(null);
+    setSaved(false);
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/auth/profile`, {
         method: "PATCH",
@@ -80,7 +86,8 @@ export default function ProfileEditPage() {
         throw new Error(data.detail || "Failed to save");
       }
 
-      // router.replace("/dashboard");
+      setSaved(true);
+      setUpdatedAt(new Date().toISOString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -88,7 +95,7 @@ export default function ProfileEditPage() {
     }
   };
 
-  if (isLoading || !isAuthenticated) {
+  if (!authReady) {
     return (
       <main className="analysis-page min-h-screen py-8">
         <div className="max-w-3xl mx-auto px-4">
@@ -156,7 +163,11 @@ export default function ProfileEditPage() {
                   <button
                     key={av.id}
                     type="button"
-                    onClick={() => setAvatar(av.piece)}
+                    onClick={() => {
+                      setAvatar(av.piece);
+                      setSaved(false);
+                    }}
+                    aria-pressed={selected}
                     className={[
                       "zen-surface-flat flex items-center gap-3 rounded-lg border px-3 py-3 text-left transition",
                       selected
@@ -180,11 +191,20 @@ export default function ProfileEditPage() {
 
           <section className="zen-surface p-4 sm:p-5 space-y-4">
             <div>
-              <h2 className="text-sm font-semibold text-[color:var(--zen-text)] mb-2">Username</h2>
+              <label
+                htmlFor="profile-username"
+                className="block text-sm font-semibold text-[color:var(--zen-text)] mb-2"
+              >
+                Username
+              </label>
               <input
+                id="profile-username"
                 type="text"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  setSaved(false);
+                }}
                 className="zen-input w-full px-4 py-3 outline-none focus:ring-2 focus:ring-[color:var(--zen-accent-2)] focus:border-[color:var(--zen-accent)] transition"
                 maxLength={32}
                 autoComplete="username"
@@ -206,13 +226,18 @@ export default function ProfileEditPage() {
               <div className="text-xs text-[color:var(--zen-muted)]">
                 Last updated: {formatDate(updatedAt)}
               </div>
-              <button
-                type="submit"
-                disabled={loading || !username.trim()}
-                className="zen-pill px-5 py-2.5 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? "Saving..." : "Save changes"}
-              </button>
+              <div className="flex items-center gap-3">
+                <span role="status" aria-live="polite" className="text-sm font-medium text-[color:var(--zen-success)]">
+                  {saved ? "✓ Saved" : ""}
+                </span>
+                <button
+                  type="submit"
+                  disabled={loading || !username.trim()}
+                  className="zen-pill px-5 py-2.5 text-sm font-medium bg-[color:var(--zen-accent-2)] hover:bg-[color:var(--zen-accent)] hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading ? "Saving..." : "Save changes"}
+                </button>
+              </div>
             </div>
           </section>
         </form>

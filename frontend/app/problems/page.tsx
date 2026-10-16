@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
+import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { withTrackingHeaders } from "@/lib/analytics/client";
 import { API_BASE_URL } from "@/lib/api-url";
 
@@ -71,6 +72,9 @@ export default function ProblemsPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { accessToken } = useAuth();
+  // Signed-out visitors go to /signin and come back here (query included)
+  // instead of watching a spinner that never stops
+  useRequireAuth();
 
   const username = searchParams.get("user") || "";
   const theme = searchParams.get("theme") || "";
