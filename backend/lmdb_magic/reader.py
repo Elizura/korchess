@@ -24,47 +24,74 @@ logger = logging.getLogger(__name__)
 
 DB_NAME = b"evals"
 MAP_SIZE = 64 * 1024**3
+# Where docker-compose mounts the cache inside the backend and worker containers
+DEFAULT_DB_PATH = "/app/lmdb_cache"
 
 _env_lock = threading.Lock()
 _env: lmdb.Environment | None = None
 _evals_db: Any = None
+_disabled = False
 
 
 def _get_env() -> tuple[lmdb.Environment, Any] | None:
     """
     Returns the singleton (env, evals_db) pair, opening on first call.
+
+    Returns None when the cache is missing or unreadable: callers then fall
+    back to Stockfish. That is decided once, with a single warning.
     """
-    global _env, _evals_db
+    global _env, _evals_db, _disabled
 
     if _env is not None:
         return _env, _evals_db
+    if _disabled:
+        return None
 
     with _env_lock:
         if _env is not None:
             return _env, _evals_db
-
-        db_path = os.environ.get("LICHESS_EVAL_DB_PATH")
-        if not db_path or not os.path.exists(db_path):
+        if _disabled:
             return None
 
-        _env = lmdb.open(
-            db_path,
-            map_size=MAP_SIZE,
-            subdir=True,
-            max_dbs=2,
-            readonly=True,
-            lock=False,
-            readahead=False,
-        )
-        _evals_db = _env.open_db(DB_NAME)
+        db_path = os.environ.get("LICHESS_EVAL_DB_PATH") or DEFAULT_DB_PATH
+        if not os.path.isfile(os.path.join(db_path, "data.mdb")):
+            logger.warning(
+                "LMDB eval cache not found at %s (no data.mdb); using Stockfish only", db_path
+            )
+            _disabled = True
+            return None
+
+        env = None
+        try:
+            env = lmdb.open(
+                db_path,
+                map_size=MAP_SIZE,
+                subdir=True,
+                max_dbs=2,
+                readonly=True,
+                lock=False,
+                readahead=False,
+            )
+            evals_db = env.open_db(DB_NAME)
+        except Exception as exc:
+            if env is not None:
+                env.close()
+            logger.warning(
+                "LMDB eval cache at %s could not be opened (%s); using Stockfish only", db_path, exc
+            )
+            _disabled = True
+            return None
+
+        _env, _evals_db = env, evals_db
         logger.info("LMDB eval cache opened at %s", db_path)
         return _env, _evals_db
 
 
 def close() -> None:
     """Close the singleton LMDB environment (call on app shutdown)."""
-    global _env, _evals_db
+    global _env, _evals_db, _disabled
     with _env_lock:
+        _disabled = False
         if _env is not None:
             _env.close()
             _env = None
