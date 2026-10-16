@@ -22,6 +22,11 @@ app.conf.update(
     task_reject_on_worker_lost=True,
     broker_connection_retry_on_startup=True,
     task_ignore_result=True,
+    # Defaults for any task without its own limits (tasks.py sets per-task ones).
+    # The soft limit raises SoftTimeLimitExceeded so the task can mark its job
+    # failed; the hard limit kills the worker process if it doesn't stop.
+    task_soft_time_limit=600,
+    task_time_limit=660,
 )
 
 

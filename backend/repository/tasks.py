@@ -4,6 +4,8 @@ import json
 import logging
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from repository.celery_app import app
 from repository.db import (
     bulk_upsert_games,
@@ -69,7 +71,12 @@ def _record_game_done(canonical: str, site: str) -> None:
         logger.exception("Post-import aggregation failed for %s", canonical)
 
 
-@app.task(name="tasks.process_game", bind=True, max_retries=3, default_retry_delay=10)
+# One game: a DB write plus a low-depth Stockfish scan (seconds). The task that
+# completes an import also runs the aggregation, which may call the narrative LLM.
+@app.task(
+    name="tasks.process_game", bind=True, max_retries=3, default_retry_delay=10,
+    soft_time_limit=120, time_limit=180,
+)
 def process_game(self, game_data: dict, username: str, site: str) -> dict:
     """Process a single game: store, extract features, quick scan.
 
@@ -178,7 +185,8 @@ def _run_aggregation(canonical: str, site: str) -> None:
         conn.commit()
 
 
-@app.task(name="tasks.run_insights")
+# Light features for up to MAX_GAMES_WINDOW games plus aggregation and narrative.
+@app.task(name="tasks.run_insights", soft_time_limit=900, time_limit=960)
 def run_insights(
     job_id: str,
     username: str,
@@ -354,7 +362,8 @@ def _save_snapshot_sync(
         conn.commit()
 
 
-@app.task(name="tasks.run_scan")
+# Quick-scans up to QUICK_SCAN_MAX_GAMES games one after another.
+@app.task(name="tasks.run_scan", soft_time_limit=1800, time_limit=1860)
 def run_scan(
     job_id: str,
     username: str,
@@ -415,6 +424,8 @@ def run_scan(
                         summary_json=summary_str,
                     )
                     conn.commit()
+            except SoftTimeLimitExceeded:
+                raise
             except Exception:
                 logger.exception(
                     "Quick scan failed for game %s/%s",
