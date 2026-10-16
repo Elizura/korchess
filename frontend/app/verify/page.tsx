@@ -199,13 +199,20 @@ export default function VerifyPage() {
             </div>
           )}
 
-          <div className="flex justify-center gap-2 mb-8" onPaste={handlePaste}>
+          <div
+            role="group"
+            aria-label="6-digit verification code"
+            className="flex justify-center gap-2 mb-8"
+            onPaste={handlePaste}
+          >
             {code.map((digit, i) => (
               <input
                 key={i}
                 ref={(el) => { inputRefs.current[i] = el; }}
+                aria-label={`Digit ${i + 1}`}
                 type="text"
                 inputMode="numeric"
+                autoComplete={i === 0 ? "one-time-code" : "off"}
                 maxLength={1}
                 value={digit}
                 onChange={(e) => handleChange(i, e.target.value)}

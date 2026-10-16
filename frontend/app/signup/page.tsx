@@ -159,11 +159,16 @@ export default function SignupPage() {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-[9px] font-display uppercase tracking-widest opacity-60 mb-2">
+              <label
+                htmlFor="signup-email"
+                className="block text-[9px] font-display uppercase tracking-widest opacity-60 mb-2"
+              >
                 Email
               </label>
               <input
+                id="signup-email"
                 type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -172,11 +177,16 @@ export default function SignupPage() {
               />
             </div>
             <div>
-              <label className="block text-[9px] font-display uppercase tracking-widest opacity-60 mb-2">
+              <label
+                htmlFor="signup-password"
+                className="block text-[9px] font-display uppercase tracking-widest opacity-60 mb-2"
+              >
                 Password
               </label>
               <input
+                id="signup-password"
                 type="password"
+                autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
