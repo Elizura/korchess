@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import sys
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+os.environ.setdefault("DATABASE_URL", "postgresql://test@localhost:1/test")
+os.environ.setdefault("REDIS_URL", "redis://localhost:1/0")
+os.environ.setdefault("JWT_SECRET", "test")
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.routing import APIRoute
@@ -15,11 +20,12 @@ from starlette.requests import Request
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent))
 
+from fake_redis import FakeRedis
 from services.analytics import AnalyticsValidationError
 from auth import get_registered_user
 from dependencies import get_db
+from repository import tasks
 from routers import analytics as analytics_router
-from routers import import_ as import_router
 from schemas import AnalyticsEventItem, AnalyticsEventsIngestRequest
 
 
@@ -112,24 +118,28 @@ class RegisteredUserConnectionTest(unittest.TestCase):
     def test_get_registered_user_uses_injected_connection_only(self) -> None:
         credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-token")
         conn = object()
+        unexpected = AssertionError("unexpected get_connection() call")
 
         with patch("auth.verify_access_token", return_value={"id": "user-1", "email": "a@b.com"}), patch(
-            "db.get_user_by_id", return_value={"id": "user-1"}
+            "repository.db.get_user_by_id", return_value={"id": "user-1"}
         ) as get_user_by_id_mock, patch(
-            "db.get_connection", side_effect=AssertionError("unexpected get_connection() call")
-        ) as get_connection_mock:
+            "repository.db.get_connection", side_effect=unexpected
+        ) as get_connection_mock, patch(
+            "repository.db_connection.get_connection", side_effect=unexpected
+        ) as pool_connection_mock:
             user = get_registered_user(credentials=credentials, conn=conn)
 
         self.assertEqual(user["id"], "user-1")
         get_user_by_id_mock.assert_called_once_with(conn, "user-1")
         get_connection_mock.assert_not_called()
+        pool_connection_mock.assert_not_called()
 
     def test_get_registered_user_preserves_unregistered_user_403(self) -> None:
         credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-token")
         conn = object()
 
         with patch("auth.verify_access_token", return_value={"id": "user-2", "email": "a@b.com"}), patch(
-            "db.get_user_by_id", return_value=None
+            "repository.db.get_user_by_id", return_value=None
         ):
             with self.assertRaises(HTTPException) as err:
                 get_registered_user(credentials=credentials, conn=conn)
@@ -138,49 +148,58 @@ class RegisteredUserConnectionTest(unittest.TestCase):
         self.assertIn("User not registered", err.exception.detail)
 
 
-class ScheduleInsightsTest(unittest.TestCase):
-    """Tests for the simplified insights scheduling.
-    
+class PostImportInsightsTest(unittest.TestCase):
+    """Post-import insights work is keyed by chess username only.
+
     Insights are shared per chess username - not owned by individual users.
-    Data is keyed by (username, site) without any user_id indirection.
+    This used to be scheduled by routers.import_._schedule_insights; the
+    process_game task that completes an import now runs the aggregation.
     """
 
-    def test_schedule_insights_uses_username_only(self) -> None:
-        """Verify _schedule_insights schedules with just username (no user_id)."""
-        with patch("routers.import_.schedule_insights_refresh") as schedule_mock, patch(
-            "routers.import_.schedule_quick_scan"
-        ) as scan_mock:
-            import_router._schedule_insights("testuser", "lichess")
+    def _complete_import(self, scan_error=None, aggregation_error=None):
+        redis = FakeRedis()
+        redis.set("import:testuser:lichess:total", 1)
+        redis.set("import:testuser:lichess:done", 0)
+        game = {"site": "lichess", "site_game_id": "g1", "username": "TestUser", "pgn": ""}
 
-        schedule_mock.assert_called_once_with(
-            username="testuser",
-            site="all",
-            reason="import",
-        )
-        scan_mock.assert_called_once_with("testuser", site="all")
+        with patch.object(tasks, "_redis", redis), \
+                patch.object(tasks, "get_connection", MagicMock()), \
+                patch.object(tasks, "bulk_upsert_games", return_value=(1, 0)), \
+                patch.object(tasks, "extract_light_game_features", return_value={}), \
+                patch.object(tasks, "upsert_insight_game_feature"), \
+                patch.object(tasks, "has_game_quick_scan", return_value=False), \
+                patch.object(tasks, "upsert_game_quick_scan"), \
+                patch.object(tasks, "run_quick_scan_single", side_effect=scan_error,
+                             return_value={"summary": {}}) as scan_mock, \
+                patch.object(tasks, "_run_aggregation", side_effect=aggregation_error) as aggregate_mock:
+            result = tasks.process_game(game, "TestUser", "lichess")
 
-    def test_schedule_insights_handles_refresh_exception(self) -> None:
-        """Verify _schedule_insights continues if schedule_insights_refresh fails."""
-        with patch(
-            "routers.import_.schedule_insights_refresh",
-            side_effect=Exception("test error"),
-        ), patch("routers.import_.schedule_quick_scan") as scan_mock:
-            # Should not raise
-            import_router._schedule_insights("testuser", "lichess")
+        return result, scan_mock, aggregate_mock, redis
 
-        # Quick scan should still be called
+    def test_post_import_aggregation_uses_username_only(self) -> None:
+        """The completing game aggregates with just the canonical username (no user_id)."""
+        result, _, aggregate_mock, redis = self._complete_import()
+
+        aggregate_mock.assert_called_once_with("testuser", "lichess")
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(redis.get("import:testuser:lichess:status"), "complete")
+
+    def test_post_import_handles_aggregation_exception(self) -> None:
+        """process_game finishes the import even if the aggregation fails."""
+        # Should not raise
+        result, _, aggregate_mock, redis = self._complete_import(aggregation_error=Exception("test error"))
+
+        aggregate_mock.assert_called_once()
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(redis.get("import:testuser:lichess:status"), "complete")
+
+    def test_post_import_handles_scan_exception(self) -> None:
+        """A failed quick scan still counts the game, so aggregation still runs."""
+        # Should not raise
+        _, scan_mock, aggregate_mock, _ = self._complete_import(scan_error=Exception("scan error"))
+
         scan_mock.assert_called_once()
-
-    def test_schedule_insights_handles_scan_exception(self) -> None:
-        """Verify _schedule_insights handles quick scan failure gracefully."""
-        with patch("routers.import_.schedule_insights_refresh") as schedule_mock, patch(
-            "routers.import_.schedule_quick_scan",
-            side_effect=Exception("scan error"),
-        ):
-            # Should not raise
-            import_router._schedule_insights("testuser", "chesscom")
-
-        schedule_mock.assert_called_once()
+        aggregate_mock.assert_called_once_with("testuser", "lichess")
 
 
 if __name__ == "__main__":
