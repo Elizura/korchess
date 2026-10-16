@@ -38,6 +38,9 @@ services:
   nginx:
     image: nginx:1.25-alpine
     restart: unless-stopped
+    # Reload every 6h so certificates renewed by the certbot service are
+    # picked up without a restart.
+    command: ["/bin/sh", "-c", "while :; do sleep 6h & wait $${!}; nginx -s reload; done & exec nginx -g 'daemon off;'"]
     ports:
       - "80:80"
       - "443:443"
@@ -51,9 +54,13 @@ services:
       - frontend
       - backend
 
+  # Renews certificates (through nginx's /.well-known/acme-challenge/) every
+  # 12h; certbot only replaces ones within 30 days of expiry. For the first
+  # issuance, override the entrypoint with `run --entrypoint certbot` (README).
   certbot:
     image: certbot/certbot:latest
+    restart: unless-stopped
     volumes:
       - ./deploy/certbot/www:/var/www/certbot
       - ./deploy/certbot/conf:/etc/letsencrypt
-    entrypoint: ["certbot"]
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done"]
