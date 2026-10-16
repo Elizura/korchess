@@ -15,14 +15,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from services.analytics import hash_username, track_server_event
 from repository.db import (
-    count_user_ai_gemini_success_utc_day,
     create_analysis_job,
     delete_analysis_job,
+    finish_ai_insights_request,
     get_ai_game_insights,
     get_analysis_job,
     get_full_analysis,
     get_game_by_id,
     log_ai_insights_request,
+    reserve_ai_insights_request,
     save_ai_game_insights,
     save_full_analysis,
     save_full_analysis_insights,
@@ -627,37 +628,6 @@ async def request_ai_insights_endpoint(
             detail="Run in-depth analysis before requesting AI insights.",
         )
 
-    if AI_INSIGHTS_DAILY_LIMIT > 0 and not unlimited_ai_quota and not stale_cache_refresh:
-        day_start_utc, day_end_utc = _current_utc_day_bounds()
-        successful_today = count_user_ai_gemini_success_utc_day(
-            conn,
-            current_user["id"],
-            day_start_utc,
-            day_end_utc,
-        )
-        if successful_today >= AI_INSIGHTS_DAILY_LIMIT:
-            await track_server_event(
-                conn,
-                event_name="analysis.ai.failed",
-                user_id=current_user["id"],
-                request=request,
-                properties={
-                    "site": site,
-                    "depth": depth,
-                    "multipv": multipv,
-                    "username": username_hash,
-                    "reason": "Daily quota exceeded",
-                },
-            )
-            conn.commit()
-            return AIInsightsResponse(
-                status="quota_exceeded",
-                detail=(
-                    f"You can only request {AI_INSIGHTS_DAILY_LIMIT} AI insights per day. "
-                    "Please try again after 00:00 UTC."
-                ),
-            )
-
     game_meta = get_game_by_id(conn, username, game_id, site)
     if not game_meta:
         await track_server_event(
@@ -690,6 +660,63 @@ async def request_ai_insights_endpoint(
         game_meta=game_meta,
     )
 
+    reservation_id: int | None = None
+    if AI_INSIGHTS_DAILY_LIMIT > 0 and not unlimited_ai_quota and not stale_cache_refresh:
+        # Claim the quota slot before calling Gemini and commit it at once, so
+        # parallel requests see it and can't all pass the daily limit check.
+        day_start_utc, day_end_utc = _current_utc_day_bounds()
+        reservation_id = reserve_ai_insights_request(
+            conn,
+            current_user["id"],
+            username,
+            game_id,
+            depth,
+            multipv,
+            site,
+            daily_limit=AI_INSIGHTS_DAILY_LIMIT,
+            day_start_utc=day_start_utc,
+            day_end_utc=day_end_utc,
+        )
+        conn.commit()
+        if reservation_id is None:
+            await track_server_event(
+                conn,
+                event_name="analysis.ai.failed",
+                user_id=current_user["id"],
+                request=request,
+                properties={
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "username": username_hash,
+                    "reason": "Daily quota exceeded",
+                },
+            )
+            conn.commit()
+            return AIInsightsResponse(
+                status="quota_exceeded",
+                detail=(
+                    f"You can only request {AI_INSIGHTS_DAILY_LIMIT} AI insights per day. "
+                    "Please try again after 00:00 UTC."
+                ),
+            )
+
+    def record_request(status: str) -> None:
+        # Settle the reservation if one was taken; otherwise log the attempt as before
+        if reservation_id is not None:
+            finish_ai_insights_request(conn, reservation_id, status)
+        else:
+            log_ai_insights_request(
+                conn,
+                current_user["id"],
+                username,
+                game_id,
+                depth,
+                multipv,
+                site,
+                status=status,
+            )
+
     try:
         narrated_payload = await asyncio.to_thread(
             ensure_narration,
@@ -699,16 +726,7 @@ async def request_ai_insights_endpoint(
             True,
         )
     except Exception as err:
-        log_ai_insights_request(
-            conn,
-            current_user["id"],
-            username,
-            game_id,
-            depth,
-            multipv,
-            site,
-            status="failed",
-        )
+        record_request("failed")
         await track_server_event(
             conn,
             event_name="analysis.ai.failed",
@@ -735,16 +753,7 @@ async def request_ai_insights_endpoint(
         else ""
     )
     if narration_source != "gemini":
-        log_ai_insights_request(
-            conn,
-            current_user["id"],
-            username,
-            game_id,
-            depth,
-            multipv,
-            site,
-            status="failed",
-        )
+        record_request("failed")
         await track_server_event(
             conn,
             event_name="analysis.ai.failed",
@@ -775,16 +784,7 @@ async def request_ai_insights_endpoint(
         json.dumps(narrated_payload),
         source="gemini",
     )
-    log_ai_insights_request(
-        conn,
-        current_user["id"],
-        username,
-        game_id,
-        depth,
-        multipv,
-        site,
-        status="gemini_refresh_success" if stale_cache_refresh else "gemini_success",
-    )
+    record_request("gemini_refresh_success" if stale_cache_refresh else "gemini_success")
     await track_server_event(
         conn,
         event_name="analysis.ai.completed",

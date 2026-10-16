@@ -30,6 +30,8 @@ from repository.db_connection import (
 ANALYSIS_JOB_STALE_AFTER = timedelta(minutes=15)
 BACKGROUND_JOB_STALE_AFTER = timedelta(minutes=30)
 STALE_JOB_ERROR = "Job timed out without finishing."
+# An AI insights quota reservation still pending after this long was abandoned
+AI_INSIGHTS_PENDING_STALE_AFTER = timedelta(minutes=15)
 
 
 def init_db() -> None:
@@ -1696,6 +1698,77 @@ def log_ai_insights_request(
             multipv,
             status.strip().lower(),
         ),
+    )
+
+
+def reserve_ai_insights_request(
+    conn: psycopg.Connection,
+    user_id: str,
+    username: str,
+    site_game_id: str,
+    depth: int,
+    multipv: int,
+    site: str,
+    *,
+    daily_limit: int,
+    day_start_utc: datetime,
+    day_end_utc: datetime,
+) -> int | None:
+    """Claim one of the user's daily AI insights generations before calling Gemini.
+
+    Holding a per-user transaction lock, counts today's successful and
+    in-flight generations and inserts a 'pending' row only if that is below
+    daily_limit, so parallel requests can't all pass the check. Returns the
+    reservation id, or None when the quota is used up. Commit right away (which
+    releases the lock) so other requests see it, then settle it with
+    finish_ai_insights_request. A pending row older than
+    AI_INSIGHTS_PENDING_STALE_AFTER no longer counts (its request died).
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+        (f"ai_insights_quota:{user_id}",),
+    )
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM ai_insights_requests
+        WHERE user_id = %s
+          AND requested_at >= %s
+          AND requested_at < %s
+          AND (
+              status = 'gemini_success'
+              OR (status = 'pending' AND requested_at >= %s)
+          )
+        """,
+        (
+            user_id,
+            day_start_utc,
+            day_end_utc,
+            datetime.now(timezone.utc) - AI_INSIGHTS_PENDING_STALE_AFTER,
+        ),
+    )
+    row = cursor.fetchone()
+    if int((row or {}).get("total") or 0) >= daily_limit:
+        return None
+    cursor.execute(
+        """
+        INSERT INTO ai_insights_requests
+        (user_id, site, site_game_id, username, depth, multipv, status, requested_at)
+        VALUES (%s, %s, %s, %s, %s, %s, 'pending', now())
+        RETURNING id
+        """,
+        (user_id, site, site_game_id, username.strip().lower(), depth, multipv),
+    )
+    return int(cursor.fetchone()["id"])
+
+
+def finish_ai_insights_request(conn: psycopg.Connection, request_id: int, status: str) -> None:
+    """Settle a reservation from reserve_ai_insights_request with its final status."""
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE ai_insights_requests SET status = %s WHERE id = %s",
+        (status.strip().lower(), request_id),
     )
 
 
