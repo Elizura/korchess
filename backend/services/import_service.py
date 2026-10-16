@@ -13,15 +13,25 @@ from datetime import datetime
 import chess.pgn
 import psycopg
 
-from services.chesscom import fetch_chesscom_games, parse_chesscom_game
+from services.chesscom import ChesscomAPIError, fetch_chesscom_games, parse_chesscom_game
 from repository.db import get_import_status
-from services.lichess import parse_pgn_games, fetch_lichess_pgn
+from services.lichess import LichessAPIError, parse_pgn_games, fetch_lichess_pgn
 from services.opening_match import best_opening_match, game_to_uci_plies
 from repository.redis_client import redis_client as _redis
 from schemas import ImportResponse
 from repository.tasks import process_game
 
 logger = logging.getLogger(__name__)
+
+# What the importers raise on upstream (Lichess/Chess.com) failures.
+UPSTREAM_ERRORS = (LichessAPIError, ChesscomAPIError)
+
+
+def upstream_http_status(error: LichessAPIError | ChesscomAPIError) -> int:
+    """HTTP status to return for an upstream error: pass through 400/404/429, else 502."""
+    if error.status_code in (400, 404, 429):
+        return error.status_code
+    return 502
 
 
 def import_key(username: str, site: str, field: str) -> str:

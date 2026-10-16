@@ -1,6 +1,7 @@
 """Chess.com API fetching and game parsing for Korchess."""
 
 import io
+import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,10 @@ from services.opening_match import game_to_uci_plies, best_opening_match
 
 CHESSCOM_API_BASE = "https://api.chess.com/pub"
 USER_AGENT = "Korchess/1.0 (Chess opening analyzer)"
+NETWORK_ERROR_MESSAGE = "Could not reach Chess.com. Please try again later."
+BAD_RESPONSE_MESSAGE = "Unexpected response from Chess.com."
+
+logger = logging.getLogger(__name__)
 
 
 def _get_follow_redirect(client: httpx.Client, url: str, headers: dict) -> httpx.Response:
@@ -51,8 +56,9 @@ def fetch_chesscom_profile(username: str) -> dict:
     try:
         with httpx.Client(timeout=30.0) as client:
             player_response = _get_follow_redirect(client, player_url, headers)
-    except httpx.RequestError as e:
-        raise ChesscomAPIError(f"Network error: {str(e)}")
+    except httpx.HTTPError as e:
+        logger.warning("Chess.com request to %s failed: %r", player_url, e)
+        raise ChesscomAPIError(NETWORK_ERROR_MESSAGE, status_code=502) from e
 
     if player_response.status_code == 404:
         raise ChesscomAPIError(
@@ -69,7 +75,8 @@ def fetch_chesscom_profile(username: str) -> dict:
     try:
         player_data = player_response.json()
     except Exception as e:
-        raise ChesscomAPIError(f"Failed to parse player response: {str(e)}")
+        logger.warning("Unparseable Chess.com player response for %s: %r", username, e)
+        raise ChesscomAPIError(BAD_RESPONSE_MESSAGE, status_code=502) from e
 
     actual_username = player_data.get("username", username)
 
@@ -77,8 +84,9 @@ def fetch_chesscom_profile(username: str) -> dict:
     try:
         with httpx.Client(timeout=30.0) as client:
             stats_response = _get_follow_redirect(client, stats_url, headers)
-    except httpx.RequestError as e:
-        raise ChesscomAPIError(f"Network error fetching stats: {str(e)}")
+    except httpx.HTTPError as e:
+        logger.warning("Chess.com request to %s failed: %r", stats_url, e)
+        raise ChesscomAPIError(NETWORK_ERROR_MESSAGE, status_code=502) from e
 
     if stats_response.status_code != 200:
         return {
@@ -143,8 +151,9 @@ def fetch_chesscom_games(
     try:
         with httpx.Client(timeout=30.0) as client:
             response = _get_follow_redirect(client, archives_url, headers)
-    except httpx.RequestError as e:
-        raise ChesscomAPIError(f"Network error: {str(e)}")
+    except httpx.HTTPError as e:
+        logger.warning("Chess.com request to %s failed: %r", archives_url, e)
+        raise ChesscomAPIError(NETWORK_ERROR_MESSAGE, status_code=502) from e
 
     if response.status_code == 404:
         raise ChesscomAPIError(
@@ -162,7 +171,8 @@ def fetch_chesscom_games(
         archives_data = response.json()
         archive_urls = archives_data.get("archives", [])
     except Exception as e:
-        raise ChesscomAPIError(f"Failed to parse archives response: {str(e)}")
+        logger.warning("Unparseable Chess.com archives response for %s: %r", username, e)
+        raise ChesscomAPIError(BAD_RESPONSE_MESSAGE, status_code=502) from e
 
     if not archive_urls:
         return []
@@ -260,7 +270,10 @@ def fetch_archive_with_retry(archive_url: str, headers: dict, max_retries: int =
             archive_data = response.json()
             return archive_data.get("games", [])
             
-        except httpx.RequestError as e:
+        except ValueError as e:
+            print(f"[Chess.com] Warning: Unparseable archive response: {str(e)}")
+            return []
+        except httpx.HTTPError as e:
             if attempt < max_retries - 1:
                 time.sleep(wait_time)
                 wait_time *= 2

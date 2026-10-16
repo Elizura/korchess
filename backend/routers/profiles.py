@@ -21,8 +21,12 @@ from repository.db import (
     get_chess_profiles,
     upsert_chess_profile,
 )
-from services.game_streamer import ChesscomStreamError, LichessStreamError
-from services.import_service import import_chesscom_games, import_lichess_games
+from services.import_service import (
+    UPSTREAM_ERRORS,
+    import_chesscom_games,
+    import_lichess_games,
+    upstream_http_status,
+)
 from services.lichess import fetch_lichess_profile, LichessAPIError
 
 from schemas import (
@@ -89,10 +93,7 @@ async def create_profile(
                 status_code=404,
                 detail=f"User '{username}' not found on {site}."
             )
-        elif e.status_code == 429:
-            raise HTTPException(status_code=429, detail=e.message)
-        else:
-            raise HTTPException(status_code=502, detail=e.message)
+        raise HTTPException(status_code=upstream_http_status(e), detail=e.message)
 
     actual_username = profile_data.get("username", username)
 
@@ -201,12 +202,8 @@ async def import_profile_games(
     try:
         importer = import_lichess_games if site == "lichess" else import_chesscom_games
         import_result = await run_in_threadpool(importer, username, conn)
-    except (LichessStreamError, ChesscomStreamError) as e:
-        if e.status_code == 429:
-            raise HTTPException(status_code=429, detail=e.message)
-        if e.status_code == 404:
-            raise HTTPException(status_code=404, detail=e.message)
-        raise HTTPException(status_code=502, detail=e.message)
+    except UPSTREAM_ERRORS as e:
+        raise HTTPException(status_code=upstream_http_status(e), detail=e.message)
 
     await track_server_event(
         conn,
@@ -248,10 +245,7 @@ async def sync_profile(
                 status_code=404,
                 detail=f"User '{username}' not found on {site}."
             )
-        elif e.status_code == 429:
-            raise HTTPException(status_code=429, detail=e.message)
-        else:
-            raise HTTPException(status_code=502, detail=e.message)
+        raise HTTPException(status_code=upstream_http_status(e), detail=e.message)
 
     actual_username = profile_data.get("username", username)
 
@@ -270,7 +264,10 @@ async def sync_profile(
     try:
         importer = import_lichess_games if site == "lichess" else import_chesscom_games
         sync_result = await run_in_threadpool(importer, actual_username, conn)
-    except (LichessStreamError, ChesscomStreamError):
+    except UPSTREAM_ERRORS as e:
+        # Ratings are already saved; report zero new games rather than failing the
+        # whole sync. last_synced_at is untouched, so the next sync retries them.
+        logger.warning("Game sync for %s/%s failed upstream: %s", site, actual_username, e.message)
         sync_result = ImportResponse(
             username=actual_username,
             imported=0,

@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import logging
 import re
 import time
 from typing import Optional
@@ -12,6 +13,9 @@ import httpx
 
 from services.opening_match import game_to_uci_plies, best_opening_match
 LICHESS_API_BASE = "https://lichess.org/api"
+NETWORK_ERROR_MESSAGE = "Could not reach Lichess. Please try again later."
+
+logger = logging.getLogger(__name__)
 
 
 class LichessAPIError(Exception):
@@ -21,6 +25,16 @@ class LichessAPIError(Exception):
         self.message = message
         self.status_code = status_code
         super().__init__(self.message)
+
+
+def _get(url: str, headers: dict, params: dict | None = None, timeout: float = 30.0) -> httpx.Response:
+    """GET from Lichess. Network failures become a generic 502; details are logged, not returned."""
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            return client.get(url, headers=headers, params=params)
+    except httpx.HTTPError as e:
+        logger.warning("Lichess request to %s failed: %r", url, e)
+        raise LichessAPIError(NETWORK_ERROR_MESSAGE, status_code=502) from e
 
 
 def fetch_lichess_profile(username: str) -> dict:
@@ -37,8 +51,7 @@ def fetch_lichess_profile(username: str) -> dict:
     headers = {"Accept": "application/json"}
 
     def make_request() -> httpx.Response:
-        with httpx.Client(timeout=30.0) as client:
-            return client.get(url, headers=headers)
+        return _get(url, headers, timeout=30.0)
 
     response = make_request()
 
@@ -70,7 +83,11 @@ def fetch_lichess_profile(username: str) -> dict:
             status_code=response.status_code
         )
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as e:
+        logger.warning("Unparseable Lichess profile response for %s: %r", username, e)
+        raise LichessAPIError("Unexpected response from Lichess.", status_code=502) from e
     perfs = data.get("perfs", {})
 
     return {
@@ -104,8 +121,7 @@ def fetch_lichess_pgn(username: str, max_games: int = 1000, since: int | None = 
         params["since"] = since
 
     def make_request() -> httpx.Response:
-        with httpx.Client(timeout=60.0) as client:
-            return client.get(url, headers=headers, params=params)
+        return _get(url, headers, params=params, timeout=60.0)
 
     response = make_request()
 

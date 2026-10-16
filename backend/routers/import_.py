@@ -15,8 +15,13 @@ from fastapi.concurrency import run_in_threadpool
 
 from services.analytics import hash_username, track_server_event
 from repository.db import get_import_history, get_import_status
-from services.game_streamer import ChesscomStreamError, LichessStreamError
-from services.import_service import import_chesscom_games, import_lichess_games, import_key
+from services.import_service import (
+    UPSTREAM_ERRORS,
+    import_chesscom_games,
+    import_key,
+    import_lichess_games,
+    upstream_http_status,
+)
 from repository.redis_client import redis_client as _redis
 from schemas import (
     ImportRequest,
@@ -115,7 +120,7 @@ async def import_games(
         # import doesn't stall every other request on the event loop
         importer = import_lichess_games if site == "lichess" else import_chesscom_games
         import_result = await run_in_threadpool(importer, username, conn, max_games)
-    except (LichessStreamError, ChesscomStreamError) as e:
+    except UPSTREAM_ERRORS as e:
         await track_server_event(
             conn,
             event_name="import.failed",
@@ -130,12 +135,7 @@ async def import_games(
             },
         )
         conn.commit()
-        if e.status_code == 404:
-            raise HTTPException(status_code=404, detail=e.message)
-        elif e.status_code == 429:
-            raise HTTPException(status_code=429, detail=e.message)
-        else:
-            raise HTTPException(status_code=502, detail=e.message)
+        raise HTTPException(status_code=upstream_http_status(e), detail=e.message)
 
     if import_result.imported == 0 and not import_result.is_sync:
         await track_server_event(
