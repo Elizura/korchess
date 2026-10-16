@@ -7,14 +7,23 @@
 
 services:
   backend:
+    restart: unless-stopped
+    environment:
+      - ENV=production
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
+  celery-worker:
+    restart: unless-stopped
+    environment:
+      - ENV=production
+
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -27,6 +36,7 @@ services:
 
   nginx:
     image: nginx:1.25-alpine
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
