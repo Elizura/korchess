@@ -4,10 +4,11 @@
 export const dynamic = "force-dynamic";
 
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
 import { useCountUp } from "@/hooks/useCountUp";
+import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { useAuth } from "@/lib/auth";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 import { API_BASE_URL } from "@/lib/api-url";
@@ -35,6 +36,13 @@ interface OpeningSummary {
 interface OpeningGamesResponse {
   summary: OpeningSummary;
   games: GameDetail[];
+}
+
+interface VariationStats {
+  variation_key: string;
+  variation_label: string;
+  games: number;
+  score_pct: number;
 }
 
 type ColorFilter = "all" | "white" | "black";
@@ -78,7 +86,10 @@ export default function OpeningDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { accessToken } = useAuth();
+  const { getAuthHeaders } = useAuth();
+  // Wait for the session before fetching; a reload used to fire the first
+  // request without a token and stop at "Missing authorization token."
+  const authReady = useRequireAuth();
   const username = params.username as string;
   const openingKey = params.openingKey as string;
   const siteParam = "all";
@@ -97,15 +108,17 @@ export default function OpeningDetailPage() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [variations, setVariations] = useState<VariationStats[]>([]);
 
   const statsVisible = !!summary && !loading;
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
 
-  const authHeaders = useMemo((): Record<string, string> => {
-    return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
-  }, [accessToken]);
+  // Only the latest request may update state, so a slow response for an
+  // earlier filter can't overwrite the current one
+  const requestIdRef = useRef(0);
 
   const fetchGames = async (resetOffset: boolean = false) => {
+    const requestId = ++requestIdRef.current;
     const currentOffset = resetOffset ? 0 : offset;
 
     if (resetOffset) {
@@ -134,8 +147,21 @@ export default function OpeningDetailPage() {
 
       const response = await fetch(
         `${API_BASE_URL}/api/v1/games/${site}/${encodeURIComponent(username)}?${params}`,
-        { headers: withTrackingHeaders(authHeaders) }
+        { headers: withTrackingHeaders(await getAuthHeaders()) }
       );
+      if (requestId !== requestIdRef.current) return;
+
+      // The API answers 404 when no game matches the filters. That's an empty
+      // result, not an error: drop the previous filter's games and stats.
+      if (response.status === 404 && resetOffset) {
+        setGames([]);
+        setOffset(0);
+        setHasMore(false);
+        setSummary((prev) =>
+          prev ? { ...prev, total_games: 0, wins: 0, draws: 0, losses: 0, score_pct: 0 } : null
+        );
+        return;
+      }
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -160,19 +186,55 @@ export default function OpeningDetailPage() {
       }
       setOpeningName(nextOpeningName);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
+      // Don't leave the previous filter's games on screen under the error
+      if (resetOffset) setGames(null);
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
-      setRefreshing(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+        setRefreshing(false);
+      }
     }
   };
 
   useEffect(() => {
-    if (username && openingKey) {
+    if (authReady && username && openingKey) {
       void fetchGames(true);
     }
-  }, [username, openingKey, colorFilter, timeClassFilter, resultFilter, site]);
+  }, [authReady, username, openingKey, colorFilter, timeClassFilter, resultFilter, site]);
+
+  // Variation breakdown for the same color/time filters; each links to its own page
+  useEffect(() => {
+    if (!authReady || !username || !openingKey) return;
+    let cancelled = false;
+
+    const loadVariations = async () => {
+      try {
+        const params = new URLSearchParams({
+          opening_key: openingKey,
+          color: colorFilter,
+          time_class: timeClassFilter,
+        });
+        const response = await fetch(
+          `${API_BASE_URL}/api/v1/openings/${site}/${encodeURIComponent(username)}/variations?${params}`,
+          { headers: withTrackingHeaders(await getAuthHeaders()) }
+        );
+        const data: VariationStats[] = response.ok ? await response.json() : [];
+        if (cancelled) return;
+        // "unknown" groups games without a named variation; it has no page of its own
+        setVariations(data.filter((v) => v.variation_key && v.variation_key !== "unknown" && v.games > 0));
+      } catch {
+        if (!cancelled) setVariations([]);
+      }
+    };
+
+    void loadVariations();
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, username, openingKey, colorFilter, timeClassFilter, site, getAuthHeaders]);
 
   useEffect(() => {
     if (!username || !openingKey) return;
@@ -337,6 +399,42 @@ export default function OpeningDetailPage() {
         </div>
       )}
 
+      {/* Variations */}
+      {!loading && variations.length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-2 text-xs uppercase tracking-wide text-[color:var(--zen-muted)]">
+            Variations
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {variations.map((variation) => {
+              const variationParams = new URLSearchParams({
+                color: colorFilter,
+                time_class: timeClassFilter,
+              });
+              return (
+                <Link
+                  key={variation.variation_key}
+                  href={`/opening/${encodeURIComponent(username)}/${encodeURIComponent(openingKey)}/${encodeURIComponent(variation.variation_key)}?${variationParams}`}
+                  onClick={() =>
+                    trackEvent("opening.view", {
+                      properties: {
+                        source: "opening_variations_list",
+                      },
+                    })
+                  }
+                  className="zen-pill px-3 py-1.5 text-sm text-[color:var(--zen-text)] hover:bg-[color:var(--zen-accent-2)] transition"
+                >
+                  {variation.variation_label}
+                  <span className="ml-2 text-xs tabular-nums text-[color:var(--zen-muted)]">
+                    {variation.games} {variation.games === 1 ? "game" : "games"} · {variation.score_pct.toFixed(0)}%
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {refreshing && games && (
         <p className="mb-3 text-xs text-[color:var(--zen-muted)]">Refreshing...</p>
       )}
@@ -443,7 +541,11 @@ export default function OpeningDetailPage() {
       {/* Empty State */}
       {games && games.length === 0 && !loading && (
         <div className="opening-detail-panel zen-surface-flat p-12 text-center">
-          <p className="text-[color:var(--zen-muted)]">No games found for this opening.</p>
+          <p className="text-[color:var(--zen-muted)]">
+            {colorFilter !== "all" || timeClassFilter !== "all" || resultFilter !== "all"
+              ? "No games match these filters."
+              : "No games found for this opening."}
+          </p>
         </div>
       )}
     </main>

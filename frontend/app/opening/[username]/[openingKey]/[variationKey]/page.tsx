@@ -4,10 +4,11 @@
 export const dynamic = "force-dynamic";
 
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { Site } from "@/components/SourceSelector";
 import { useCountUp } from "@/hooks/useCountUp";
+import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { useAuth } from "@/lib/auth";
 import { trackEvent, withTrackingHeaders } from "@/lib/analytics/client";
 import { API_BASE_URL } from "@/lib/api-url";
@@ -79,7 +80,10 @@ export default function OpeningDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { accessToken } = useAuth();
+  const { getAuthHeaders } = useAuth();
+  // Wait for the session before fetching; a reload used to fire the first
+  // request without a token and stop at "Missing authorization token."
+  const authReady = useRequireAuth();
   const username = params.username as string;
   const openingKey = params.openingKey as string;
   const variationKey = params.variationKey as string;
@@ -103,11 +107,12 @@ export default function OpeningDetailPage() {
   const statsVisible = !!summary && !loading;
   const countScore = useCountUp(summary?.score_pct ?? 0, { enabled: statsVisible, decimals: 1 });
 
-  const authHeaders = useMemo((): Record<string, string> => {
-    return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
-  }, [accessToken]);
+  // Only the latest request may update state, so a slow response for an
+  // earlier filter can't overwrite the current one
+  const requestIdRef = useRef(0);
 
   const fetchGames = async (resetOffset: boolean = false) => {
+    const requestId = ++requestIdRef.current;
     const currentOffset = resetOffset ? 0 : offset;
 
     if (resetOffset) {
@@ -137,8 +142,21 @@ export default function OpeningDetailPage() {
 
       const response = await fetch(
         `${API_BASE_URL}/api/v1/games/${site}/${encodeURIComponent(username)}?${params}`,
-        { headers: withTrackingHeaders(authHeaders) }
+        { headers: withTrackingHeaders(await getAuthHeaders()) }
       );
+      if (requestId !== requestIdRef.current) return;
+
+      // The API answers 404 when no game matches the filters. That's an empty
+      // result, not an error: drop the previous filter's games and stats.
+      if (response.status === 404 && resetOffset) {
+        setGames([]);
+        setOffset(0);
+        setHasMore(false);
+        setSummary((prev) =>
+          prev ? { ...prev, total_games: 0, wins: 0, draws: 0, losses: 0, score_pct: 0 } : null
+        );
+        return;
+      }
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -163,19 +181,24 @@ export default function OpeningDetailPage() {
       }
       setOpeningName(nextOpeningName);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
+      // Don't leave the previous filter's games on screen under the error
+      if (resetOffset) setGames(null);
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
-      setRefreshing(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+        setRefreshing(false);
+      }
     }
   };
 
   useEffect(() => {
-    if (username && openingKey) {
+    if (authReady && username && openingKey) {
       void fetchGames(true);
     }
-  }, [username, openingKey, variationKey, colorFilter, timeClassFilter, resultFilter, site]);
+  }, [authReady, username, openingKey, variationKey, colorFilter, timeClassFilter, resultFilter, site]);
 
   useEffect(() => {
     if (!username || !openingKey || !variationKey) return;
@@ -449,7 +472,11 @@ export default function OpeningDetailPage() {
       {/* Empty State */}
       {games && games.length === 0 && !loading && (
         <div className="opening-detail-panel zen-surface-flat p-12 text-center">
-          <p className="text-[color:var(--zen-muted)]">No games found for this opening.</p>
+          <p className="text-[color:var(--zen-muted)]">
+            {colorFilter !== "all" || timeClassFilter !== "all" || resultFilter !== "all"
+              ? "No games match these filters."
+              : "No games found for this opening."}
+          </p>
         </div>
       )}
     </main>
