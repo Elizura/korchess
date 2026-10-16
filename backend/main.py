@@ -1,5 +1,6 @@
 """FastAPI application for Korchess."""
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -28,18 +29,23 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+IS_PROD = os.environ.get("ENV", "development").lower() == "production"
+
+CORS_ORIGINS = ["https://korchess.com", "https://www.korchess.com"]
+if not IS_PROD:
+    # Plain-http and local dev origins must never be trusted with credentials in production
+    CORS_ORIGINS += [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3005",
         "http://127.0.0.1:3005",
-        "https://korchess.com",
-        "https://www.korchess.com",
         "http://korchess.com",
         "http://www.korchess.com",
-    ],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
