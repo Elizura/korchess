@@ -1,5 +1,11 @@
-const BLOCKED_PREFIXES = ["/signup", "/onboarding"];
+// Auth pages make no sense (or loop) as a post-sign-in destination
+const BLOCKED_PATHS = ["/signup", "/signin", "/verify", "/onboarding"];
 
+/**
+ * Accept only same-origin relative paths ("/foo?bar#baz"). Anything that could
+ * leave the site or run script (absolute URLs, "//host", "/\\host",
+ * "javascript:") is rejected and returns null.
+ */
 export function sanitizeNextPath(rawNext: string | null | undefined): string | null {
   if (!rawNext) {
     return null;
@@ -26,8 +32,8 @@ export function resolvePostAuthNextPath(rawNext: string | null | undefined): str
   if (!safe) {
     return null;
   }
-  const lower = safe.toLowerCase();
-  if (BLOCKED_PREFIXES.some((prefix) => lower === prefix || lower.startsWith(`${prefix}?`))) {
+  const pathname = new URL(safe, "http://localhost").pathname.toLowerCase().replace(/\/+$/, "");
+  if (BLOCKED_PATHS.includes(pathname)) {
     return null;
   }
   return safe;

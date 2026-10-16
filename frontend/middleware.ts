@@ -28,7 +28,8 @@ export function middleware(request: NextRequest) {
 
   if (!refreshToken?.value) {
     const signinUrl = new URL("/signin", request.url);
-    signinUrl.searchParams.set("next", pathname);
+    // Keep the query (e.g. /problems?user=..&theme=..) so the page works after sign-in
+    signinUrl.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
     return NextResponse.redirect(signinUrl);
   }
 

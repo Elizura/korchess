@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Script from "next/script";
 import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics/client";
+import { resolvePostAuthNextPath } from "@/lib/safeNext";
 
 declare global {
   interface Window {
@@ -26,7 +27,11 @@ const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
 export default function SigninPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get("next") || "/dashboard";
+  // `next` comes from the URL, so only ever follow it to a same-origin path
+  const redirectTo = useMemo(
+    () => resolvePostAuthNextPath(searchParams.get("next")) || "/dashboard",
+    [searchParams],
+  );
   const { signin, googleSignin, isAuthenticated } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -34,8 +39,12 @@ export default function SigninPage() {
   const [loading, setLoading] = useState(false);
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const googleCallbackRef = useRef<(credential: string) => void>();
+  // Set while a sign-in request is in flight so the "already signed in"
+  // redirect below doesn't race the handler's own navigation
+  const authInFlightRef = useRef(false);
 
   googleCallbackRef.current = async (credential: string) => {
+    authInFlightRef.current = true;
     setLoading(true);
     setError(null);
     trackEvent("auth.signin.clicked", {
@@ -46,6 +55,7 @@ export default function SigninPage() {
     if (result.ok) {
       window.location.href = redirectTo;
     } else {
+      authInFlightRef.current = false;
       setError(result.error || "Google sign in failed.");
     }
   };
@@ -87,13 +97,19 @@ export default function SigninPage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (isAuthenticated && !authInFlightRef.current) {
+      window.location.replace(redirectTo);
+    }
+  }, [isAuthenticated, redirectTo]);
+
   if (isAuthenticated) {
-    window.location.href = redirectTo;
     return null;
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    authInFlightRef.current = true;
     setError(null);
     setLoading(true);
 
@@ -107,6 +123,7 @@ export default function SigninPage() {
     if (result.ok) {
       window.location.href = redirectTo;
     } else {
+      authInFlightRef.current = false;
       if (result.error?.includes("verify your email")) {
         // Their earlier code has likely expired; the verify page sends a fresh one
         router.push(`/verify?email=${encodeURIComponent(email)}&resend=1`);
