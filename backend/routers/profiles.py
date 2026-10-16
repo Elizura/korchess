@@ -30,18 +30,25 @@ from services.import_service import (
 from services.lichess import fetch_lichess_profile, LichessAPIError
 
 from schemas import (
+    INVALID_USERNAME_MESSAGE,
     ChessProfile,
     ChessProfileCreate,
     ChessProfileListResponse,
     ChessProfileSyncResponse,
     ChessProfileWithImport,
     ImportResponse,
+    is_valid_chess_username,
 )
 from dependencies import get_db
 from auth import get_current_user
 
 router = APIRouter(tags=["profiles"])
 logger = logging.getLogger(__name__)
+
+
+def _require_valid_username(username: str) -> None:
+    if not is_valid_chess_username(username):
+        raise HTTPException(status_code=400, detail=INVALID_USERNAME_MESSAGE)
 
 
 def _db_row_to_profile(row: dict) -> ChessProfile:
@@ -76,6 +83,7 @@ async def create_profile(
 
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
+    _require_valid_username(username)
 
     existing_profile = get_chess_profile(conn, user_id, username, site)
     if existing_profile:
@@ -194,6 +202,7 @@ async def import_profile_games(
 ):
     """Import games for an existing chess profile."""
     user_id = current_user["id"]
+    _require_valid_username(username)
 
     existing_profile = get_chess_profile(conn, user_id, username, site)
     if not existing_profile:
@@ -231,6 +240,7 @@ async def sync_profile(
 ):
     """Sync a chess profile: refresh ratings and import new games."""
     user_id = current_user["id"]
+    _require_valid_username(username)
 
     existing_profile = get_chess_profile(conn, user_id, username, site)
     if not existing_profile:

@@ -11,9 +11,11 @@ import chess.pgn
 import httpx
 import psycopg
 
+from schemas import INVALID_USERNAME_MESSAGE, is_valid_chess_username
 from services.opening_match import game_to_uci_plies, best_opening_match
 
-CHESSCOM_API_BASE = "https://api.chess.com/pub"
+CHESSCOM_API_HOST = "api.chess.com"
+CHESSCOM_API_BASE = f"https://{CHESSCOM_API_HOST}/pub"
 USER_AGENT = "Korchess/1.0 (Chess opening analyzer)"
 NETWORK_ERROR_MESSAGE = "Could not reach Chess.com. Please try again later."
 BAD_RESPONSE_MESSAGE = "Unexpected response from Chess.com."
@@ -21,13 +23,24 @@ BAD_RESPONSE_MESSAGE = "Unexpected response from Chess.com."
 logger = logging.getLogger(__name__)
 
 
+def _is_chesscom_api_url(url: httpx.URL) -> bool:
+    return url.scheme == "https" and url.host == CHESSCOM_API_HOST
+
+
 def _get_follow_redirect(client: httpx.Client, url: str, headers: dict) -> httpx.Response:
-    """GET url; if 301, follow Location header and return that response."""
+    """GET url; if 301 to another Chess.com API URL, follow it and return that response.
+
+    Redirects off the API host are not followed; the 301 is returned as-is.
+    """
     response = client.get(url, headers=headers)
     if response.status_code == 301:
         location = response.headers.get("Location")
         if location:
-            response = client.get(location, headers=headers)
+            target = response.request.url.join(location)
+            if _is_chesscom_api_url(target):
+                response = client.get(target, headers=headers)
+            else:
+                logger.warning("Not following Chess.com redirect off the API host: %s", target)
     return response
 
 
@@ -50,6 +63,8 @@ def fetch_chesscom_profile(username: str) -> dict:
     Raises:
         ChesscomAPIError: If user not found or API error.
     """
+    if not is_valid_chess_username(username):
+        raise ChesscomAPIError(INVALID_USERNAME_MESSAGE, status_code=400)
     headers = {"User-Agent": USER_AGENT}
 
     player_url = f"{CHESSCOM_API_BASE}/player/{username}"
@@ -141,6 +156,8 @@ def fetch_chesscom_games(
         since: Only fetch archives from this month onwards. Games within the
                boundary month are deduplicated by upsert_game at the DB level.
     """
+    if not is_valid_chess_username(username):
+        raise ChesscomAPIError(INVALID_USERNAME_MESSAGE, status_code=400)
     headers = {
         "User-Agent": USER_AGENT,
     }
@@ -195,6 +212,10 @@ def fetch_chesscom_games(
             ym = _archive_url_year_month(archive_url)
             if ym is not None and ym < since_ym:
                 break
+
+        if not _is_chesscom_api_url(httpx.URL(archive_url)):
+            logger.warning("Skipping Chess.com archive URL off the API host: %s", archive_url)
+            continue
         
         # Add delay between requests to respect rate limits
         time.sleep(1)

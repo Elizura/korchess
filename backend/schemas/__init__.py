@@ -1,8 +1,19 @@
 """Pydantic request/response models for the API."""
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+# Lichess usernames are 2-30 letters, digits, "_" or "-"; Chess.com's (3-25 of
+# the same characters) fit inside that. Anything else can't be a real account,
+# and rejecting it keeps usernames safe to put in upstream URL paths.
+CHESS_USERNAME_RE = re.compile(r"[A-Za-z0-9_-]{2,30}")
+INVALID_USERNAME_MESSAGE = "Invalid username. Use 2-30 letters, digits, underscores or hyphens."
+
+
+def is_valid_chess_username(username: str) -> bool:
+    return CHESS_USERNAME_RE.fullmatch(username) is not None
 
 
 class ImportRequest(BaseModel):

@@ -11,6 +11,7 @@ import psycopg
 import chess.pgn
 import httpx
 
+from schemas import INVALID_USERNAME_MESSAGE, is_valid_chess_username
 from services.opening_match import game_to_uci_plies, best_opening_match
 LICHESS_API_BASE = "https://lichess.org/api"
 NETWORK_ERROR_MESSAGE = "Could not reach Lichess. Please try again later."
@@ -47,6 +48,8 @@ def fetch_lichess_profile(username: str) -> dict:
     Raises:
         LichessAPIError: If user not found or API error.
     """
+    if not is_valid_chess_username(username):
+        raise LichessAPIError(INVALID_USERNAME_MESSAGE, status_code=400)
     url = f"{LICHESS_API_BASE}/user/{username}"
     headers = {"Accept": "application/json"}
 
@@ -107,6 +110,8 @@ def fetch_lichess_pgn(username: str, max_games: int = 1000, since: int | None = 
     Args:
         since: Milliseconds since epoch. Only fetch games played after this timestamp.
     """
+    if not is_valid_chess_username(username):
+        raise LichessAPIError(INVALID_USERNAME_MESSAGE, status_code=400)
     url = f"{LICHESS_API_BASE}/games/user/{username}"
     headers = {
         "Accept": "application/x-chess-pgn",

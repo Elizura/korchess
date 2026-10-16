@@ -24,11 +24,13 @@ from services.import_service import (
 )
 from repository.redis_client import redis_client as _redis
 from schemas import (
+    INVALID_USERNAME_MESSAGE,
     ImportRequest,
     ImportResponse,
     ImportHistoryResponse,
     ImportHistoryItem,
     ImportProgressResponse,
+    is_valid_chess_username,
 )
 from dependencies import get_db
 from auth import get_current_user
@@ -96,6 +98,8 @@ async def import_games(
     max_games = request.max_games
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
+    if not is_valid_chess_username(username):
+        raise HTTPException(status_code=400, detail=INVALID_USERNAME_MESSAGE)
 
     username_hash = hash_username(username)
     existing = get_import_status(conn, username, site)
