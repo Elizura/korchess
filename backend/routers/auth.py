@@ -35,6 +35,7 @@ from repository.db import (
     get_user_by_id,
     get_user_by_username,
     mark_email_verified,
+    mark_email_verified_and_clear_password,
     reset_user_password,
     set_email_code,
     store_refresh_token,
@@ -272,7 +273,8 @@ async def verify_email(
 
     user = get_user_by_email(conn, email)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+        # Same answer as a wrong code, so this endpoint can't be used to probe for accounts
+        raise HTTPException(status_code=400, detail="Invalid code.")
 
     if user.get("email_verified"):
         raise HTTPException(status_code=400, detail="Email already verified.")
@@ -409,6 +411,9 @@ async def google_auth(
     email = (id_info.get("email") or "").strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Google account has no email.")
+    # Only a Google-verified address proves the caller owns it
+    if id_info.get("email_verified") not in (True, "true"):
+        raise HTTPException(status_code=400, detail="Google account email is not verified.")
 
     name = id_info.get("name")
     picture = id_info.get("picture")
@@ -416,6 +421,12 @@ async def google_auth(
     user = get_user_by_email(conn, email)
 
     if user:
+        if not user.get("email_verified"):
+            # Nobody has proven ownership of this address yet, so whoever set the
+            # password may not be the owner. Google just proved it: drop that
+            # password and any sessions so a pre-registered account can't be hijacked.
+            mark_email_verified_and_clear_password(conn, user["id"])
+            delete_user_refresh_tokens(conn, user["id"])
         access_token = _issue_tokens(response, conn, user["id"], email)
         conn.commit()
         return {"access_token": access_token}

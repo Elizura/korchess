@@ -636,6 +636,29 @@ def mark_email_verified(conn: psycopg.Connection, user_id: str) -> None:
     )
 
 
+def mark_email_verified_and_clear_password(conn: psycopg.Connection, user_id: str) -> None:
+    """Verify an email through a trusted provider and drop the unproven password.
+
+    Used when Google proves ownership of an address whose account was never
+    verified: the existing password was set by someone who never proved they
+    own the email, so it must not keep working.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET email_verified = TRUE,
+            password_hash = NULL,
+            verification_code = NULL,
+            verification_code_expires_at = NULL,
+            verification_attempts = 0,
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (user_id,),
+    )
+
+
 def set_email_code(
     conn: psycopg.Connection,
     user_id: str,
