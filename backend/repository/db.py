@@ -1070,7 +1070,7 @@ def upsert_import_status(
     skipped: int,
     max_games: int,
     imported_at: str,
-    last_synced_at: str | None = None,
+    last_synced_at: datetime | str | None = None,
 ) -> None:
     """Record import status for a username/site."""
     cursor = conn.cursor()
@@ -1090,6 +1090,27 @@ def upsert_import_status(
         """,
         (canonical_username, site, imported, skipped, max_games, imported_at, last_synced_at),
     )
+
+
+def get_existing_game_ids(
+    conn: psycopg.Connection,
+    username: str,
+    site: str,
+    site_game_ids: list[str],
+) -> set[str]:
+    """Return which of these site_game_ids are already stored for username/site."""
+    if not site_game_ids:
+        return set()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT site_game_id
+        FROM games
+        WHERE username = %s AND site = %s AND site_game_id = ANY(%s)
+        """,
+        (username.strip().lower(), site, list(site_game_ids)),
+    )
+    return {row["site_game_id"] for row in cursor.fetchall()}
 
 
 def _opening_name_value_sql(game_alias: str = "g") -> str:
@@ -2467,6 +2488,25 @@ def upsert_game_quick_scan(
         (username.strip().lower(), site, site_game_id,
          problems_json, summary_json),
     )
+
+
+def has_game_quick_scan(
+    conn: psycopg.Connection,
+    username: str,
+    site: str,
+    site_game_id: str,
+) -> bool:
+    """Whether this game already has stored quick-scan results."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT 1
+        FROM game_quick_scans
+        WHERE username = %s AND site = %s AND site_game_id = %s
+        """,
+        (username.strip().lower(), site, site_game_id),
+    )
+    return cursor.fetchone() is not None
 
 
 def get_scanned_game_ids(

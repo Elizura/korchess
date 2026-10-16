@@ -8,13 +8,13 @@ and the authenticated profiles router delegate to functions here.
 import io
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import chess.pgn
 import psycopg
 
 from services.chesscom import ChesscomAPIError, fetch_chesscom_games, parse_chesscom_game
-from repository.db import get_import_status
+from repository.db import get_existing_game_ids, get_import_status, upsert_import_status
 from services.lichess import LichessAPIError, parse_pgn_games, fetch_lichess_pgn
 from services.opening_match import best_opening_match, game_to_uci_plies
 from repository.redis_client import redis_client as _redis
@@ -47,9 +47,10 @@ def parse_synced_at(raw: str | None) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw)
+        dt = datetime.fromisoformat(raw)
     except (ValueError, TypeError):
         return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def parse_single_lichess_pgn(
@@ -101,12 +102,84 @@ def parse_single_chesscom_json(
     return game_data
 
 
+def parse_played_at(raw: str | None) -> datetime | None:
+    """Parse a stored played_at ("2024-03-05T12:34:56Z", ISO with offset, or a bare date) as UTC."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _enqueue_and_record(
+    conn: psycopg.Connection,
+    username: str,
+    site: str,
+    games: list[dict],
+    parse_skipped: int,
+    max_games: int,
+    is_sync: bool,
+    last_synced_at: datetime | None,
+) -> ImportResponse:
+    """Enqueue the fetched games that aren't stored yet, then record the import.
+
+    last_synced_at advances to the newest *fetched* game's timestamp, not now():
+    the next sync then starts where the fetched data ends, so games still in
+    progress during this fetch (Lichess filters `since` by game start) aren't
+    skipped. The boundary game is fetched again and dropped here as known.
+    """
+    canonical = username.strip().lower()
+    known_ids = get_existing_game_ids(conn, canonical, site, [g["site_game_id"] for g in games])
+    new_games = [g for g in games if g["site_game_id"] not in known_ids]
+
+    if new_games:
+        _redis.set(import_key(canonical, site, "total"), len(new_games), ex=3600)
+        _redis.set(import_key(canonical, site, "status"), "processing", ex=3600)
+
+        for game_data in new_games:
+            process_game.delay(game_data, username, site)
+
+        import_meta = {
+            "max_games": max_games,
+            "is_sync": is_sync,
+            "parse_skipped": parse_skipped,
+        }
+        _redis.set(import_key(canonical, site, "meta"), json.dumps(import_meta), ex=3600)
+    else:
+        _redis.delete(import_key(canonical, site, "status"))
+
+    played = [dt for dt in (parse_played_at(g.get("played_at")) for g in games) if dt]
+    synced_through = max(played + ([last_synced_at] if last_synced_at else []), default=None)
+    if synced_through is not None:
+        upsert_import_status(
+            conn,
+            username,
+            site,
+            imported=len(new_games),
+            skipped=parse_skipped,
+            max_games=max_games,
+            imported_at=datetime.now(timezone.utc).isoformat(),
+            last_synced_at=synced_through,
+        )
+        # The games are already queued; keep the record even if the caller rolls back.
+        conn.commit()
+
+    return ImportResponse(
+        username=username,
+        imported=len(new_games),
+        skipped=parse_skipped,
+        is_sync=is_sync,
+    )
+
+
 def import_lichess_games(
     username: str,
     conn: psycopg.Connection,
     max_games: int = 150,
 ) -> ImportResponse:
-    """Fetch Lichess games and enqueue each into the Celery queue.
+    """Fetch Lichess games and enqueue each new one into the Celery queue.
 
     Works for both anonymous and authenticated callers — auth context is not
     needed here; it belongs in the calling router for analytics/profile checks.
@@ -114,9 +187,8 @@ def import_lichess_games(
     """
     canonical = username.strip().lower()
     existing = get_import_status(conn, username, "lichess")
-    existing_games = int(existing.get("total_games") or 0)
+    is_sync = int(existing.get("total_games") or 0) > 0
     last_synced_at = parse_synced_at(existing.get("last_synced_at"))
-    is_sync = existing_games > 0 and last_synced_at is not None
 
     since_ms: int | None = None
     if is_sync and last_synced_at is not None:
@@ -129,30 +201,8 @@ def import_lichess_games(
     pgn_text = fetch_lichess_pgn(username, max_games, since=since_ms)
     parsed_games, parse_skipped = parse_pgn_games(pgn_text, username, conn)
 
-    if not parsed_games:
-        _redis.delete(import_key(canonical, "lichess", "status"))
-        return ImportResponse(username=username, imported=0, skipped=parse_skipped, is_sync=is_sync)
-
-    _redis.set(import_key(canonical, "lichess", "total"), len(parsed_games), ex=3600)
-    _redis.set(import_key(canonical, "lichess", "status"), "processing", ex=3600)
-
-    total_enqueued = 0
-    for game_data in parsed_games:
-        process_game.delay(game_data, username, "lichess")
-        total_enqueued += 1
-
-    import_meta = {
-        "max_games": max_games,
-        "is_sync": is_sync,
-        "parse_skipped": parse_skipped,
-    }
-    _redis.set(import_key(canonical, "lichess", "meta"), json.dumps(import_meta), ex=3600)
-
-    return ImportResponse(
-        username=username,
-        imported=total_enqueued,
-        skipped=parse_skipped,
-        is_sync=is_sync,
+    return _enqueue_and_record(
+        conn, username, "lichess", parsed_games, parse_skipped, max_games, is_sync, last_synced_at,
     )
 
 
@@ -161,7 +211,7 @@ def import_chesscom_games(
     conn: psycopg.Connection,
     max_games: int = 150,
 ) -> ImportResponse:
-    """Fetch Chess.com games and enqueue each into the Celery queue.
+    """Fetch Chess.com games and enqueue each new one into the Celery queue.
 
     Works for both anonymous and authenticated callers — auth context is not
     needed here; it belongs in the calling router for analytics/profile checks.
@@ -169,9 +219,8 @@ def import_chesscom_games(
     """
     canonical = username.strip().lower()
     existing = get_import_status(conn, username, "chesscom")
-    existing_games = int(existing.get("total_games") or 0)
+    is_sync = int(existing.get("total_games") or 0) > 0
     last_synced_at = parse_synced_at(existing.get("last_synced_at"))
-    is_sync = existing_games > 0 and last_synced_at is not None
 
     since_dt: datetime | None = last_synced_at if is_sync else None
 
@@ -181,28 +230,6 @@ def import_chesscom_games(
 
     games = fetch_chesscom_games(username, max_games, conn=conn, since=since_dt)
 
-    if not games:
-        _redis.delete(import_key(canonical, "chesscom", "status"))
-        return ImportResponse(username=username, imported=0, skipped=0, is_sync=is_sync)
-
-    _redis.set(import_key(canonical, "chesscom", "total"), len(games), ex=3600)
-    _redis.set(import_key(canonical, "chesscom", "status"), "processing", ex=3600)
-
-    total_enqueued = 0
-    for game_data in games:
-        process_game.delay(game_data, username, "chesscom")
-        total_enqueued += 1
-
-    import_meta = {
-        "max_games": max_games,
-        "is_sync": is_sync,
-        "parse_skipped": 0,
-    }
-    _redis.set(import_key(canonical, "chesscom", "meta"), json.dumps(import_meta), ex=3600)
-
-    return ImportResponse(
-        username=username,
-        imported=total_enqueued,
-        skipped=0,
-        is_sync=is_sync,
+    return _enqueue_and_record(
+        conn, username, "chesscom", games, 0, max_games, is_sync, last_synced_at,
     )

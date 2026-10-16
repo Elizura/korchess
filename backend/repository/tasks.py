@@ -12,6 +12,7 @@ from repository.db import (
     get_insight_game_features,
     get_quick_scan_results,
     get_scanned_game_ids,
+    has_game_quick_scan,
     update_insight_job,
     update_scan_job,
     upsert_game_quick_scan,
@@ -72,20 +73,24 @@ def process_game(self, game_data: dict, username: str, site: str) -> dict:
         logger.exception("Light feature extraction failed for %s/%s", site, site_game_id)
 
     try:
-        scan_result = run_quick_scan_single(game_data, canonical)
-        problems_str = json.dumps(scan_result)
-        summary_str = json.dumps(scan_result.get("summary", {}))
-
+        # Stockfish is the expensive part; a re-imported game keeps its scan.
         with get_connection() as conn:
-            upsert_game_quick_scan(
-                conn,
-                username=canonical,
-                site=site,
-                site_game_id=site_game_id,
-                problems_json=problems_str,
-                summary_json=summary_str,
-            )
-            conn.commit()
+            already_scanned = has_game_quick_scan(conn, canonical, site, site_game_id)
+        if not already_scanned:
+            scan_result = run_quick_scan_single(game_data, canonical)
+            problems_str = json.dumps(scan_result)
+            summary_str = json.dumps(scan_result.get("summary", {}))
+
+            with get_connection() as conn:
+                upsert_game_quick_scan(
+                    conn,
+                    username=canonical,
+                    site=site,
+                    site_game_id=site_game_id,
+                    problems_json=problems_str,
+                    summary_json=summary_str,
+                )
+                conn.commit()
     except Exception:
         logger.exception("Quick scan failed for %s/%s", site, site_game_id)
 
