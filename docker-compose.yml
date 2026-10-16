@@ -6,9 +6,11 @@ services:
     expose:
       - "8000"
     volumes:
-      - ${LICHESS_EVAL_DB_HOST_PATH}:/app/lmdb_cache:ro
+      - ${LICHESS_EVAL_DB_HOST_PATH:-./lmdb_cache}:/app/lmdb_cache:ro
     env_file:
       - .env
+    environment:
+      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
 
   celery-worker:
     build:
@@ -16,11 +18,12 @@ services:
       dockerfile: Dockerfile
     command: ["celery", "-A", "repository.celery_app:app", "worker", "--loglevel=info", "--concurrency=3"]
     volumes:
-      - ${LICHESS_EVAL_DB_HOST_PATH}:/app/lmdb_cache:ro
+      - ${LICHESS_EVAL_DB_HOST_PATH:-./lmdb_cache}:/app/lmdb_cache:ro
     env_file:
       - .env
     environment:
       - ENGINE_POOL_SIZE=3
+      - LICHESS_EVAL_DB_PATH=/app/lmdb_cache
     depends_on:
       - backend
 

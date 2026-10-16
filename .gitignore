@@ -67,3 +67,9 @@ ENV/
 
 
 backend/lmdb_cache
+
+# Default host directory for the optional Lichess eval LMDB
+# (LICHESS_EVAL_DB_HOST_PATH). Only the placeholder is tracked so the
+# compose bind mount always has a source.
+/lmdb_cache/*
+!/lmdb_cache/.gitkeep
