@@ -13,7 +13,7 @@ For connection utilities, see db_connection.py.
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -23,6 +23,13 @@ from repository.db_connection import (
     get_connection,
     RAW_OPENING_KEY_PREFIX,
 )
+
+
+# Background jobs whose row hasn't changed for this long are treated as dead
+# (worker restarted, task lost) so a new run can be scheduled.
+ANALYSIS_JOB_STALE_AFTER = timedelta(minutes=15)
+BACKGROUND_JOB_STALE_AFTER = timedelta(minutes=30)
+STALE_JOB_ERROR = "Job timed out without finishing."
 
 
 def init_db() -> None:
@@ -1811,15 +1818,28 @@ def get_analysis_job(
     multipv: int,
     site: str,
 ) -> dict | None:
-    """Get an analysis job by game/params. Returns None if not found."""
+    """Get an in-flight analysis job by game/params. Returns None if not found.
+
+    A job older than ANALYSIS_JOB_STALE_AFTER is deleted instead of returned:
+    its task died without cleaning up, and it would otherwise block reruns.
+    """
+    params = (username.strip().lower(), site_game_id, depth, multipv, site)
     cursor = conn.cursor()
+    cursor.execute(
+        """
+        DELETE FROM analysis_jobs
+        WHERE username = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
+          AND created_at::timestamptz < %s
+        """,
+        (*params, datetime.now(timezone.utc) - ANALYSIS_JOB_STALE_AFTER),
+    )
     cursor.execute(
         """
         SELECT id, site, site_game_id, username, depth, multipv, created_at
         FROM analysis_jobs
         WHERE username = %s AND site_game_id = %s AND depth = %s AND multipv = %s AND site = %s
         """,
-        (username.strip().lower(), site_game_id, depth, multipv, site),
+        params,
     )
     row = cursor.fetchone()
     if not row:
@@ -1831,6 +1851,17 @@ def delete_analysis_job(conn: psycopg.Connection, job_id: str) -> None:
     """Delete an analysis job by ID."""
     cursor = conn.cursor()
     cursor.execute("DELETE FROM analysis_jobs WHERE id = %s", (job_id,))
+
+
+def clear_analysis_jobs(conn: psycopg.Connection) -> int:
+    """Delete every analysis job row. Returns how many were removed.
+
+    Deep analysis runs inside the API process, so at startup any remaining
+    row belongs to a task that died with the previous process.
+    """
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM analysis_jobs")
+    return cursor.rowcount
 
 
 def count_analysis_jobs(conn: psycopg.Connection) -> int:
@@ -1883,8 +1914,27 @@ def get_active_insight_job(
     username: str,
     site: str = "all",
 ) -> dict | None:
-    """Get the latest active insights job for this username/site."""
+    """Get the latest active insights job for this username/site.
+
+    Active jobs not updated for BACKGROUND_JOB_STALE_AFTER are marked failed
+    first, so a lost task can't block new runs forever.
+    """
+    username = username.strip().lower()
+    now = datetime.now(timezone.utc)
     cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE insight_jobs
+        SET status = 'failed', stage = 'failed', error = %s,
+            finished_at = %s, updated_at = %s
+        WHERE username = %s
+          AND site = %s
+          AND status IN ('queued', 'running')
+          AND updated_at::timestamptz < %s
+        """,
+        (STALE_JOB_ERROR, now.isoformat(), now.isoformat(), username, site,
+         now - BACKGROUND_JOB_STALE_AFTER),
+    )
     cursor.execute(
         """
         SELECT id, status, stage, reason, error, feature_version, created_at,
@@ -1896,7 +1946,7 @@ def get_active_insight_job(
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (username.strip().lower(), site),
+        (username, site),
     )
     row = cursor.fetchone()
     if not row:
@@ -2264,8 +2314,25 @@ def get_active_scan_job(
     username: str,
     site: str = "all",
 ) -> dict | None:
-    """Get the latest active scan job for a username/site."""
+    """Get the latest active scan job for a username/site.
+
+    Active jobs not updated for BACKGROUND_JOB_STALE_AFTER are marked failed
+    first, so a lost task can't block new scans forever.
+    """
+    username = username.strip().lower()
+    now = datetime.now(timezone.utc)
     cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE scan_jobs
+        SET status = 'failed', error = %s, finished_at = %s, updated_at = %s
+        WHERE username = %s AND site = %s
+          AND status IN ('queued', 'running')
+          AND updated_at::timestamptz < %s
+        """,
+        (STALE_JOB_ERROR, now.isoformat(), now.isoformat(), username, site,
+         now - BACKGROUND_JOB_STALE_AFTER),
+    )
     cursor.execute(
         """
         SELECT id, status, total_games, games_done, error,
@@ -2276,7 +2343,7 @@ def get_active_scan_job(
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (username.strip().lower(), site),
+        (username, site),
     )
     row = cursor.fetchone()
     return dict(row) if row else None

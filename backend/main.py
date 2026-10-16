@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from repository.db import init_db
-from repository.db_connection import close_pool, init_pool
+from repository.db import clear_analysis_jobs, init_db
+from repository.db_connection import close_pool, get_connection, init_pool
 from services.full_analysis import init_engine_pool, shutdown_engine_pool
 from lmdb_magic.reader import close as close_lmdb
 from routers import (
@@ -56,6 +56,14 @@ app.add_middleware(
 async def startup_event():
     init_pool()
     init_db()
+    # Deep analysis runs as an in-process task (single uvicorn process), so any
+    # job row still here was orphaned by the previous process and would
+    # otherwise report "processing" forever.
+    with get_connection() as conn:
+        cleared = clear_analysis_jobs(conn)
+        conn.commit()
+    if cleared:
+        print(f"[Startup] Cleared {cleared} orphaned analysis job(s)")
     init_engine_pool()
 
 

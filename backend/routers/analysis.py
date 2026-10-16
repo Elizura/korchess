@@ -45,6 +45,8 @@ router = APIRouter(tags=["analysis"])
 MAX_CONCURRENT_ANALYSES = 2
 active_analysis_count = 0
 active_analysis_lock = asyncio.Lock()
+# The event loop only keeps weak references to tasks; hold them until they finish
+_analysis_tasks: set[asyncio.Task] = set()
 FULL_ANALYSIS_TIME_MS = max(200, int(os.environ.get("FULL_ANALYSIS_TIME_MS", "350")))
 AI_INSIGHTS_DAILY_LIMIT = max(0, int(os.environ.get("AI_INSIGHTS_DAILY_LIMIT", "2")))
 AI_INSIGHTS_UNLIMITED_EMAILS = {
@@ -397,79 +399,86 @@ async def run_full_analysis_endpoint(
         active_analysis_count += 1
         print(f"[Analysis] Starting new analysis. Active count: {active_analysis_count}")
 
-    game = get_game_by_id(conn, username, game_id, site)
-    if not game:
-        async with active_analysis_lock:
-            active_analysis_count -= 1
+    # Once the background task exists it owns the slot and frees it when done;
+    # until then, any early return or error here must free it instead.
+    task_started = False
+    try:
+        game = get_game_by_id(conn, username, game_id, site)
+        if not game:
+            await track_server_event(
+                conn,
+                event_name="analysis.deep.failed",
+                user_id=actor_user_id,
+                request=request,
+                properties={
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "username": username_hash,
+                    "reason": "Game not found",
+                },
+            )
+            conn.commit()
+            raise HTTPException(status_code=404, detail="Game not found")
+
+        if not game.get("pgn"):
+            await track_server_event(
+                conn,
+                event_name="analysis.deep.failed",
+                user_id=actor_user_id,
+                request=request,
+                properties={
+                    "site": site,
+                    "depth": depth,
+                    "multipv": multipv,
+                    "username": username_hash,
+                    "reason": "Game has no PGN",
+                },
+            )
+            conn.commit()
+            raise HTTPException(status_code=400, detail="Game has no PGN")
+
+        job_id = str(uuid.uuid4())
+        create_analysis_job(conn, job_id, username, game_id, depth, multipv, site)
         await track_server_event(
             conn,
-            event_name="analysis.deep.failed",
+            event_name="analysis.deep.started",
             user_id=actor_user_id,
             request=request,
             properties={
+                "job_id": job_id,
                 "site": site,
                 "depth": depth,
                 "multipv": multipv,
+                "force": force,
                 "username": username_hash,
-                "reason": "Game not found",
             },
         )
         conn.commit()
-        raise HTTPException(status_code=404, detail="Game not found")
 
-    if not game.get("pgn"):
-        async with active_analysis_lock:
-            active_analysis_count -= 1
-        await track_server_event(
-            conn,
-            event_name="analysis.deep.failed",
-            user_id=actor_user_id,
-            request=request,
-            properties={
-                "site": site,
-                "depth": depth,
-                "multipv": multipv,
-                "username": username_hash,
-                "reason": "Game has no PGN",
-            },
+        task = asyncio.create_task(
+            run_analysis_background(
+                job_id,
+                username,
+                game_id,
+                game["pgn"],
+                game.get("opening_ply_count"),
+                depth,
+                multipv,
+                site,
+                analytics_user_id=actor_user_id,
+                analytics_anonymous_id=request.headers.get("x-anonymous-id") if request else None,
+                analytics_session_id=request.headers.get("x-session-id") if request else None,
+                username_hash=username_hash,
+            )
         )
-        conn.commit()
-        raise HTTPException(status_code=400, detail="Game has no PGN")
-
-    job_id = str(uuid.uuid4())
-    create_analysis_job(conn, job_id, username, game_id, depth, multipv, site)
-    await track_server_event(
-        conn,
-        event_name="analysis.deep.started",
-        user_id=actor_user_id,
-        request=request,
-        properties={
-            "job_id": job_id,
-            "site": site,
-            "depth": depth,
-            "multipv": multipv,
-            "force": force,
-            "username": username_hash,
-        },
-    )
-    conn.commit()
-
-    asyncio.create_task(
-        run_analysis_background(
-            job_id,
-            username,
-            game_id,
-            game["pgn"],
-            game.get("opening_ply_count"),
-            depth,
-            multipv,
-            site,
-            analytics_user_id=actor_user_id,
-            analytics_anonymous_id=request.headers.get("x-anonymous-id") if request else None,
-            analytics_session_id=request.headers.get("x-session-id") if request else None,
-            username_hash=username_hash,
-        )
-    )
+        task_started = True
+        _analysis_tasks.add(task)
+        task.add_done_callback(_analysis_tasks.discard)
+    finally:
+        if not task_started:
+            async with active_analysis_lock:
+                active_analysis_count -= 1
 
     return FullAnalysisResponse(status="processing")
 
