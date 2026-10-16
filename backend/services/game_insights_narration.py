@@ -695,7 +695,9 @@ def _gemini_request(system_prompt: str, user_prompt: str, game_id: str) -> tuple
     if not GEMINI_API_KEY:
         return None, "missing_api_key"
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    # The key goes in a header, never the URL: httpx error messages include the URL and get logged
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"x-goog-api-key": GEMINI_API_KEY}
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -710,7 +712,7 @@ def _gemini_request(system_prompt: str, user_prompt: str, game_id: str) -> tuple
             with httpx.Client(timeout=GEMINI_TIMEOUT_S) as client:
                 for attempt in range(2):
                     _respect_rate_limit()
-                    response = client.post(url, json=payload)
+                    response = client.post(url, headers=headers, json=payload)
                     if response.status_code == 429 and attempt == 0:
                         retry_after_s = _parse_retry_after_seconds(response.headers.get("Retry-After"))
                         LOGGER.warning(
