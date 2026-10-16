@@ -14,6 +14,7 @@ import MoveList from "@/components/analysis/MoveList";
 import EngineLines from "@/components/analysis/EngineLines";
 import BoardControls from "@/components/analysis/BoardControls";
 import { useLocalEngine } from "@/hooks/useLocalEngine";
+import { useRequireAuth } from "@/hooks/useRequireAuth";
 import {
   MoveTree,
   ReviewTag,
@@ -31,6 +32,13 @@ import {
 
 const LOCAL_ENGINE_DEPTH = 18;
 const LOCAL_ENGINE_MULTIPV = 1;
+
+// Deep-analysis status polling: every 2s, give up after 10 minutes or after
+// a few network failures in a row
+const ANALYSIS_POLL_INTERVAL_MS = 2000;
+const ANALYSIS_POLL_MAX_ATTEMPTS = 300;
+const ANALYSIS_POLL_MAX_NETWORK_FAILURES = 5;
+const BOARD_MAX_WIDTH = 600;
 
 interface GameData {
   username: string;
@@ -615,7 +623,10 @@ export default function GameAnalyzerPage() {
   const username = decodeURIComponent(params.username as string);
   const gameId = params.gameId as string;
   const initialPly = searchParams.get("ply") ? parseInt(searchParams.get("ply")!, 10) : null;
-  const { accessToken } = useAuth();
+  const { accessToken, getAuthHeaders } = useAuth();
+  // Hold the first request until the session is restored; a hard load used
+  // to flash a 401 error and then refetch
+  const authReady = useRequireAuth();
 
   const authHeaders = useMemo((): Record<string, string> => {
     if (!accessToken) {
@@ -654,6 +665,27 @@ export default function GameAnalyzerPage() {
   const [showArrows, setShowArrows] = useState(true);
   const [multiPv, setMultiPv] = useState(3);
   const [depth, setDepth] = useState(18);
+
+  // The board follows the width of its column (capped) instead of a fixed
+  // 600px that overflowed phones and overlapped the panel on mid-size screens
+  const [boardWidth, setBoardWidth] = useState(0);
+  const boardObserverRef = useRef<ResizeObserver | null>(null);
+  const boardContainerRef = useCallback((node: HTMLDivElement | null) => {
+    boardObserverRef.current?.disconnect();
+    boardObserverRef.current = null;
+    if (!node) return;
+
+    const measure = () => {
+      const width = Math.floor(Math.min(node.clientWidth, BOARD_MAX_WIDTH));
+      setBoardWidth((prev) => (prev === width ? prev : width));
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(node);
+      boardObserverRef.current = observer;
+    }
+  }, []);
 
   const {
     currentResult: localEngineResult,
@@ -1515,7 +1547,7 @@ export default function GameAnalyzerPage() {
         // Fetch game data
         const gameRes = await fetch(
           `${API_BASE_URL}/api/v1/game/${site}/${encodeURIComponent(username)}/${gameId}`,
-          { headers: withTrackingHeaders(authHeaders) }
+          { headers: withTrackingHeaders(await getAuthHeaders()) }
         );
         if (!gameRes.ok) {
           const data = await gameRes.json().catch(() => ({}));
@@ -1578,10 +1610,12 @@ export default function GameAnalyzerPage() {
       }
     };
 
-    if (username && gameId) {
+    if (authReady && username && gameId) {
       fetchData();
     }
-  }, [site, username, gameId, authHeaders]);
+    // getAuthHeaders always reads the current token, so a token renewal
+    // doesn't reload the game and throw away the analysis state
+  }, [site, username, gameId, authReady, getAuthHeaders]);
 
   // Stop polling
   const stopPolling = useCallback(() => {
@@ -1699,11 +1733,50 @@ export default function GameAnalyzerPage() {
     }
     
     console.log("[Analysis] Starting polling...");
-    pollInterval.current = setInterval(async () => {
+    let attempts = 0;
+    let networkFailures = 0;
+
+    const giveUp = (message: string) => {
+      stopPolling();
+      setAnalyzing(false);
+      setAnalysisStatus(analysisData ? "completed" : "missing");
+      analysisStartTime.current = null;
+      setError(message);
+      trackEvent("analysis.deep.failed", {
+        properties: {
+          reason: message,
+        },
+      });
+    };
+
+    const intervalId = setInterval(async () => {
+      attempts++;
+      if (attempts > ANALYSIS_POLL_MAX_ATTEMPTS) {
+        giveUp("Analysis is taking longer than expected. Please try again later.");
+        return;
+      }
       try {
-        const res = await fetch(buildFullAnalysisUrl(), { headers: withTrackingHeaders(authHeaders) });
+        const res = await fetch(buildFullAnalysisUrl(), {
+          headers: withTrackingHeaders(await getAuthHeaders()),
+        });
+        // Stopped (or restarted) while this request was in flight
+        if (pollInterval.current !== intervalId) return;
+
+        if (!res.ok) {
+          // 401/404/500 won't fix themselves by asking again every 2s
+          const body = await res.json().catch(() => ({}));
+          giveUp(
+            typeof body.detail === "string"
+              ? body.detail
+              : `Couldn't check the analysis status (error ${res.status}). Please try again.`
+          );
+          return;
+        }
+
+        networkFailures = 0;
         const data: FullAnalysisResponse = await res.json();
-        
+        if (pollInterval.current !== intervalId) return;
+
         if (data.status === "completed") {
           trackEvent("analysis.deep.completed", {
             properties: {
@@ -1722,11 +1795,17 @@ export default function GameAnalyzerPage() {
         }
         // If still "processing", continue polling
       } catch (err) {
-        // Network error - keep polling
+        if (pollInterval.current !== intervalId) return;
+        // Network error - tolerate a short blip, not an outage
         console.error("[Analysis] Polling error:", err);
+        networkFailures++;
+        if (networkFailures >= ANALYSIS_POLL_MAX_NETWORK_FAILURES) {
+          giveUp("Lost connection while waiting for the analysis. Please try again.");
+        }
       }
-    }, 2000); // Poll every 2 seconds
-  }, [analysisData, stopPolling, handleAnalysisReady, authHeaders, buildFullAnalysisUrl]);
+    }, ANALYSIS_POLL_INTERVAL_MS);
+    pollInterval.current = intervalId;
+  }, [analysisData, stopPolling, handleAnalysisReady, getAuthHeaders, buildFullAnalysisUrl]);
 
   // Run full analysis (starts background job and begins polling)
   const runAnalysis = useCallback(async (force = false) => {
@@ -2062,10 +2141,10 @@ export default function GameAnalyzerPage() {
           <div className="zen-surface p-8 text-center">
             <p className="text-[color:var(--zen-danger)] mb-4">{error}</p>
             <Link
-              href="/"
+              href={username ? `/dashboard?user=${encodeURIComponent(username)}` : "/dashboard"}
               className="inline-block zen-pill px-4 py-2 text-sm hover:bg-[color:var(--zen-accent-2)] transition"
             >
-              ← Back to home
+              ← Back to dashboard
             </Link>
           </div>
         </div>
@@ -2079,7 +2158,7 @@ export default function GameAnalyzerPage() {
         {/* Main layout */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.24fr)_minmax(0,1fr)]">
           {/* Left: Board + Eval Bar */}
-          <div className="lg:min-w-0">
+          <div className="min-w-0">
             <div className="zen-surface zen-surface-no-backdrop p-4">
 	              <div
 	                className="mb-3 rounded-xl px-3 py-2"
@@ -2101,24 +2180,32 @@ export default function GameAnalyzerPage() {
 	                </div>
 	              </div>
 
-              <div className="flex gap-3">
+              <div className="flex gap-2 sm:gap-3 max-w-[642px] mx-auto lg:mx-0">
                 {/* Eval bar */}
-                <EvalBar eval={currentEval} orientation={orientation} height={600} />
+                <div className="shrink-0 w-[30px]">
+                  {boardWidth > 0 && (
+                    <EvalBar eval={currentEval} orientation={orientation} height={boardWidth} />
+                  )}
+                </div>
 
                 {/* Board */}
-                <div className="flex-1">
-                  <div className="relative inline-block">
-                    <AnalysisBoard
-                      fen={currentFen}
-                      orientation={orientation}
-                      onMove={reviewMode ? undefined : handleUserMove}
-                      bestMove={showArrows ? bestMove : null}
-                      lastMove={lastMove}
-                      showArrows={showArrows}
-                      showCoordinates={showCoordinates}
-                      boardWidth={600}
-                    />
-                  </div>
+                <div ref={boardContainerRef} className="flex-1 min-w-0">
+                  {boardWidth > 0 ? (
+                    <div className="relative inline-block">
+                      <AnalysisBoard
+                        fen={currentFen}
+                        orientation={orientation}
+                        onMove={reviewMode ? undefined : handleUserMove}
+                        bestMove={showArrows ? bestMove : null}
+                        lastMove={lastMove}
+                        showArrows={showArrows}
+                        showCoordinates={showCoordinates}
+                        boardWidth={boardWidth}
+                      />
+                    </div>
+                  ) : (
+                    <div className="aspect-square w-full max-w-[600px]" />
+                  )}
                 </div>
               </div>
 
@@ -2168,7 +2255,7 @@ export default function GameAnalyzerPage() {
           </div>
 
           {/* Right: Analysis panels */}
-          <div className="lg:min-w-0">
+          <div className="min-w-0">
             <div className="zen-surface p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
