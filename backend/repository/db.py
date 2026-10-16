@@ -881,6 +881,20 @@ def get_chess_profile(
     return dict(row) if row else None
 
 
+def user_has_chess_profile(
+    conn: psycopg.Connection, user_id: str, chess_username: str, site: str = "all"
+) -> bool:
+    """Whether the user saved a profile for this username (on any site when site is "all")."""
+    cursor = conn.cursor()
+    query = "SELECT 1 FROM chess_profiles WHERE user_id = %s AND chess_username = %s"
+    params: list = [user_id, chess_username.strip().lower()]
+    if site != "all":
+        query += " AND site = %s"
+        params.append(site)
+    cursor.execute(query + " LIMIT 1", params)
+    return cursor.fetchone() is not None
+
+
 def delete_chess_profile(
     conn: psycopg.Connection, user_id: str, chess_username: str, site: str
 ) -> bool:

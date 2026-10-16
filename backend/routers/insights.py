@@ -11,6 +11,7 @@ from repository.db import (
     get_latest_scan_job,
     get_problems_by_theme,
     get_quick_scan_problem_spotter,
+    user_has_chess_profile,
 )
 from dependencies import get_db, validate_site
 from services.insights import get_insights_state, schedule_insights_refresh
@@ -127,13 +128,19 @@ async def refresh_insights_profile(
     current_user: dict = Depends(get_current_user),
 ):
     """Queue or reuse an AI insights generation job.
-    
-    Insights are shared per chess username - not owned by individual users.
+
+    Insights are shared per chess username, so only users who saved that
+    account as one of their chess profiles may rebuild them (force wipes them).
     """
     site = validate_site(request.site)
     username = request.username.strip().lower()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
+    if not user_has_chess_profile(conn, current_user["id"], username, site):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only refresh insights for your own chess accounts.",
+        )
 
     schedule_insights_refresh(
         username=username,
