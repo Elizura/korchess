@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -37,7 +38,9 @@ IPINFO_TIMEOUT_S = max(1, int(os.environ.get("ANALYTICS_IPINFO_TIMEOUT_S", "2"))
 ANALYTICS_ENABLED_ENV = os.environ.get("ANALYTICS_ENABLED", "").strip().lower()
 
 _GEO_CACHE_TTL = timedelta(hours=6)
-_GEO_CACHE: dict[str, tuple[datetime, dict[str, str | None]]] = {}
+_GEO_CACHE_MAX_ENTRIES = 10_000
+# Least recently used first, so the oldest entries are evicted when full
+_GEO_CACHE: OrderedDict[str, tuple[datetime, dict[str, str | None]]] = OrderedDict()
 logger = logging.getLogger(__name__)
 
 
@@ -116,22 +119,38 @@ def hash_username(username: str | None) -> str | None:
     return normalized
 
 
+def _parse_ip(value: str | None) -> str | None:
+    """Return the value as a normalized IP address, or None if it isn't one."""
+    if not value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
 def _extract_client_ip(request: Request | None) -> str | None:
+    """Best guess at the visitor's IP address.
+
+    nginx sets X-Real-IP to the connecting address and appends that address
+    as the last X-Forwarded-For hop. Earlier X-Forwarded-For entries come
+    from the client and are trivially spoofed, so they are never used.
+    """
     if request is None:
         return None
 
+    real_ip = _parse_ip(request.headers.get("x-real-ip"))
+    if real_ip:
+        return real_ip
+
     forwarded_for = request.headers.get("x-forwarded-for")
     if forwarded_for:
-        first = forwarded_for.split(",")[0].strip()
-        if first:
-            return first
-
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
+        last_hop = _parse_ip(forwarded_for.split(",")[-1])
+        if last_hop:
+            return last_hop
 
     if request.client and request.client.host:
-        return request.client.host
+        return _parse_ip(request.client.host)
 
     return None
 
@@ -227,18 +246,28 @@ def _classify_device_and_browser(user_agent: str | None) -> dict[str, str | None
     }
 
 
+def _cache_geo(ip_text: str, expires_at: datetime, result: dict[str, str | None]) -> None:
+    _GEO_CACHE[ip_text] = (expires_at, result)
+    _GEO_CACHE.move_to_end(ip_text)
+    while len(_GEO_CACHE) > _GEO_CACHE_MAX_ENTRIES:
+        _GEO_CACHE.popitem(last=False)
+
+
 async def _lookup_geo_from_ip(ip_text: str | None) -> dict[str, str | None]:
-    if not ip_text:
+    # Only ever put a well-formed public address into the lookup URL
+    ip_text = _parse_ip(ip_text)
+    if not ip_text or not ipaddress.ip_address(ip_text).is_global:
         return {"country": None, "city": None}
 
     now = _utc_now()
     cached = _GEO_CACHE.get(ip_text)
     if cached and cached[0] > now:
+        _GEO_CACHE.move_to_end(ip_text)
         return cached[1]
 
     if not IPINFO_TOKEN:
         result = {"country": None, "city": None}
-        _GEO_CACHE[ip_text] = (now + _GEO_CACHE_TTL, result)
+        _cache_geo(ip_text, now + _GEO_CACHE_TTL, result)
         return result
 
     try:
@@ -257,7 +286,7 @@ async def _lookup_geo_from_ip(ip_text: str | None) -> dict[str, str | None]:
     except Exception:
         result = {"country": None, "city": None}
 
-    _GEO_CACHE[ip_text] = (now + _GEO_CACHE_TTL, result)
+    _cache_geo(ip_text, now + _GEO_CACHE_TTL, result)
     return result
 
 
