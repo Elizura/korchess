@@ -19,7 +19,6 @@ from auth import get_current_user
 from dependencies import get_db
 from routers import import_ as import_router
 from routers import profiles as profiles_router
-from schemas import ImportResponse
 from services import chesscom, lichess
 from services.chesscom import ChesscomAPIError
 from services.lichess import LichessAPIError
