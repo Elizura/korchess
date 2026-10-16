@@ -46,5 +46,34 @@ class LichessTokenTest(unittest.TestCase):
         self.assertEqual(seen, [None, None])
 
 
+def _pgn(game_id: str, eco: str, opening: str) -> str:
+    return (
+        f'[Site "https://lichess.org/{game_id}"]\n'
+        '[White "Someone"]\n[Black "Other"]\n[Result "1-0"]\n'
+        '[UTCDate "2024.03.05"]\n[UTCTime "12:34:56"]\n[Speed "blitz"]\n'
+        f'[ECO "{eco}"]\n[Opening "{opening}"]\n\n'
+        "1. e4 c5 2. Nf3 d6 1-0\n\n"
+    )
+
+
+class LichessOpeningFallbackTest(unittest.TestCase):
+    def test_uses_pgn_headers_when_openings_table_has_no_match(self) -> None:
+        pgn = _pgn("abcd1234", "B50", "Sicilian Defense: Modern Variations") + _pgn("abcd5678", "?", "?")
+        with patch.object(lichess, "best_opening_match", return_value=None):
+            games, skipped = lichess.parse_pgn_games(pgn, "someone", object())
+        self.assertEqual(skipped, 0)
+        self.assertEqual(
+            [(g["eco"], g["opening_name"], g["opening_id"]) for g in games],
+            [("B50", "Sicilian Defense: Modern Variations", None), ("UNKNOWN", "Unknown", None)],
+        )
+
+    def test_prefers_the_openings_table_match(self) -> None:
+        match = {"eco": "B50", "name": "Sicilian Defense", "opening_id": 7, "ply_count": 4}
+        with patch.object(lichess, "best_opening_match", return_value=match):
+            games, _ = lichess.parse_pgn_games(_pgn("abcd1234", "B51", "Other"), "someone", object())
+        self.assertEqual((games[0]["eco"], games[0]["opening_name"], games[0]["opening_id"]),
+                         ("B50", "Sicilian Defense", 7))
+
+
 if __name__ == "__main__":
     unittest.main()

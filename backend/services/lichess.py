@@ -257,6 +257,22 @@ def get_played_at(headers: dict) -> Optional[str]:
     return None
 
 
+def opening_from_headers(headers: dict) -> tuple[str, str]:
+    """(eco, opening_name) from Lichess's ECO/Opening PGN headers; "?" or missing means unknown.
+
+    Used when the openings table has no match (e.g. it hasn't been seeded). Games
+    without an opening_id are grouped by opening_name, the same as Chess.com's
+    header-derived names.
+    """
+    eco = (headers.get("ECO") or "").strip().upper()
+    if not re.fullmatch(r"[A-E]\d\d", eco):
+        eco = "UNKNOWN"
+    opening_name = (headers.get("Opening") or "").strip()
+    if not opening_name or opening_name == "?":
+        opening_name = "Unknown"
+    return eco, opening_name
+
+
 def game_to_pgn_string(game: chess.pgn.Game) -> str:
     """Convert a parsed game back to PGN string."""
     exporter = chess.pgn.StringExporter(headers=True, variations=True, comments=True)
@@ -329,6 +345,10 @@ def parse_pgn_games(
             opening = best_opening_match(db_con, uci_plies)
         except Exception:
             opening = None
+        if opening:
+            eco, opening_name = opening["eco"], opening["name"]
+        else:
+            eco, opening_name = opening_from_headers(headers)
 
         # Extract other fields
         game_data = {
@@ -339,8 +359,8 @@ def parse_pgn_games(
             "time_class": classify_time_control(headers),
             "color": "white" if is_white else "black",
             "result": result,
-            "eco": (opening["eco"] if opening else "UNKNOWN"),
-            "opening_name": (opening["name"] if opening else "Unknown"),
+            "eco": eco,
+            "opening_name": opening_name,
             "opening_id": (opening["opening_id"] if opening else None),
             "opening_ply_count": (opening["ply_count"] if opening else None),
             "opponent": opponent,
