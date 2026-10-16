@@ -223,8 +223,9 @@ def fetch_chesscom_games(
         # Fetch games from this archive with retry logic
         games = fetch_archive_with_retry(archive_url, headers)
         
-        # Parse each game
-        for game_json in games:
+        # Parse each game, newest first: archives list games oldest first, and
+        # max_games should keep the most recent games, not the month's earliest
+        for game_json in reversed(games):
             if len(all_games) >= max_games:
                 break
             
