@@ -63,12 +63,6 @@ interface ImportStatus {
   last_synced_at: string | null;
 }
 
-interface ImportHistoryItem {
-  username: string;
-  site: string;
-  imported_at: string;
-}
-
 interface InsightsClaim {
   text: string;
   fact_ids: string[];
@@ -314,6 +308,17 @@ const TACTIC_BLURB: Record<string, string> = {
   defensive_slip: "Missed a defensive resource that could have held the position.",
 };
 
+// Clickable table rows act as links: reachable with Tab, opened with Enter/Space
+const ROW_FOCUS_CLASSES =
+  "focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[color:var(--zen-accent)]";
+
+const activateOnEnterOrSpace = (action: () => void) => (e: React.KeyboardEvent) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    action();
+  }
+};
+
 function getTacticBorderClass(count: number, maxCount: number): string {
   const ratio = maxCount > 0 ? count / maxCount : 0;
   if (ratio >= 0.7 || count >= 15) return "tactical-card-red";
@@ -355,12 +360,8 @@ function TacticalCategoryCard({ theme, count, maxCount, username }: { theme: str
 export default function DashboardPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { user, accessToken, isLoading, signout } = useAuth();
+  const { accessToken, isLoading, signout } = useAuth();
   const userFromUrl = useMemo(() => searchParams.get("user") || "", [searchParams]);
-  const authUserId = useMemo(
-    () => (user?.email || user?.username || "anonymous").toLowerCase(),
-    [user?.email, user?.username],
-  );
 
   const authHeaders = useMemo((): Record<string, string> => {
     if (!accessToken) {
@@ -368,6 +369,10 @@ export default function DashboardPage() {
     }
     return { Authorization: `Bearer ${accessToken}` };
   }, [accessToken]);
+  // Fetch helpers read headers through this ref so long-running loops (import
+  // polling) keep using the current token after a renewal
+  const authHeadersRef = useRef(authHeaders);
+  authHeadersRef.current = authHeaders;
   
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
@@ -384,7 +389,6 @@ export default function DashboardPage() {
   const [profileAvatar, setProfileAvatar] = useState<string>("pawn");
   const hasAutoLoadedFromProfile = useRef(false);
   const profilesFetchedRef = useRef(false);
-  const [accountImportHistory, setAccountImportHistory] = useState<ImportHistoryItem[]>([]);
   const [insights, setInsights] = useState<InsightsProfile | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsRefreshing, setInsightsRefreshing] = useState(false);
@@ -430,62 +434,115 @@ export default function DashboardPage() {
     fetchProfile();
   }, [accessToken]);
 
+  // The account on screen, readable from async code started on an earlier render
+  const currentUsernameRef = useRef<string | null>(null);
+  currentUsernameRef.current = currentUsername;
+  const isShowingAccount = useCallback(
+    (name: string) => currentUsernameRef.current?.toLowerCase() === name.toLowerCase(),
+    [],
+  );
+
+  // The running import poll, if any. Flagging it cancelled stops it at its
+  // next step, before it touches state.
+  const importPollRef = useRef<{ username: string; cancelled: boolean } | null>(null);
+
+  const cancelImportPoll = useCallback(() => {
+    if (!importPollRef.current) return;
+    importPollRef.current.cancelled = true;
+    importPollRef.current = null;
+    setImportProgress(null);
+  }, []);
+
+  // Switching to another account stops polling for the previous one
+  useEffect(() => {
+    const poll = importPollRef.current;
+    if (poll && !(currentUsername && poll.username.toLowerCase() === currentUsername.toLowerCase())) {
+      cancelImportPoll();
+    }
+  }, [currentUsername, cancelImportPoll]);
+
+  // ...and so does leaving the page
+  useEffect(() => {
+    return () => {
+      if (importPollRef.current) importPollRef.current.cancelled = true;
+    };
+  }, []);
+
   // Poll Redis for import progress, then fetch reports when complete
   const pollAfterImport = useCallback(
     async (targetUsername: string, site: "lichess" | "chesscom") => {
-      let attempts = 0;
+      if (importPollRef.current) importPollRef.current.cancelled = true;
+      const poll = { username: targetUsername, cancelled: false };
+      importPollRef.current = poll;
+      // Never let results for another account overwrite the current view
+      const stale = () => poll.cancelled || !isShowingAccount(targetUsername);
+
       const maxAttempts = 300; // Up to 5 minutes at 1s intervals
-      
-      while (attempts < maxAttempts) {
-        attempts++;
-        try {
+      let outcome: "complete" | "failed" | "timeout" | "cancelled" = "timeout";
+
+      try {
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
           const progress = await fetchImportProgress(targetUsername, site);
-          
-          if (progress) {
-            setImportProgress(progress);
-            
-            // When complete, fetch final data and stop polling
-              if (progress.status === "complete") {
-              setImportProgress(null);
-              
-              // Fetch final reports, import status, problem spotter, and insights
-              const [whiteData, blackData, statusData, problemSpotterData, insightsData] = await Promise.all([
-                fetchReport(targetUsername, "white", timeClassFilter),
-                fetchReport(targetUsername, "black", timeClassFilter),
-                fetchImportStatus(targetUsername),
-                fetchProblemSpotter(targetUsername),
-                fetchInsights(targetUsername),
-              ]);
-              setReport(whiteData);
-              setReportBlack(blackData);
-              if (statusData) setImportStatus(statusData);
-              setProblemSpotter(problemSpotterData);
-              setInsights(insightsData);
-              break;
-            }
-          } else {
-            // No progress data means import might not have started or already finished
-            setImportProgress(null);
+          if (stale()) {
+            outcome = "cancelled";
             break;
           }
-        } catch {
-          setImportProgress(null);
-          break;
+          if (!progress) {
+            outcome = "failed";
+            break;
+          }
+
+          setImportProgress(progress);
+          if (progress.status === "complete") {
+            outcome = "complete";
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 1000)); // Poll every 1 second
         }
-        await new Promise(r => setTimeout(r, 1000)); // Poll every 1 second
+      } catch {
+        outcome = "failed";
       }
-      
-      // Clear progress if we hit max attempts
+
+      if (importPollRef.current === poll) importPollRef.current = null;
+      if (outcome === "cancelled" || stale()) return;
       setImportProgress(null);
+
+      if (outcome === "timeout") {
+        setError(
+          "Import is taking longer than expected. Some games may not be processed yet; sync again in a few minutes."
+        );
+      } else if (outcome === "failed") {
+        setError("Lost track of the import's progress. Refresh the page in a minute to see the latest stats.");
+      }
+
+      // Show whatever has been processed, even after a timeout or failure
+      try {
+        const [whiteData, blackData, statusData, problemSpotterData, insightsData] = await Promise.all([
+          fetchReport(targetUsername, "white", timeClassFilter),
+          fetchReport(targetUsername, "black", timeClassFilter),
+          fetchImportStatus(targetUsername),
+          fetchProblemSpotter(targetUsername),
+          fetchInsights(targetUsername),
+        ]);
+        if (stale()) return;
+        setReport(whiteData);
+        setReportBlack(blackData);
+        if (statusData) setImportStatus(statusData);
+        setProblemSpotter(problemSpotterData);
+        setInsights(insightsData);
+      } catch (err) {
+        if (stale()) return;
+        setError(err instanceof Error ? err.message : "Failed to load data");
+      }
     },
-    [timeClassFilter]
+    [timeClassFilter, isShowingAccount]
   );
 
   // Shared: refresh reports and import status after any import (insights disabled)
   const refreshDashboardAfterImport = useCallback(
     async (targetUsername: string, site: "lichess" | "chesscom", importResult: ImportResponse) => {
-      void fetchImportHistory();
-
+      // The import request can take a while; the user may have moved on
+      if (!isShowingAccount(targetUsername)) return;
       if (importResult.imported > 0) {
         void pollAfterImport(targetUsername, site);
       } else {
@@ -494,12 +551,13 @@ export default function DashboardPage() {
           fetchReport(targetUsername, "black", timeClassFilter),
           fetchImportStatus(targetUsername),
         ]);
+        if (!isShowingAccount(targetUsername)) return;
         setReport(whiteReportData);
         setReportBlack(blackReportData);
         if (statusData) setImportStatus(statusData);
       }
     },
-    [timeClassFilter, pollAfterImport]
+    [timeClassFilter, pollAfterImport, isShowingAccount]
   );
 
   // Handle adding a new profile (authenticated) or importing (guest)
@@ -709,6 +767,23 @@ export default function DashboardPage() {
     [accessToken, currentUsername, router]
   );
 
+  const openOpeningDetail = (openingKey: string, color: ColorFilter) => {
+    if (!currentUsername) return;
+    trackEvent("opening.view", {
+      properties: {
+        source: `dashboard_openings_${color}_table`,
+      },
+    });
+    const detailParams = new URLSearchParams({
+      site: "all",
+      color,
+      time_class: timeClassFilter,
+    });
+    router.push(
+      `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(openingKey)}?${detailParams.toString()}`
+    );
+  };
+
   // Handle clicking on a profile card
   const handleProfileClick = useCallback(
     (profile: ChessProfile) => {
@@ -727,11 +802,6 @@ export default function DashboardPage() {
     },
     [colorFilter, timeClassFilter, router]
   );
-
-  // Fetch import history on mount
-  useEffect(() => {
-    void fetchImportHistory();
-  }, [authUserId]);
 
   useEffect(() => {
     if (!currentUsername) {
@@ -772,7 +842,7 @@ export default function DashboardPage() {
     params.set("site", "all");
     const response = await fetch(
       `${API_BASE_URL}/api/v1/tactical/problem-spotter?${params}`,
-      { headers: withTrackingHeaders(authHeaders) }
+      { headers: withTrackingHeaders(authHeadersRef.current) }
     );
     if (!response.ok) {
       return null;
@@ -795,7 +865,7 @@ export default function DashboardPage() {
 
     const response = await fetch(
       `${API_BASE_URL}/api/v1/openings/all/${encodeURIComponent(user)}?${params}`,
-      { headers: withTrackingHeaders(authHeaders) }
+      { headers: withTrackingHeaders(authHeadersRef.current) }
     );
 
     if (!response.ok) {
@@ -813,7 +883,7 @@ export default function DashboardPage() {
   const fetchImportStatus = async (user: string) => {
     const response = await fetch(
       `${API_BASE_URL}/api/v1/import-status/all/${encodeURIComponent(user)}`,
-      { headers: withTrackingHeaders(authHeaders) }
+      { headers: withTrackingHeaders(authHeadersRef.current) }
     );
     
     if (!response.ok) {
@@ -826,7 +896,7 @@ export default function DashboardPage() {
   const fetchImportProgress = async (user: string, site: "lichess" | "chesscom") => {
     const response = await fetch(
       `${API_BASE_URL}/api/v1/import/progress/${site}/${encodeURIComponent(user)}`,
-      { headers: withTrackingHeaders(authHeaders) }
+      { headers: withTrackingHeaders(authHeadersRef.current) }
     );
     
     if (!response.ok) {
@@ -842,24 +912,6 @@ export default function DashboardPage() {
     }>;
   };
 
-  const fetchImportHistory = async () => {
-    if (!accessToken) {
-      setAccountImportHistory([]);
-      return;
-    }
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/import/history`, {
-        headers: withTrackingHeaders(authHeaders),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setAccountImportHistory(data.history || []);
-      }
-    } catch {
-      // Silently ignore - not critical
-    }
-  };
-
   const fetchInsights = async (user: string): Promise<InsightsProfile | null> => {
     const params = new URLSearchParams();
     params.set("username", user);
@@ -867,7 +919,7 @@ export default function DashboardPage() {
 
     const response = await fetch(
       `${API_BASE_URL}/api/v1/insights/profile?${params.toString()}`,
-      { headers: withTrackingHeaders(authHeaders) }
+      { headers: withTrackingHeaders(authHeadersRef.current) }
     );
     if (!response.ok) {
       return null;
@@ -881,7 +933,7 @@ export default function DashboardPage() {
       method: "POST",
       headers: withTrackingHeaders({
         "Content-Type": "application/json",
-        ...authHeaders,
+        ...authHeadersRef.current,
       } as Record<string, string>),
       body: JSON.stringify({
         username: user,
@@ -2072,13 +2124,22 @@ export default function DashboardPage() {
                                   ? `/game/${problem.site}/${currentUsername}/${problem.site_game_id}?ply=${problem.ply}`
                                   : null;
 
+                                const openGame = () => gameUrl && router.push(gameUrl);
+
                                 return (
                                   <tr
                                     key={`problem-${idx}`}
-                                    onClick={() => gameUrl && router.push(gameUrl)}
+                                    onClick={openGame}
+                                    {...(gameUrl
+                                      ? {
+                                          tabIndex: 0,
+                                          role: "link",
+                                          onKeyDown: activateOnEnterOrSpace(openGame),
+                                        }
+                                      : {})}
                                     className={`border-b border-[#2d2d33]/50 transition-all duration-200 ${
                                       gameUrl
-                                        ? "cursor-pointer hover:bg-[#2d2d33]/40 hover:border-[#4ade80]/50 hover:shadow-[0_0_15px_rgba(74,222,128,0.15)]"
+                                        ? `cursor-pointer hover:bg-[#2d2d33]/40 hover:border-[#4ade80]/50 hover:shadow-[0_0_15px_rgba(74,222,128,0.15)] focus-visible:bg-[#2d2d33]/40 ${ROW_FOCUS_CLASSES}`
                                         : ""
                                     }`}
                                   >
@@ -2256,24 +2317,12 @@ export default function DashboardPage() {
                       return (
                         <tr
                           key={`white-${opening.opening_key}`}
-                          onClick={() => {
-                            if (currentUsername) {
-                              trackEvent("opening.view", {
-                                properties: {
-                                  source: "dashboard_openings_white_table",
-                                },
-                              });
-                              const detailParams = new URLSearchParams({
-                                site: "all",
-                                color: "white",
-                                time_class: timeClassFilter,
-                              });
-                              router.push(
-                                `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.opening_key)}?${detailParams.toString()}`
-                              );
-                            }
-                          }}
-                          className="opening-list-row group cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
+                          tabIndex={0}
+                          role="link"
+                          aria-label={`${opening.opening_label} as White: ${opening.games} games, ${opening.score_pct.toFixed(1)}% score`}
+                          onClick={() => openOpeningDetail(opening.opening_key, "white")}
+                          onKeyDown={activateOnEnterOrSpace(() => openOpeningDetail(opening.opening_key, "white"))}
+                          className={`opening-list-row group cursor-pointer hover:bg-[color:var(--zen-surface)] focus-visible:bg-[color:var(--zen-surface)] transition ${ROW_FOCUS_CLASSES}`}
                         >
                           <td className="px-4 py-4">
                             <div className="opening-row-main font-semibold text-base sm:text-lg flex items-center gap-2 sm:gap-3 flex-wrap">
@@ -2373,24 +2422,12 @@ export default function DashboardPage() {
                       return (
                         <tr
                           key={`black-${opening.opening_key}`}
-                          onClick={() => {
-                            if (currentUsername) {
-                              trackEvent("opening.view", {
-                                properties: {
-                                  source: "dashboard_openings_black_table",
-                                },
-                              });
-                              const detailParams = new URLSearchParams({
-                                site: "all",
-                                color: "black",
-                                time_class: timeClassFilter,
-                              });
-                              router.push(
-                                `/opening/${encodeURIComponent(currentUsername)}/${encodeURIComponent(opening.opening_key)}?${detailParams.toString()}`
-                              );
-                            }
-                          }}
-                          className="opening-list-row group cursor-pointer hover:bg-[color:var(--zen-surface)] transition"
+                          tabIndex={0}
+                          role="link"
+                          aria-label={`${opening.opening_label} as Black: ${opening.games} games, ${opening.score_pct.toFixed(1)}% score`}
+                          onClick={() => openOpeningDetail(opening.opening_key, "black")}
+                          onKeyDown={activateOnEnterOrSpace(() => openOpeningDetail(opening.opening_key, "black"))}
+                          className={`opening-list-row group cursor-pointer hover:bg-[color:var(--zen-surface)] focus-visible:bg-[color:var(--zen-surface)] transition ${ROW_FOCUS_CLASSES}`}
                         >
                           <td className="px-4 py-4">
                             <div className="opening-row-main font-semibold text-base sm:text-lg flex items-center gap-2 sm:gap-3 flex-wrap">
