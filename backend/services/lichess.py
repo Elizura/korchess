@@ -3,6 +3,7 @@
 import hashlib
 import io
 import logging
+import os
 import re
 import time
 from typing import Optional
@@ -29,7 +30,13 @@ class LichessAPIError(Exception):
 
 
 def _get(url: str, headers: dict, params: dict | None = None, timeout: float = 30.0) -> httpx.Response:
-    """GET from Lichess. Network failures become a generic 502; details are logged, not returned."""
+    """GET from Lichess. Network failures become a generic 502; details are logged, not returned.
+
+    Authenticates with LICHESS_API_TOKEN when it is set, for Lichess's higher rate limits.
+    """
+    token = os.environ.get("LICHESS_API_TOKEN", "").strip()
+    if token:
+        headers = {**headers, "Authorization": f"Bearer {token}"}
     try:
         with httpx.Client(timeout=timeout) as client:
             return client.get(url, headers=headers, params=params)
