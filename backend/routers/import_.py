@@ -44,8 +44,8 @@ async def get_import_history_endpoint(
     conn: psycopg.Connection = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Get last 10 import records."""
-    rows = get_import_history(conn, limit=10)
+    """Get the last 10 imports of the caller's own chess profiles."""
+    rows = get_import_history(conn, current_user["id"], limit=10)
     return ImportHistoryResponse(
         history=[ImportHistoryItem(**r) for r in rows]
     )

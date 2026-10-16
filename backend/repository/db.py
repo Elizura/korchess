@@ -1252,18 +1252,22 @@ def get_import_status(
 
 def get_import_history(
     conn: psycopg.Connection,
+    user_id: str,
     limit: int = 10,
 ) -> list[dict]:
-    """Get last N import records, ordered by most recent first."""
+    """Get the last N import records for the user's saved chess profiles, most recent first."""
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT username, site, imported_at
-        FROM imports
-        ORDER BY imported_at DESC
+        SELECT i.username, i.site, i.imported_at
+        FROM imports i
+        JOIN chess_profiles p
+          ON p.chess_username = i.username AND p.site = i.site
+        WHERE p.user_id = %s
+        ORDER BY i.imported_at DESC
         LIMIT %s
         """,
-        (limit,),
+        (user_id, limit),
     )
     return [dict(row) for row in cursor.fetchall()]
 
