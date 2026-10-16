@@ -498,6 +498,10 @@ export default function DashboardPage() {
 
       try {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          if (stale()) {
+            outcome = "cancelled";
+            break;
+          }
           const progress = await fetchImportProgress(targetUsername, site);
           if (stale()) {
             outcome = "cancelled";
